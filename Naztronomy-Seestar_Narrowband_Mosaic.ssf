@@ -43,17 +43,27 @@ save ../$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt$_og
 platesolve -force 
 
 # Enable for Broadband only
-#spcc "-oscsensor=ZWO SeeStar S50" "-oscfilter=UV/IR Block" -catalog=gaia "-whiteref=Average Spiral Galaxy"
+#spcc "-oscsensor=ZWO SeeStar S50" "-oscfilter=UV/IR Block" -catalog=localgaia "-whiteref=Average Spiral Galaxy"
 
 # Enable for Narrowband Only 
-spcc "-oscsensor=ZWO SeeStar S50" -narrowband -rwl=656.28 -rbw=20 -gwl=500.70 -gbw=30 -bwl=500.70 -bbw=30 -catalog=gaia "-whiteref=Average Spiral Galaxy"
+spcc "-oscsensor=ZWO SeeStar S50" -narrowband -rwl=656.28 -rbw=20 -gwl=500.70 -gbw=30 -bwl=500.70 -bbw=30 -catalog=localgaia "-whiteref=Average Spiral Galaxy"
 
 # Saved after SPCC 
 save ../$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt$_SPCC
 
-# Alternative GHS - does not save output since every image will be different. 
-# Load the _spcc file and do your own stretch
-autoghs 0 25
+# Autostretch is done just to show a good initial result
+# To do your own stretch, load the _spcc file which is color calibrated or go back further and load the _og file
+autostretch
+
+# Alternative Stretch with GHS 
+# uncomment to use - every image is different so autoghs doesn't always work as expected
+# autoghs 0 145 -b=5
 
 # LOAD _SPCC file to do your own stretch and _og file to do your own SPCC. 
-# Naztronomy.com
+
+#
+#
+# https://www.Naztronomy.com
+# https://www.YouTube.com/Naztronomy 
+#
+#
