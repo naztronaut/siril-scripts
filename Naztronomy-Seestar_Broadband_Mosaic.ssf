@@ -43,10 +43,10 @@ save ../$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt$_og
 platesolve -force 
 
 # Enable for Broadband only
-spcc "-oscsensor=ZWO SeeStar S50" "-oscfilter=UV/IR Block" -catalog=localgaia "-whiteref=Average Spiral Galaxy"
+spcc "-oscsensor=ZWO Seestar S50" "-oscfilter=UV/IR Block" -catalog=localgaia "-whiteref=Average Spiral Galaxy"
 
 # Enable for Narrowband Only 
-# spcc "-oscsensor=ZWO SeeStar S50" -narrowband -rwl=656.28 -rbw=20 -gwl=500.70 -gbw=30 -bwl=500.70 -bbw=30 -catalog=localgaia "-whiteref=Average Spiral Galaxy"
+# spcc "-oscsensor=ZWO Seestar S50" -narrowband -rwl=656.28 -rbw=20 -gwl=500.70 -gbw=30 -bwl=500.70 -bbw=30 -catalog=localgaia "-whiteref=Average Spiral Galaxy"
 
 # Saved after SPCC 
 
