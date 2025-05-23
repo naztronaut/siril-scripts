@@ -15,7 +15,6 @@ Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 from datetime import datetime
 import os
 import sys
-import shutil
 import tkinter as tk
 from tkinter import ttk
 import sirilpy as s
@@ -36,7 +35,6 @@ FILTER_OPTIONS_MAP = {
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Celestron Origin": ["Broadband", "Origin Nebula Filter"],
-    # "Evscope2": ["No Filter (Broadband)"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -72,9 +70,6 @@ FILTER_COMMANDS_MAP = {
             "-bbw=15",
         ],
     },
-    # "Evscope2": {
-    #     "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
-    # },
 }
 
 
@@ -363,8 +358,8 @@ class PreprocessingInterface:
     def save_image(self, suffix):
         """Saves the image as a FITS file."""
         current_datetime = datetime.now().strftime("%Y%m%d_%H%M")
-        # file_name = f"$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt${current_datetime}{suffix}"
-        file_name = f"{current_datetime}{suffix}"
+        file_name = f"$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt${current_datetime}{suffix}"
+        # file_name = f"{current_datetime}{suffix}"
 
         try:
             self.siril.cmd(
@@ -467,10 +462,6 @@ class PreprocessingInterface:
     def clean_up(self, prefix=None):
         """Cleans up all files in the process directory."""
         self.siril.cmd("cd", "../")
-        # TODO: Delete each previous sequence to save space
-        # process_directory = os.path.join(self.current_working_directory, 'process')
-        # if os.path.isdir(process_directory):
-        #     shutil.rmtree(process_directory)
 
     # Function to update filter options
     def update_filter_options(self, *args):
@@ -726,10 +717,6 @@ class PreprocessingInterface:
                 filter=self.filter_variable.get(),
                 telescope=self.telescope_variable.get(),
                 catalog=catalog_variable.get(),
-                # use_darks=darks_checkbox_variable.get(),
-                # use_flats=flats_checkbox_variable.get(),
-                # use_bias=bias_checkbox_variable.get(),
-                # graxpert=graxpert_checkbox_variable.get(),
                 bg_extract=bg_extract_checkbox_variable.get(),
                 drizzle=drizzle_checkbox_variable.get(),
                 drizzle_amount=drizzle_amount_spinbox.get(),
@@ -738,43 +725,6 @@ class PreprocessingInterface:
                 feather_amount=feather_amount_spinbox.get(),
             ),
         ).pack(pady=(15, 0), anchor="w")
-
-        # SPCC Button for Debugging
-        # ttk.Button(
-        #     main_frame,
-        #     text="SPCC",
-        #     command=lambda: self.spcc(
-        #         oscsensor=telescope_variable.get(),
-        #         filter=filter_variable.get(),
-        #         catalog=catalog_variable.get(),
-        #         whiteref="Average Spiral Galaxy",
-        #     ),
-        # ).pack(pady=(15, 0), anchor="w")
-
-        # Fit Sequence Extract Button for Debugging
-        # ttk.Button(
-        #     main_frame,
-        #     text="FITS Extract",
-        #     command=lambda: self.extract_fits(),
-        # ).pack(pady=(15, 0), anchor="w")
-
-        # ttk.Button(
-        #     main_frame,
-        #     text="Test Register",
-        #     command=lambda: self.seq_apply_reg(),
-        # ).pack(pady=(15, 0), anchor="w")
-        # ttk.Button(
-        #     main_frame,
-        #     text="Remove Bad Frames",
-        #     command=lambda: self.scan_black_frames(seq_name="r_bkg_lights_"),
-        # ).pack(pady=(15, 0), anchor="w")
-
-        # ttk.Button(
-        #     main_frame,
-        #     text="Stack Again",
-        #     command=lambda: self.seq_stack(
-        #         seq_name="r_bkg_lights_",feather=feather_checkbox_variable.get(), feather_amount=feather_amount_spinbox.get()),
-        # ).pack(pady=(15, 0), anchor="w")
 
     def close_dialog(self):
         self.siril.disconnect()
@@ -791,7 +741,6 @@ class PreprocessingInterface:
         use_darks: bool = False,
         use_flats: bool = False,
         use_bias: bool = False,
-        # graxpert: bool = False,
         bg_extract: bool = False,
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
@@ -809,7 +758,6 @@ class PreprocessingInterface:
             f"use_darks={use_darks}\n"
             f"use_flats={use_flats}\n"
             f"use_bias={use_bias}\n"
-            # f"graxpert={graxpert}\n"
             f"bg_extract={bg_extract}\n"
             f"drizzle={drizzle}\n"
             f"drizzle_amount={drizzle_amount}\n"
@@ -831,9 +779,6 @@ class PreprocessingInterface:
         # # TODO: Calibration frames processing
 
         seq_name = "lights" if fitseq_mode else "lights_"
-        # if graxpert:
-        #     self.seq_graxpert_bg_extract()
-        #     seq_name = "gxbg_" + seq_name
         if bg_extract:
             self.seq_bg_extract(seq_name=seq_name)
             seq_name = "bkg_" + seq_name
