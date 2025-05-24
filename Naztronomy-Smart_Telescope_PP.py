@@ -84,7 +84,7 @@ class PreprocessingInterface:
     def __init__(self, root):
         self.root = root
         self.root.title(f"Smart Telescope Preprocessing - v{VERSION}")
-        self.root.geometry("800x700")
+        self.root.geometry("")
         self.root.resizable(False, False)
 
         self.style = tksiril.standard_style()
@@ -357,8 +357,37 @@ class PreprocessingInterface:
 
     def save_image(self, suffix):
         """Saves the image as a FITS file."""
-        current_datetime = datetime.now().strftime("%Y%m%d_%H%M")
-        file_name = f"$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt${current_datetime}{suffix}"
+
+        result_fit = "process/result.fit"
+
+        if os.path.exists(result_fit):
+            with fits.open(result_fit) as hdul:
+                header = hdul[0].header
+                metadata = {
+                    "OBJECT": header.get("OBJECT", "Unknown"),
+                    "EXPTIME": int(header.get("EXPTIME", 0)),
+                    "STACKCNT": int(header.get("STACKCNT", 0)),
+                    "DATE-OBS": header.get("DATE-OBS", "1970-01-01T00:00:00")
+                }
+            
+            object_name = metadata["OBJECT"].replace(" ", "_")
+            exptime = metadata["EXPTIME"]
+            stack_count = metadata["STACKCNT"]
+            date_obs = metadata["DATE-OBS"]
+
+            try:
+                dt = datetime.fromisoformat(date_obs)
+                date_obs_str = dt.strftime("%Y-%m-%d") 
+            except ValueError:
+                date_obs_str = datetime.now().strftime("%Y%m%d")
+
+            current_datetime = datetime.now().strftime("%Y-%m-%d_%H%M")
+
+            file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}__{current_datetime}{suffix}"
+        else:
+            file_name = f"{current_datetime}{suffix}"
+        # current_datetime = datetime.now().strftime("%Y%m%d_%H%M")
+        # file_name = f"$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt${current_datetime}{suffix}"
         # file_name = f"{current_datetime}{suffix}"
 
         try:
