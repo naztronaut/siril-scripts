@@ -34,7 +34,7 @@ Please the `.ssf` or `.py` files in local Siril scripts directory. You can find 
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details 
 
 ## Questions ?
 Have questions? You can reach me through several different channels. You can ask a question in the  [issues forum](/../../issues), 
