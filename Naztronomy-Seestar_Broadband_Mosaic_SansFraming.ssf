@@ -1,0 +1,71 @@
+############################################
+#
+# Script for Siril 1.4.0-beta1
+# May 2025
+# (C) Nazmus Nasir (Naztronomy.com)
+# (C) Cyril Richard
+# Naztronomy_Seestar_Broadband_Mosaic v1.0
+#
+########### PREPROCESSING SCRIPT ###########
+#
+# Script for Broadband mosaic preprocessing, see 
+# other script for Narrowband mosaic preprocessing
+# This script plate solves, aligns, stacks, then does SPCC 
+#
+# Only needs a lights directory with .fit files from your Seestar:
+#   lights/
+#
+############################################
+
+requires 1.4.0-beta1
+
+# Convert Light Frames to .fit files
+cd lights
+convert light -out=../process
+cd ../process
+
+# Platesolve 
+seqplatesolve light_ -nocache -force -disto=ps_distortion
+
+# Align lights
+# Note: This seems to also debayer the sequence
+seqapplyreg light_ -filter-round=2.5k -kernel=square
+
+# Stack calibrated lights to result.fit
+stack r_light_ rej 3 3 -norm=addscale -output_norm -rgb_equal -maximize -out=result 
+
+#save result using FITS keywords for the name
+load result
+save ../$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt$_og
+
+
+# Force platesolve for SPCC 
+platesolve -force 
+
+# Enable for Broadband only
+spcc "-oscsensor=ZWO Seestar S50" "-oscfilter=UV/IR Block" -catalog=localgaia "-whiteref=Average Spiral Galaxy"
+
+# Enable for Narrowband Only 
+# spcc "-oscsensor=ZWO Seestar S50" -narrowband -rwl=656.28 -rbw=20 -gwl=500.70 -gbw=30 -bwl=500.70 -bbw=30 -catalog=localgaia "-whiteref=Average Spiral Galaxy"
+
+# Saved after SPCC 
+
+save ../$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt$_SPCC
+
+# Autostretch is done just to show a good initial result
+# To do your own stretch, load the _spcc file which is color calibrated or go back further and load the _og file
+autostretch
+
+# Alternative Stretch with GHS 
+# uncomment to use - every image is different so autoghs doesn't always work as expected
+# autoghs 0 145 -b=5
+
+# LOAD _SPCC file to do your own stretch and _og file to do your own SPCC. 
+
+#
+#
+# https://www.Naztronomy.com
+# https://www.YouTube.com/Naztronomy 
+#
+#
+#
