@@ -293,7 +293,7 @@ class PreprocessingInterface:
                                 np.issubdtype(data.dtype, np.floating)
                                 or data_max <= 10.0
                             ):
-                                dynamic_threshold = 0.004
+                                dynamic_threshold = 0.0001
 
                             is_black, median_val = self.is_black_frame(
                                 data, dynamic_threshold, crop_fraction
