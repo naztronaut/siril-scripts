@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.0.1
+Version: 1.0.2
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -26,7 +26,7 @@ import numpy as np
 s.ensure_installed("ttkthemes", "numpy", "astropy")
 
 APP_NAME = "Smart Telescope Preprocessing"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com (https://www.YouTube.com/Naztronomy)"
 TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3", "Celestron Origin"]
