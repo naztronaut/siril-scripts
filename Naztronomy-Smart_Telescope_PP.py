@@ -293,7 +293,7 @@ class PreprocessingInterface:
                                 np.issubdtype(data.dtype, np.floating)
                                 or data_max <= 10.0
                             ):
-                                dynamic_threshold = 0.004
+                                dynamic_threshold = 0.0001
 
                             is_black, median_val = self.is_black_frame(
                                 data, dynamic_threshold, crop_fraction
@@ -301,9 +301,9 @@ class PreprocessingInterface:
                             all_frames_info.append((filename, median_val))
 
                             # Log for debugging
-                            print(
-                                f"{filename} | shape: {data.shape} | dtype: {data.dtype} | min: {np.min(data)} | max: {data_max} | median: {median_val} | threshold used: {dynamic_threshold}"
-                            )
+                            # print(
+                            #     f"{filename} | shape: {data.shape} | dtype: {data.dtype} | min: {np.min(data)} | max: {data_max} | median: {median_val} | threshold used: {dynamic_threshold}"
+                            # )
 
                             if is_black:
                                 black_frames.append(filename)
@@ -359,6 +359,7 @@ class PreprocessingInterface:
         """Saves the image as a FITS file."""
 
         result_fit = "process/result.fit"
+        current_datetime = datetime.now().strftime("%Y-%m-%d_%H%M")
 
         if os.path.exists(result_fit):
             with fits.open(result_fit) as hdul:
@@ -380,8 +381,6 @@ class PreprocessingInterface:
                 date_obs_str = dt.strftime("%Y-%m-%d") 
             except ValueError:
                 date_obs_str = datetime.now().strftime("%Y%m%d")
-
-            current_datetime = datetime.now().strftime("%Y-%m-%d_%H%M")
 
             file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}__{current_datetime}{suffix}"
         else:
