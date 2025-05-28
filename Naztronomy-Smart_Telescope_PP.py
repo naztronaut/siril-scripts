@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.0.1
+Version: 1.0.2
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -26,7 +26,7 @@ import numpy as np
 s.ensure_installed("ttkthemes", "numpy", "astropy")
 
 APP_NAME = "Smart Telescope Preprocessing"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com (https://www.YouTube.com/Naztronomy)"
 TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3", "Celestron Origin"]
@@ -96,6 +96,7 @@ class PreprocessingInterface:
         # if drizzle is off, images will be debayered on convert
         self.fitseq_mode = False
         self.drizzle_status = False
+        self.drizzle_factor = 0
 
         self.spcc_section = ttk.LabelFrame()
         self.spcc_checkbox_variable = None
@@ -277,6 +278,7 @@ class PreprocessingInterface:
         black_indices = []
         all_frames_info = []
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
+        self.siril.log("Note: This process is running in the background and may take a while depending on your system and drizzle factor.", LogColor.BLUE)
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
@@ -382,9 +384,14 @@ class PreprocessingInterface:
             except ValueError:
                 date_obs_str = datetime.now().strftime("%Y%m%d")
 
-            file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}__{current_datetime}{suffix}"
+            file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}"
+            if self.drizzle_status:
+                file_name += f"_drizzle-{self.drizzle_factor}x"
+
+            file_name += f"__{current_datetime}{suffix}"
+
         else:
-            file_name = f"{current_datetime}{suffix}"
+            file_name = f"result_drizzle-{self.drizzle_factor}x__{current_datetime}{suffix}"
         # current_datetime = datetime.now().strftime("%Y%m%d_%H%M")
         # file_name = f"$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt${current_datetime}{suffix}"
         # file_name = f"{current_datetime}{suffix}"
@@ -796,6 +803,7 @@ class PreprocessingInterface:
         )
         self.fitseq_mode = fitseq_mode
         self.drizzle_status = drizzle
+        self.drizzle_factor = drizzle_amount
         self.convert_files("lights")
         if use_darks:
             self.convert_files("darks")
