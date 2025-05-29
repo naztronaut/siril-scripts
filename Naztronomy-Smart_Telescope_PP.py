@@ -584,15 +584,37 @@ class PreprocessingInterface:
             self.telescope_variable,
             "ZWO Seestar S30",
             *self.telescope_options,
-        ).grid(row=0, column=1, sticky="w")
+        ).grid(row=0, column=1, columnspan=3, sticky="w", padx=5, pady=5)
 
         self.telescope_variable.trace_add("write", self.update_filter_options)
+
+
+        # Optional Calibration Frames
+        ttk.Label(
+            telescope_section, text="Calibration Frames:", style="Bold.TLabel"
+        ).grid(row=1, column=0, sticky="w")
+
+        darks_checkbox_variable = tk.BooleanVar()
+        ttk.Checkbutton(
+            telescope_section, text="Darks", variable=darks_checkbox_variable
+        ).grid(row=1, column=1, sticky="w", padx=5, pady=10)
+
+        flats_checkbox_variable = tk.BooleanVar()
+        ttk.Checkbutton(
+            telescope_section, text="Flats", variable=flats_checkbox_variable
+        ).grid(row=1, column=2, sticky="w", padx=5)
+
+        biases_checkbox_variable = tk.BooleanVar()
+        ttk.Checkbutton(
+            telescope_section, text="Biases", variable=biases_checkbox_variable
+        ).grid(row=1, column=3, sticky="w", padx=5)
+
 
         # Mode to handle >2048 files
         telescope_section.pack(fill=tk.X, pady=5)
 
         ttk.Label(telescope_section, text="2048+ Files:", style="Bold.TLabel").grid(
-            row=1, column=0, sticky="w"
+            row=2, column=0, sticky="w"
         )
 
         fitseq_checkbox_variable = tk.BooleanVar()
@@ -600,7 +622,7 @@ class PreprocessingInterface:
         fitseq_checkbox = ttk.Checkbutton(
             telescope_section, text="Enable", variable=fitseq_checkbox_variable
         )
-        fitseq_checkbox.grid(row=1, column=1, sticky="w")
+        fitseq_checkbox.grid(row=2, column=1, columnspan=2, sticky="w", padx=5, pady=10)
 
         # Add tooltip to the one and only checkbox
         tksiril.create_tooltip(
