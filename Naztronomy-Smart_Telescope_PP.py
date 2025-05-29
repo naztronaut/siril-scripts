@@ -25,10 +25,11 @@ import numpy as np
 
 s.ensure_installed("ttkthemes", "numpy", "astropy")
 
-APP_NAME = "Smart Telescope Preprocessing"
-VERSION = "1.0.2"
+APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
+VERSION = "1.1.0"
 AUTHOR = "Nazmus Nasir"
-WEBSITE = "https://www.Naztronomy.com (https://www.YouTube.com/Naztronomy)"
+WEBSITE = "Naztronomy.com"
+YOUTUBE = "YouTube.com/Naztronomy"
 TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3", "Celestron Origin"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
@@ -83,7 +84,7 @@ UI_DEFAULTS = {
 class PreprocessingInterface:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"Smart Telescope Preprocessing - v{VERSION}")
+        self.root.title(f"{APP_NAME} - v{VERSION}")
         self.root.geometry("")
         self.root.resizable(False, False)
 
@@ -115,7 +116,7 @@ class PreprocessingInterface:
         except s.SirilConnectionError:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
-
+        tksiril.match_theme_to_siril(self.root, self.siril)
         try:
             self.siril.cmd("requires", "1.3.6")
         except s.CommandError:
@@ -521,6 +522,25 @@ class PreprocessingInterface:
         state = tk.NORMAL if self.spcc_checkbox_variable.get() else tk.DISABLED
         self.filter_menu["state"] = state
 
+    def show_help(self):
+        help_text = (
+            f"Author: {AUTHOR} ({WEBSITE})\n"
+            f"Youtube: {YOUTUBE}\n"
+            "Discord: https://discord.gg/yXKqrawpjr\n\n"
+            "Info:\n"
+            "1. Must have a \"lights\" subdirectory inside of the working directory.\n"
+            "2. 2048+ Mode is only for Windows. Checking/Unchecking in Linux/Mac won't do anything.\n"
+            "3. 2048+ Mode cannot do Mosaics at the moment!\n"
+            "4. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
+            "5. Feathering is not available for 2048+ Mode.\n"
+            "6. If you use 2048+ Mode, you can either choose Drizzle or SPCC. Choosing both will result in an error.\n"
+            "7. When asking for help, please have the logs handy."
+        )
+        self.siril.info_messagebox(help_text, True)
+        self.siril.log(help_text, LogColor.BLUE)
+
+        tksiril.elevate(self.root)
+
     def create_widgets(self):
         """Creates the UI widgets."""
         main_frame = ttk.Frame(self.root, padding=15)
@@ -530,18 +550,22 @@ class PreprocessingInterface:
         bold_label = ttk.Style()
         bold_label.configure("Bold.TLabel", font=("TkDefaultFont", 10, "bold"))
 
+    
         # Title and version
         ttk.Label(
             main_frame,
-            text=f"{APP_NAME} v{VERSION}",
+            text=f"{APP_NAME}",
             style="Bold.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(main_frame, text=f"Author: {AUTHOR}", style="Bold.TLabel").pack(
-            anchor="w", pady=(0, 0)
-        )
-        ttk.Label(main_frame, text=f"Website: {WEBSITE}", style="Bold.TLabel").pack(
-            anchor="w", pady=(0, 0)
-        )
+            font=("Segoe UI", 10, "bold"),
+        ).pack(pady=(10, 10))
+
+
+        # ttk.Label(main_frame, text=f"Author: {AUTHOR}", style="Bold.TLabel").pack(
+        #     anchor="w", pady=(0, 0)
+        # )
+        # ttk.Label(main_frame, text=f"Website: {WEBSITE}", style="Bold.TLabel").pack(
+        #     anchor="w", pady=(0, 0)
+        # )
 
         ttk.Label(
             main_frame,
@@ -742,10 +766,14 @@ class PreprocessingInterface:
                 self.spcc_section, text="✗ Local Gaia Not available", foreground="red"
             ).grid(row=2, column=2, sticky="w")
 
+
+        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(pady=(15, 0), side=tk.LEFT)
+
         # Run button
         ttk.Button(
             main_frame,
             text="Run",
+            width=10,
             command=lambda: self.run_script(
                 fitseq_mode=fitseq_checkbox_variable.get(),
                 do_spcc=self.spcc_checkbox_variable.get(),
@@ -759,7 +787,9 @@ class PreprocessingInterface:
                 feather=feather_checkbox_variable.get(),
                 feather_amount=feather_amount_spinbox.get(),
             ),
-        ).pack(pady=(15, 0), anchor="w")
+        ).pack(pady=(15, 0), side=tk.RIGHT)
+
+        ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(pady=(15, 0), side=tk.RIGHT)
 
     def close_dialog(self):
         self.siril.disconnect()
