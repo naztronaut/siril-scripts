@@ -909,15 +909,8 @@ class PreprocessingInterface:
                 clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
-
-        ttk.Button(
-            main_frame,
-            text="FLATS",
-            width=10,
-            command=lambda: self.calibration_stack(seq_name="flats"),
-        ).pack(pady=(15, 0), side=tk.RIGHT)
-
         
+        # Close button
         ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(
             pady=(15, 0), side=tk.RIGHT
         )
