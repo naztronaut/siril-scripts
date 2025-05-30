@@ -179,8 +179,9 @@ class PreprocessingInterface:
                         if not self.drizzle_status:
                             args.append("-debayer")
                 else:
-                    # flats, darks, bias: only debayer
-                    args.append("-debayer")
+                    if not self.drizzle_status:
+                        # flats, darks, bias: only debayer if drizzle is not set
+                        args.append("-debayer")
 
                 self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
                 self.siril.cmd(*args)
@@ -591,8 +592,6 @@ class PreprocessingInterface:
 
     # Function to update filter options
     def update_filter_options(self, *args):
-        print("here")
-
         selected_scope = self.telescope_variable.get()
         new_options = self.filter_options_map.get(selected_scope, [])
         print(selected_scope)
