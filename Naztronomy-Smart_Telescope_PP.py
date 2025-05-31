@@ -20,6 +20,7 @@ from tkinter import ttk
 import sirilpy as s
 from sirilpy import LogColor, NoImageError, tksiril
 from ttkthemes import ThemedTk
+s.ensure_installed("astropy")
 from astropy.io import fits
 import numpy as np
 
@@ -142,6 +143,7 @@ class PreprocessingInterface:
                 True,
             )
         self.create_widgets()
+        tksiril.match_theme_to_siril(self.root, self.siril)
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
