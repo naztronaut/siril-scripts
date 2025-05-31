@@ -10,6 +10,14 @@ The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 
+The following directory is required inside the working directory:
+    lights/
+
+The following subdirectories are optional:
+    darks/
+    flats/
+    biases/
+
 """
 import sirilpy as s
 s.ensure_installed("ttkthemes", "numpy", "astropy")
