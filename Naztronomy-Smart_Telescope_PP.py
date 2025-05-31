@@ -11,31 +11,30 @@ https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 
 """
-
+import sirilpy as s
+s.ensure_installed("ttkthemes", "numpy", "astropy")
 from datetime import datetime
 import os
 import sys
 import tkinter as tk
 from tkinter import ttk
-import sirilpy as s
 from sirilpy import LogColor, NoImageError, tksiril
 from ttkthemes import ThemedTk
 from astropy.io import fits
 import numpy as np
 
-s.ensure_installed("ttkthemes", "numpy", "astropy")
+
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "1.1.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3", "Celestron Origin"]
+TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
-    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
-    "Celestron Origin": ["Broadband", "Origin Nebula Filter"],
+    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"]
 }
 
 FILTER_COMMANDS_MAP = {
@@ -57,18 +56,6 @@ FILTER_COMMANDS_MAP = {
             "-gbw=30",
             "-bwl=500.70",
             "-bbw=30",
-        ],
-    },
-    "Celestron Origin": {
-        "Broadband": ["-oscfilter=No Filter"],
-        "Origin Nebula Filter": [
-            "-narrowband",
-            "-rwl=656.28",
-            "-rbw=20",
-            "-gwl=498",
-            "-gbw=15",
-            "-bwl=498",
-            "-bbw=15",
         ],
     },
 }
@@ -513,10 +500,6 @@ class PreprocessingInterface:
             """SPCC with oscsensor, filter, catalog, and whiteref."""
             if oscsensor == "Dwarf 3":
                 recoded_sensor = "Sony IMX678"
-            elif oscsensor == "Celestron Origin":
-                recoded_sensor = "Sony IMX178C"
-            elif oscsensor == "Unistellar Evscope 2":
-                recoded_sensor = "Sony IMX294C"
             else:
                 recoded_sensor = oscsensor
 
