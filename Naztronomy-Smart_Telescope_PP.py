@@ -586,7 +586,7 @@ class PreprocessingInterface:
             ):
                 file_path = os.path.join(process_dir, f)
                 if os.path.isfile(file_path):
-                    print(f"Removing: {file_path}")
+                    # print(f"Removing: {file_path}")
                     os.remove(file_path)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
 
