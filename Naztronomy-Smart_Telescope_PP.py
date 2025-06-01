@@ -585,7 +585,7 @@ class PreprocessingInterface:
     def update_filter_options(self, *args):
         selected_scope = self.telescope_variable.get()
         new_options = self.filter_options_map.get(selected_scope, [])
-        print(selected_scope)
+        self.siril.log(selected_scope, LogColor.BLUE)
         # Clear current menu
         menu = self.filter_menu["menu"]
         menu.delete(0, "end")
@@ -989,8 +989,6 @@ class PreprocessingInterface:
 
         # Don't plate solve if 2048+ mode on, doesn't do anything but waste time
         if not self.fitseq_mode:
-            print(telescope)
-
             self.seq_plate_solve(seq_name=seq_name)
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
