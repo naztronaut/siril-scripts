@@ -3,46 +3,44 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.1.0
+Version: 1.1.1
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 
-The following directory is required inside the working directory:
-    lights/
-
-The following subdirectories are optional:
-    darks/
-    flats/
-    biases/
-
 """
-import sirilpy as s
-s.ensure_installed("ttkthemes", "numpy", "astropy")
+
 from datetime import datetime
 import os
 import sys
 import tkinter as tk
 from tkinter import ttk
+import sirilpy as s
 from sirilpy import LogColor, NoImageError, tksiril
 from ttkthemes import ThemedTk
 from astropy.io import fits
 import numpy as np
 
+if sys.platform.startswith("linux"):
+    import sirilpy.tkfilebrowser as filedialog
+else:
+    from tkinter import filedialog
 
+s.ensure_installed("ttkthemes", "numpy", "astropy")
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
+TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3", "Celestron Origin"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
-    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"]
+    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
+    "Celestron Origin": ["Broadband", "Origin Nebula Filter"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -66,6 +64,18 @@ FILTER_COMMANDS_MAP = {
             "-bbw=30",
         ],
     },
+    "Celestron Origin": {
+        "Broadband": ["-oscfilter=No Filter"],
+        "Origin Nebula Filter": [
+            "-narrowband",
+            "-rwl=656.28",
+            "-rbw=20",
+            "-gwl=498",
+            "-gbw=15",
+            "-bwl=498",
+            "-bbw=15",
+        ],
+    },
 }
 
 
@@ -74,6 +84,7 @@ UI_DEFAULTS = {
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
 }
+
 
 
 class PreprocessingInterface:
@@ -131,12 +142,42 @@ class PreprocessingInterface:
         except s.CommandError:
             pass
         self.current_working_directory = self.siril.get_siril_wd()
-        lights_directory = os.path.join(self.current_working_directory, "lights")
-        if not os.path.isdir(lights_directory):
-            raise self.siril.error_messagebox(
-                "Directory 'lights' does not exist, please change current working directory and try again.",
-                True,
-            )
+
+        self.cwd_label = tk.StringVar()
+        initial_cwd = os.path.join(self.current_working_directory, "lights")
+        if os.path.isdir(initial_cwd):
+            self.siril.log(f"Current working directory is valid: {self.current_working_directory}", LogColor.GREEN)
+            self.siril.cmd("cd", f'"{self.current_working_directory}"')
+            self.cwd_label.set(f"Current working directory: {self.current_working_directory}")
+        else:
+        # Check to see if current working directory has a lights subdir
+            while True:
+                # Prompt user (https://github.com/j4321/tkFileBrowser)
+                selected_dir = filedialog.askdirectory(
+                    parent=self.root,
+                    initialdir=self.current_working_directory,
+                    title="Select the parent directory containing the 'lights' directory"
+                )
+
+                if not selected_dir:
+                    self.siril.log("No directory selected. Prompting again...", LogColor.SALMON)
+                    continue
+
+                lights_directory = os.path.join(selected_dir, "lights")
+                if os.path.isdir(lights_directory):
+                    self.siril.cmd("cd", f'"{selected_dir}"')
+                    self.cwd_label.set(f"Current working directory: {selected_dir}")
+                    self.siril.log(f"Updated current working directory to: {selected_dir}", LogColor.GREEN)
+                    break
+                elif os.path.basename(selected_dir.lower()) == "lights":
+                    msg = "The selected folder is the 'lights' directory, please select the parent folder."
+                    self.siril.error_messagebox(f"{msg}", True)
+                    self.root.focus_force()
+                else:
+                    # If the user navigated to another invalid location
+                    msg = f"The selected folder must contain a subfolder named 'lights'.\nYou selected: {selected_dir}"
+                    self.siril.log(msg, LogColor.SALMON)
+                    self.siril.error_messagebox(msg, True)
         self.create_widgets()
 
     # Dirname: lights, darks, biases, flats
@@ -508,6 +549,10 @@ class PreprocessingInterface:
             """SPCC with oscsensor, filter, catalog, and whiteref."""
             if oscsensor == "Dwarf 3":
                 recoded_sensor = "Sony IMX678"
+            elif oscsensor == "Celestron Origin":
+                recoded_sensor = "Sony IMX178C"
+            elif oscsensor == "Unistellar Evscope 2":
+                recoded_sensor = "Sony IMX294C"
             else:
                 recoded_sensor = oscsensor
 
@@ -577,7 +622,7 @@ class PreprocessingInterface:
             ):
                 file_path = os.path.join(process_dir, f)
                 if os.path.isfile(file_path):
-                    # print(f"Removing: {file_path}")
+                    print(f"Removing: {file_path}")
                     os.remove(file_path)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
 
@@ -585,7 +630,7 @@ class PreprocessingInterface:
     def update_filter_options(self, *args):
         selected_scope = self.telescope_variable.get()
         new_options = self.filter_options_map.get(selected_scope, [])
-        self.siril.log(selected_scope, LogColor.BLUE)
+        print(selected_scope)
         # Clear current menu
         menu = self.filter_menu["menu"]
         menu.delete(0, "end")
@@ -642,7 +687,7 @@ class PreprocessingInterface:
 
         ttk.Label(
             main_frame,
-            text=f"Current Working Directory: {self.current_working_directory}",
+            textvariable=self.cwd_label,
         ).pack(anchor="w", pady=(0, 10))
 
         # Telescope section
@@ -989,6 +1034,8 @@ class PreprocessingInterface:
 
         # Don't plate solve if 2048+ mode on, doesn't do anything but waste time
         if not self.fitseq_mode:
+            print(telescope)
+
             self.seq_plate_solve(seq_name=seq_name)
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
