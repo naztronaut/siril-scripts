@@ -148,8 +148,8 @@ class PreprocessingInterface:
                 self.siril.cmd("cd", "../")
                 os.chdir(os.path.dirname(self.current_working_directory))
                 self.current_working_directory = os.path.dirname(self.current_working_directory)
-                self.cwd_label.set(f"Current working directory: {os.path.dirname(self.current_working_directory)}")
-                self.siril.log(f"Updated current working directory to: {os.path.dirname(self.current_working_directory)}", LogColor.GREEN)
+                self.cwd_label.set(f"Current working directory: {self.current_working_directory}")
+                self.siril.log(f"Updated current working directory to: {self.current_working_directory}", LogColor.GREEN)
         
         else:
         # Check to see if current working directory has a lights subdir
