@@ -10,14 +10,22 @@ The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 
-"""
+The following directory is required inside the working directory:
+    lights/
 
+The following subdirectories are optional:
+    darks/
+    flats/
+    biases/
+
+"""
+import sirilpy as s
+s.ensure_installed("ttkthemes", "numpy", "astropy")
 from datetime import datetime
 import os
 import sys
 import tkinter as tk
 from tkinter import ttk
-import sirilpy as s
 from sirilpy import LogColor, NoImageError, tksiril
 from ttkthemes import ThemedTk
 from astropy.io import fits
@@ -28,19 +36,17 @@ if sys.platform.startswith("linux"):
 else:
     from tkinter import filedialog
 
-s.ensure_installed("ttkthemes", "numpy", "astropy")
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "1.1.1"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3", "Celestron Origin"]
+TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
-    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
-    "Celestron Origin": ["Broadband", "Origin Nebula Filter"],
+    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"]
 }
 
 FILTER_COMMANDS_MAP = {
@@ -64,18 +70,6 @@ FILTER_COMMANDS_MAP = {
             "-bbw=30",
         ],
     },
-    "Celestron Origin": {
-        "Broadband": ["-oscfilter=No Filter"],
-        "Origin Nebula Filter": [
-            "-narrowband",
-            "-rwl=656.28",
-            "-rbw=20",
-            "-gwl=498",
-            "-gbw=15",
-            "-bwl=498",
-            "-bbw=15",
-        ],
-    },
 }
 
 
@@ -84,7 +78,6 @@ UI_DEFAULTS = {
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
 }
-
 
 
 class PreprocessingInterface:
@@ -142,7 +135,6 @@ class PreprocessingInterface:
         except s.CommandError:
             pass
         self.current_working_directory = self.siril.get_siril_wd()
-
         self.cwd_label = tk.StringVar()
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
@@ -166,6 +158,8 @@ class PreprocessingInterface:
                 lights_directory = os.path.join(selected_dir, "lights")
                 if os.path.isdir(lights_directory):
                     self.siril.cmd("cd", f'"{selected_dir}"')
+                    os.chdir(selected_dir) # Need to change directory for python as well
+                    self.current_working_directory = selected_dir
                     self.cwd_label.set(f"Current working directory: {selected_dir}")
                     self.siril.log(f"Updated current working directory to: {selected_dir}", LogColor.GREEN)
                     break
@@ -549,10 +543,6 @@ class PreprocessingInterface:
             """SPCC with oscsensor, filter, catalog, and whiteref."""
             if oscsensor == "Dwarf 3":
                 recoded_sensor = "Sony IMX678"
-            elif oscsensor == "Celestron Origin":
-                recoded_sensor = "Sony IMX178C"
-            elif oscsensor == "Unistellar Evscope 2":
-                recoded_sensor = "Sony IMX294C"
             else:
                 recoded_sensor = oscsensor
 
@@ -622,7 +612,7 @@ class PreprocessingInterface:
             ):
                 file_path = os.path.join(process_dir, f)
                 if os.path.isfile(file_path):
-                    print(f"Removing: {file_path}")
+                    # print(f"Removing: {file_path}")
                     os.remove(file_path)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
 
@@ -630,7 +620,7 @@ class PreprocessingInterface:
     def update_filter_options(self, *args):
         selected_scope = self.telescope_variable.get()
         new_options = self.filter_options_map.get(selected_scope, [])
-        print(selected_scope)
+        self.siril.log(selected_scope, LogColor.BLUE)
         # Clear current menu
         menu = self.filter_menu["menu"]
         menu.delete(0, "end")
@@ -1034,8 +1024,6 @@ class PreprocessingInterface:
 
         # Don't plate solve if 2048+ mode on, doesn't do anything but waste time
         if not self.fitseq_mode:
-            print(telescope)
-
             self.seq_plate_solve(seq_name=seq_name)
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
