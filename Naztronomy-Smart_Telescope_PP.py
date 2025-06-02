@@ -141,6 +141,16 @@ class PreprocessingInterface:
             self.siril.log(f"Current working directory is valid: {self.current_working_directory}", LogColor.GREEN)
             self.siril.cmd("cd", f'"{self.current_working_directory}"')
             self.cwd_label.set(f"Current working directory: {self.current_working_directory}")
+        elif os.path.basename(self.current_working_directory.lower()) == "lights":
+            msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
+            answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
+            if answer:
+                self.siril.cmd("cd", "../")
+                os.chdir(os.path.dirname(self.current_working_directory))
+                self.current_working_directory = os.path.dirname(self.current_working_directory)
+                self.cwd_label.set(f"Current working directory: {os.path.dirname(self.current_working_directory)}")
+                self.siril.log(f"Updated current working directory to: {os.path.dirname(self.current_working_directory)}", LogColor.GREEN)
+        
         else:
         # Check to see if current working directory has a lights subdir
             while True:
@@ -164,12 +174,18 @@ class PreprocessingInterface:
                     self.siril.log(f"Updated current working directory to: {selected_dir}", LogColor.GREEN)
                     break
                 elif os.path.basename(selected_dir.lower()) == "lights":
-                    msg = "The selected folder is the 'lights' directory, please select the parent folder."
-                    self.siril.error_messagebox(f"{msg}", True)
-                    self.root.focus_force()
+                    msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
+                    answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
+                    if answer:
+                        self.siril.cmd("cd", "../")
+                        os.chdir(os.path.dirname(selected_dir))
+                        self.current_working_directory = os.path.dirname(selected_dir)
+                        self.cwd_label.set(f"Current working directory: {os.path.dirname(selected_dir)}")
+                        self.siril.log(f"Updated current working directory to: {os.path.dirname(selected_dir)}", LogColor.GREEN)
+                        break
                 else:
                     # If the user navigated to another invalid location
-                    msg = f"The selected folder must contain a subfolder named 'lights'.\nYou selected: {selected_dir}"
+                    msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}"
                     self.siril.log(msg, LogColor.SALMON)
                     self.siril.error_messagebox(msg, True)
         self.create_widgets()
