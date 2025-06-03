@@ -139,7 +139,7 @@ class PreprocessingInterface:
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label = tk.StringVar()
 
-        self.root.withdraw()  # Hide the main window
+        # self.root.withdraw()  # Hide the main window
         changed_cwd = False  # a way not to run the prompting loop
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
@@ -152,7 +152,7 @@ class PreprocessingInterface:
                 f"Current working directory: {self.current_working_directory}"
             )
             changed_cwd = True
-            self.root.deiconify()
+            # self.root.deiconify()
         elif os.path.basename(self.current_working_directory.lower()) == "lights":
             msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
             answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
@@ -170,7 +170,7 @@ class PreprocessingInterface:
                     LogColor.GREEN,
                 )
                 changed_cwd = True
-                self.root.deiconify()
+                # self.root.deiconify()
             else:
                 self.siril.log(
                     f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
@@ -216,7 +216,7 @@ class PreprocessingInterface:
                         f"Updated current working directory to: {selected_dir}",
                         LogColor.GREEN,
                     )
-                    self.root.deiconify()
+                    # self.root.deiconify()
                     break
 
                 elif os.path.basename(selected_dir.lower()) == "lights":
@@ -233,7 +233,7 @@ class PreprocessingInterface:
                             f"Updated current working directory to: {os.path.dirname(selected_dir)}",
                             LogColor.GREEN,
                         )
-                        self.root.deiconify()
+                        # self.root.deiconify()
                         break
                 else:
                     # If the user navigated to another invalid location
