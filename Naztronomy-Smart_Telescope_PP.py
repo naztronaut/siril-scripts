@@ -82,6 +82,7 @@ UI_DEFAULTS = {
 
 
 class PreprocessingInterface:
+
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} - v{VERSION}")
@@ -137,6 +138,9 @@ class PreprocessingInterface:
             pass
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label = tk.StringVar()
+
+        self.root.withdraw()  # Hide the main window
+        changed_cwd = False  # a way not to run the prompting loop
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
             self.siril.log(
@@ -147,6 +151,8 @@ class PreprocessingInterface:
             self.cwd_label.set(
                 f"Current working directory: {self.current_working_directory}"
             )
+            changed_cwd = True
+            self.root.deiconify()
         elif os.path.basename(self.current_working_directory.lower()) == "lights":
             msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
             answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
@@ -163,8 +169,16 @@ class PreprocessingInterface:
                     f"Updated current working directory to: {self.current_working_directory}",
                     LogColor.GREEN,
                 )
+                changed_cwd = True
+                self.root.deiconify()
+            else:
+                self.siril.log(
+                    f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
+                    LogColor.SALMON,
+                )
+                changed_cwd = False
 
-        else:
+        if not changed_cwd:
             # Check to see if current working directory has a lights subdir
             while True:
                 # Prompt user (https://github.com/j4321/tkFileBrowser)
@@ -185,9 +199,10 @@ class PreprocessingInterface:
 
                 if not selected_dir:
                     self.siril.log(
-                        "No directory selected. Prompting again...", LogColor.SALMON
+                        "Canceled selecting directory. Restart the script to try again.",
+                        LogColor.SALMON,
                     )
-                    continue
+                    break
 
                 lights_directory = os.path.join(selected_dir, "lights")
                 if os.path.isdir(lights_directory):
@@ -201,7 +216,9 @@ class PreprocessingInterface:
                         f"Updated current working directory to: {selected_dir}",
                         LogColor.GREEN,
                     )
+                    self.root.deiconify()
                     break
+
                 elif os.path.basename(selected_dir.lower()) == "lights":
                     msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
                     answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
@@ -216,12 +233,16 @@ class PreprocessingInterface:
                             f"Updated current working directory to: {os.path.dirname(selected_dir)}",
                             LogColor.GREEN,
                         )
+                        self.root.deiconify()
                         break
                 else:
                     # If the user navigated to another invalid location
-                    msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}"
+                    msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please run the script again."
                     self.siril.log(msg, LogColor.SALMON)
                     self.siril.error_messagebox(msg, True)
+                    # Note: Loop doesn't seem to run because UI is hidden but using root.deiconify() brings up the weird blank UI so I'm just closing the loop here
+                    continue
+
         self.create_widgets()
 
     # Dirname: lights, darks, biases, flats
