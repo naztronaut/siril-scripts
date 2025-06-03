@@ -171,18 +171,17 @@ class PreprocessingInterface:
                 prompt_title = (
                     "Select the parent directory containing the 'lights' directory"
                 )
-                if sys.platform.startswith("linux"):
-                    selected_dir = filedialog.askopendirname(
-                        parent=self.root,
-                        initialdir=self.current_working_directory,
-                        title=prompt_title,
-                    )
-                else:
-                    selected_dir = filedialog.askdirectory(
-                        parent=self.root,
-                        initialdir=self.current_working_directory,
-                        title=prompt_title,
-                    )
+                dir_dialog = (
+                    filedialog.askopendirname
+                    if sys.platform.startswith("linux")
+                    else filedialog.askdirectory
+                )
+
+                selected_dir = dir_dialog(
+                    parent=self.root,
+                    initialdir=self.current_working_directory,
+                    title=prompt_title,
+                )
 
                 if not selected_dir:
                     self.siril.log(
