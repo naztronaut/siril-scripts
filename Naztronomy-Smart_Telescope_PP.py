@@ -19,7 +19,9 @@ The following subdirectories are optional:
     biases/
 
 """
+
 import sirilpy as s
+
 s.ensure_installed("ttkthemes", "numpy", "astropy")
 from datetime import datetime
 import os
@@ -36,7 +38,6 @@ if sys.platform.startswith("linux"):
 else:
     from tkinter import filedialog
 
-
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "1.1.1"
 AUTHOR = "Nazmus Nasir"
@@ -46,7 +47,7 @@ TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
-    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"]
+    "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -138,40 +139,69 @@ class PreprocessingInterface:
         self.cwd_label = tk.StringVar()
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
-            self.siril.log(f"Current working directory is valid: {self.current_working_directory}", LogColor.GREEN)
+            self.siril.log(
+                f"Current working directory is valid: {self.current_working_directory}",
+                LogColor.GREEN,
+            )
             self.siril.cmd("cd", f'"{self.current_working_directory}"')
-            self.cwd_label.set(f"Current working directory: {self.current_working_directory}")
+            self.cwd_label.set(
+                f"Current working directory: {self.current_working_directory}"
+            )
         elif os.path.basename(self.current_working_directory.lower()) == "lights":
             msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
             answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
             if answer:
                 self.siril.cmd("cd", "../")
                 os.chdir(os.path.dirname(self.current_working_directory))
-                self.current_working_directory = os.path.dirname(self.current_working_directory)
-                self.cwd_label.set(f"Current working directory: {self.current_working_directory}")
-                self.siril.log(f"Updated current working directory to: {self.current_working_directory}", LogColor.GREEN)
-        
-        else:
-        # Check to see if current working directory has a lights subdir
-            while True:
-                # Prompt user (https://github.com/j4321/tkFileBrowser)
-                selected_dir = filedialog.askdirectory(
-                    parent=self.root,
-                    initialdir=self.current_working_directory,
-                    title="Select the parent directory containing the 'lights' directory"
+                self.current_working_directory = os.path.dirname(
+                    self.current_working_directory
+                )
+                self.cwd_label.set(
+                    f"Current working directory: {self.current_working_directory}"
+                )
+                self.siril.log(
+                    f"Updated current working directory to: {self.current_working_directory}",
+                    LogColor.GREEN,
                 )
 
+        else:
+            # Check to see if current working directory has a lights subdir
+            while True:
+                # Prompt user (https://github.com/j4321/tkFileBrowser)
+                prompt_title = (
+                    "Select the parent directory containing the 'lights' directory"
+                )
+                if sys.platform.startswith("linux"):
+                    selected_dir = filedialog.askopendirname(
+                        parent=self.root,
+                        initialdir=self.current_working_directory,
+                        title=prompt_title,
+                    )
+                else:
+                    selected_dir = filedialog.askdirectory(
+                        parent=self.root,
+                        initialdir=self.current_working_directory,
+                        title=prompt_title,
+                    )
+
                 if not selected_dir:
-                    self.siril.log("No directory selected. Prompting again...", LogColor.SALMON)
+                    self.siril.log(
+                        "No directory selected. Prompting again...", LogColor.SALMON
+                    )
                     continue
 
                 lights_directory = os.path.join(selected_dir, "lights")
                 if os.path.isdir(lights_directory):
                     self.siril.cmd("cd", f'"{selected_dir}"')
-                    os.chdir(selected_dir) # Need to change directory for python as well
+                    os.chdir(
+                        selected_dir
+                    )  # Need to change directory for python as well
                     self.current_working_directory = selected_dir
                     self.cwd_label.set(f"Current working directory: {selected_dir}")
-                    self.siril.log(f"Updated current working directory to: {selected_dir}", LogColor.GREEN)
+                    self.siril.log(
+                        f"Updated current working directory to: {selected_dir}",
+                        LogColor.GREEN,
+                    )
                     break
                 elif os.path.basename(selected_dir.lower()) == "lights":
                     msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
@@ -180,8 +210,13 @@ class PreprocessingInterface:
                         self.siril.cmd("cd", "../")
                         os.chdir(os.path.dirname(selected_dir))
                         self.current_working_directory = os.path.dirname(selected_dir)
-                        self.cwd_label.set(f"Current working directory: {os.path.dirname(selected_dir)}")
-                        self.siril.log(f"Updated current working directory to: {os.path.dirname(selected_dir)}", LogColor.GREEN)
+                        self.cwd_label.set(
+                            f"Current working directory: {os.path.dirname(selected_dir)}"
+                        )
+                        self.siril.log(
+                            f"Updated current working directory to: {os.path.dirname(selected_dir)}",
+                            LogColor.GREEN,
+                        )
                         break
                 else:
                     # If the user navigated to another invalid location
@@ -390,7 +425,11 @@ class PreprocessingInterface:
     def calibration_stack(self, seq_name):
         # not in /process dir here
         if seq_name == "flats":
-            if os.path.exists(os.path.join(self.current_working_directory, "process/biases_stacked.fit")):
+            if os.path.exists(
+                os.path.join(
+                    self.current_working_directory, "process/biases_stacked.fit"
+                )
+            ):
                 # Saves as pp_flats
                 self.siril.cmd("calibrate", "flats", "-bias=biases_stacked")
                 self.siril.cmd(
@@ -690,7 +729,6 @@ class PreprocessingInterface:
             font=("Segoe UI", 10, "bold"),
         ).pack(pady=(10, 10))
 
-
         ttk.Label(
             main_frame,
             textvariable=self.cwd_label,
@@ -951,7 +989,7 @@ class PreprocessingInterface:
                 clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
-        
+
         # Close button
         ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(
             pady=(15, 0), side=tk.RIGHT
