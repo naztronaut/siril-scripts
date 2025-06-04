@@ -86,7 +86,7 @@ class PreprocessingInterface:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} - v{VERSION}")
-        self.root.geometry("")
+        self.root.geometry("550x720+100+100")
         self.root.resizable(False, False)
 
         self.style = tksiril.standard_style()
