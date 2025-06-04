@@ -140,6 +140,7 @@ class PreprocessingInterface:
         self.cwd_label = tk.StringVar()
 
         self.root.withdraw()  # Hide the main window
+        self.root.update()  # Update the window
         changed_cwd = False  # a way not to run the prompting loop
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
