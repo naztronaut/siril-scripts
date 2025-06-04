@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.1.1
+Version: 1.0.0
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -39,7 +39,7 @@ else:
     from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "1.1.1"
+VERSION = "1.0.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
