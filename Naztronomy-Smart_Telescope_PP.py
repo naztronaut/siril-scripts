@@ -81,13 +81,44 @@ UI_DEFAULTS = {
 }
 
 
+class MacOSFriendlyDialog:
+    def __init__(self, parent):
+        self.parent = parent
+
+    def askdirectory(self, **kwargs):
+        """Dialogue de sélection de dossier optimisé pour macOS"""
+        if sys.platform == "darwin":
+            if self.parent:
+                original_state = self.parent.state()
+
+                self.parent.lift()
+                self.parent.focus_force()
+                self.parent.update_idletasks()
+
+                kwargs_copy = kwargs.copy()
+                if "parent" in kwargs_copy:
+                    del kwargs_copy["parent"]
+
+                result = filedialog.askdirectory(**kwargs_copy)
+
+                if original_state == "normal":
+                    self.parent.deiconify()
+                self.parent.lift()
+
+                return result
+
+        return filedialog.askdirectory(**kwargs)
+
+
 class PreprocessingInterface:
 
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} - v{VERSION}")
-        
-        self.root.geometry(f"575x720+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}")
+
+        self.root.geometry(
+            f"575x720+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
+        )
         self.root.resizable(False, False)
 
         self.style = tksiril.standard_style()
@@ -180,20 +211,20 @@ class PreprocessingInterface:
                 changed_cwd = False
 
         if not changed_cwd:
-            # Check to see if current working directory has a lights subdir
+            dialog_helper = MacOSFriendlyDialog(self.root)
+
             while True:
-                # Prompt user (https://github.com/j4321/tkFileBrowser)
                 prompt_title = (
                     "Select the parent directory containing the 'lights' directory"
                 )
-                dir_dialog = (
-                    filedialog.askopendirname
-                    if sys.platform.startswith("linux")
-                    else filedialog.askdirectory
-                )
 
-                selected_dir = dir_dialog(
-                    parent=self.root,
+                if sys.platform == "darwin":
+                    self.root.lift()
+                    self.root.attributes("-topmost", True)
+                    self.root.update()
+                    self.root.attributes("-topmost", False)
+
+                selected_dir = dialog_helper.askdirectory(
                     initialdir=self.current_working_directory,
                     title=prompt_title,
                 )
@@ -211,40 +242,33 @@ class PreprocessingInterface:
                 lights_directory = os.path.join(selected_dir, "lights")
                 if os.path.isdir(lights_directory):
                     self.siril.cmd("cd", f'"{selected_dir}"')
-                    os.chdir(
-                        selected_dir
-                    )  # Need to change directory for python as well
+                    os.chdir(selected_dir)
                     self.current_working_directory = selected_dir
                     self.cwd_label.set(f"Current working directory: {selected_dir}")
                     self.siril.log(
                         f"Updated current working directory to: {selected_dir}",
                         LogColor.GREEN,
                     )
-                    # self.root.deiconify()
                     break
 
                 elif os.path.basename(selected_dir.lower()) == "lights":
                     msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
                     answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
                     if answer:
-                        self.siril.cmd("cd", "../")
-                        os.chdir(os.path.dirname(selected_dir))
-                        self.current_working_directory = os.path.dirname(selected_dir)
-                        self.cwd_label.set(
-                            f"Current working directory: {os.path.dirname(selected_dir)}"
-                        )
+                        parent_dir = os.path.dirname(selected_dir)
+                        self.siril.cmd("cd", f'"{parent_dir}"')
+                        os.chdir(parent_dir)
+                        self.current_working_directory = parent_dir
+                        self.cwd_label.set(f"Current working directory: {parent_dir}")
                         self.siril.log(
-                            f"Updated current working directory to: {os.path.dirname(selected_dir)}",
+                            f"Updated current working directory to: {parent_dir}",
                             LogColor.GREEN,
                         )
-                        # self.root.deiconify()
                         break
                 else:
-                    # If the user navigated to another invalid location
-                    msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please run the script again."
+                    msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please try again."
                     self.siril.log(msg, LogColor.SALMON)
-                    self.siril.error_messagebox(msg, True)
-                    # Note: Loop doesn't seem to run because UI is hidden but using root.deiconify() brings up the weird blank UI so I'm just closing the loop here
+                    tk.messagebox.showerror("Invalid Directory", msg)
                     continue
 
         self.create_widgets()
