@@ -202,6 +202,9 @@ class PreprocessingInterface:
                         "Canceled selecting directory. Restart the script to try again.",
                         LogColor.SALMON,
                     )
+                    self.siril.disconnect()
+                    self.root.quit()
+                    self.root.destroy()
                     break
 
                 lights_directory = os.path.join(selected_dir, "lights")
