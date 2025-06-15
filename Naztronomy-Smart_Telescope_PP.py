@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.0.0
+Version: 1.0.1
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -20,10 +20,22 @@ The following subdirectories are optional:
 
 """
 
+"""
+CHANGELOG:
+
+1.0.1 - Fixed new bug to catch both result .fit or .fits
+  - added support autocrop script created by Gottfried Rotter
+  - minor refactoring to work with both result.fit and result.fits
+
+1.0.0 - initial release
+"""
+
+
 import sirilpy as s
 
 s.ensure_installed("ttkthemes", "numpy", "astropy")
 from datetime import datetime
+import time
 import os
 import sys
 import tkinter as tk
@@ -39,7 +51,7 @@ else:
     from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -134,6 +146,7 @@ class PreprocessingInterface:
 
         self.spcc_section = ttk.LabelFrame()
         self.spcc_checkbox_variable = None
+        self.autocrop_checkbox_variable = None
         self.telescope_options = TELESCOPES
         self.telescope_variable = tk.StringVar(value="ZWO Seestar S50")
         self.filter_variable = tk.StringVar(value="broadband")
@@ -564,49 +577,37 @@ class PreprocessingInterface:
     def save_image(self, suffix):
         """Saves the image as a FITS file."""
 
-        result_fit = "process/result.fit"
         current_datetime = datetime.now().strftime("%Y-%m-%d_%H%M")
 
-        if os.path.exists(result_fit):
-            with fits.open(result_fit) as hdul:
-                header = hdul[0].header
-                metadata = {
-                    "OBJECT": header.get("OBJECT", "Unknown"),
-                    "EXPTIME": int(header.get("EXPTIME", 0)),
-                    "STACKCNT": int(header.get("STACKCNT", 0)),
-                    "DATE-OBS": header.get("DATE-OBS", "1970-01-01T00:00:00"),
-                }
+        # Default filename
+        file_name = f"result_drizzle-{self.drizzle_factor}x__{current_datetime}{suffix}"
 
-            object_name = metadata["OBJECT"].replace(" ", "_")
-            exptime = metadata["EXPTIME"]
-            stack_count = metadata["STACKCNT"]
-            date_obs = metadata["DATE-OBS"]
+        # Get header info from loaded image for filename
+        current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
 
-            try:
-                dt = datetime.fromisoformat(date_obs)
-                date_obs_str = dt.strftime("%Y-%m-%d")
-            except ValueError:
-                date_obs_str = datetime.now().strftime("%Y%m%d")
+        object_name = current_fits_headers.get("OBJECT", "Unknown").replace(" ", "_")
+        exptime = int(current_fits_headers.get("EXPTIME", 0))
+        stack_count = int(current_fits_headers.get("STACKCNT", 0))
+        date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
 
-            file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}"
-            if self.drizzle_status:
-                file_name += f"_drizzle-{self.drizzle_factor}x"
+        try:
+            dt = datetime.fromisoformat(date_obs)
+            date_obs_str = dt.strftime("%Y-%m-%d")
+        except ValueError:
+            date_obs_str = datetime.now().strftime("%Y%m%d")
 
-            file_name += f"__{current_datetime}{suffix}"
+        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}"
+        if self.drizzle_status:
+            file_name += f"_drizzle-{self.drizzle_factor}x"
 
-        else:
-            file_name = (
-                f"result_drizzle-{self.drizzle_factor}x__{current_datetime}{suffix}"
-            )
-        # current_datetime = datetime.now().strftime("%Y%m%d_%H%M")
-        # file_name = f"$OBJECT:%s$_$STACKCNT:%d$x$EXPTIME:%d$sec_$DATE-OBS:dt${current_datetime}{suffix}"
-        # file_name = f"{current_datetime}{suffix}"
+        file_name += f"__{current_datetime}{suffix}"
 
         try:
             self.siril.cmd(
                 "save",
-                f"../{file_name}",
+                f"{file_name}",
             )
+            return file_name
         except s.CommandError as e:
             self.siril.error_messagebox(f"save command failed: {e}")
             self.close_dialog()
@@ -628,6 +629,16 @@ class PreprocessingInterface:
             self.siril.error_messagebox(f"Plate solve command failed: {e}")
             self.close_dialog()
         self.siril.log("Platesolved image", LogColor.GREEN)
+
+    def autocrop(self):
+        try:
+            self.siril.cmd("pyscript", "autocrop.py", "--refinecrop", "--loadimage")
+            # Giving autocrop enough time to finish - future versions of autocrop should return something or turn off threading
+            time.sleep(45)
+        except s.CommandError as e:
+            self.siril.error_messagebox(f"Autocrop command failed: {e}")
+            self.close_dialog()
+        self.siril.log("Autocropped image", LogColor.GREEN)
 
     def spcc(
         self,
@@ -671,8 +682,9 @@ class PreprocessingInterface:
                 self.siril.error_messagebox(f"SPCC command failed: {e}")
                 self.close_dialog()
 
-            self.save_image("_spcc")
-            self.siril.log("SPCC'd image", LogColor.GREEN)
+            img = self.save_image("_spcc")
+            self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
+            return img
 
     def load_image(self, image_name):
         """Loads the result."""
@@ -704,7 +716,7 @@ class PreprocessingInterface:
             process_dir = self.current_working_directory
         for f in os.listdir(process_dir):
             # Skip the stacked file
-            if f == f"{prefix}_stacked.fit" or f == "result.fit":
+            if f == f"{prefix}_stacked.fit" or f == "result.fit" or f == "result.fits":
                 continue
 
             # Check if file starts with prefix_ or pp_flats_
@@ -753,7 +765,8 @@ class PreprocessingInterface:
             "5. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
             "6. Feathering is not available for 2048+ Mode.\n"
             "7. If you use 2048+ Mode, you can either choose Drizzle or SPCC. Choosing both will result in an error.\n"
-            "8. When asking for help, please have the logs handy."
+            "8. Autocrop calls another script and has a wait time of 45 seconds. "
+            "9. When asking for help, please have the logs handy."
         )
         self.siril.info_messagebox(help_text, True)
         self.siril.log(help_text, LogColor.BLUE)
@@ -959,6 +972,22 @@ class PreprocessingInterface:
         self.spcc_section = ttk.LabelFrame(main_frame, text="Post-Stacking", padding=10)
         self.spcc_section.pack(fill=tk.X, pady=5)
 
+
+        # Autocrop checkbox start
+        self.autocrop_checkbox_variable = tk.BooleanVar()
+
+        ttk.Checkbutton(
+            self.spcc_section,
+            text="Autocrop?",
+            variable=self.autocrop_checkbox_variable,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
+            pady=(15, 0), side=tk.LEFT
+        )
+
+        # Autocrop Checkbox end
+
         self.spcc_checkbox_variable = tk.BooleanVar()
 
         def toggle_filter_and_gaia():
@@ -971,10 +1000,10 @@ class PreprocessingInterface:
             text="Enable Spectrophotometric Color Calibration (SPCC)",
             variable=self.spcc_checkbox_variable,
             command=toggle_filter_and_gaia,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
 
         ttk.Label(self.spcc_section, text="OSC Filter:", style="Bold.TLabel").grid(
-            row=1, column=0, sticky="w"
+            row=2, column=0, sticky="w"
         )
 
         # filter_options = ["broadband", "narrowband"]
@@ -984,18 +1013,18 @@ class PreprocessingInterface:
             "No Filter (Broadband)",
             *self.current_filter_options,
         )
-        self.filter_menu.grid(row=1, column=1, sticky="w")
+        self.filter_menu.grid(row=2, column=1, sticky="w")
         self.filter_menu["state"] = tk.DISABLED
 
         ttk.Label(self.spcc_section, text="Catalog:", style="Bold.TLabel").grid(
-            row=2, column=0, sticky="w"
+            row=3, column=0, sticky="w"
         )
         catalog_variable = tk.StringVar(value="localgaia")
         catalog_options = ["localgaia", "gaia"]
         catalog_menu = ttk.OptionMenu(
             self.spcc_section, catalog_variable, "localgaia", *catalog_options
         )
-        catalog_menu.grid(row=2, column=1, sticky="w")
+        catalog_menu.grid(row=3, column=1, sticky="w")
         catalog_menu["state"] = tk.DISABLED
 
         if self.gaia_catalogue_available:
@@ -1004,15 +1033,13 @@ class PreprocessingInterface:
                 text="✓ Local Gaia Available",
                 foreground="green",
                 style="Success.TLabel",
-            ).grid(row=2, column=2, sticky="w")
+            ).grid(row=3, column=2, sticky="w")
         else:
             ttk.Label(
                 self.spcc_section, text="✗ Local Gaia Not available", foreground="red"
-            ).grid(row=2, column=2, sticky="w")
+            ).grid(row=3, column=2, sticky="w")
 
-        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
-            pady=(15, 0), side=tk.LEFT
-        )
+        
 
         # Run button
         ttk.Button(
@@ -1034,6 +1061,7 @@ class PreprocessingInterface:
                 pixel_fraction=pixel_fraction_spinbox.get(),
                 feather=feather_checkbox_variable.get(),
                 feather_amount=feather_amount_spinbox.get(),
+                do_autocrop=self.autocrop_checkbox_variable.get(),
                 clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
@@ -1064,6 +1092,7 @@ class PreprocessingInterface:
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
+        do_autocrop: bool = False,
         clean_up_files: bool = False,
     ):
         self.siril.log(
@@ -1082,6 +1111,7 @@ class PreprocessingInterface:
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}"
+            f"autocrop={do_autocrop}\n"
             f"clean_up_files={clean_up_files}",
             LogColor.BLUE,
         )
@@ -1153,18 +1183,41 @@ class PreprocessingInterface:
         if self.fitseq_mode:
             self.image_plate_solve()
 
-        self.save_image("_og")
+        # Go back to working dir
+        self.siril.cmd("cd", "../")
+
+        # Save og image in WD
+        img = self.save_image("_og")
+        # load og image for autocrop/spcc
+        if drizzle:
+            img = os.path.basename(img) + ".fits"
+        else: 
+            img = os.path.basename(img)
+        self.load_image(image_name=img)
+
+        # If autocrop
+        # crop and save as _og_cropped or spcc cropped
+
+        if do_autocrop:
+            self.autocrop()
 
         if do_spcc:
-            self.spcc(
+            img = self.spcc(
                 oscsensor=telescope,
                 filter=filter,
                 catalog=catalog,
                 whiteref="Average Spiral Galaxy",
             )
 
-        self.autostretch(do_spcc=do_spcc)
-        self.siril.cmd("cd", "../")
+            # self.autostretch(do_spcc=do_spcc)
+            if drizzle:
+                img = os.path.basename(img) + ".fits"
+            else: 
+                img = os.path.basename(img)
+            self.load_image(
+                image_name=os.path.basename(img)
+            )  # Load either og or spcc image
+
         # self.clean_up()
         self.close_dialog()
 
