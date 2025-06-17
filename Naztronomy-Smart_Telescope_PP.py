@@ -25,7 +25,7 @@ CHANGELOG:
 
 1.0.1 - Fixed new bug to catch both result .fit or .fits
   - added support autocrop script created by Gottfried Rotter
-  - minor refactoring to work with both result.fit and result.fits
+  - minor refactoring to work with both .fit and .fits outputs (e.g. result.fit vs result.fits)
 
 1.0.0 - initial release
 """
@@ -45,20 +45,23 @@ from ttkthemes import ThemedTk
 from astropy.io import fits
 import numpy as np
 
-if sys.platform.startswith("linux"):
-    import sirilpy.tkfilebrowser as filedialog
-else:
-    from tkinter import filedialog
+# Uncomment this once beta3 is released
+#if sys.platform.startswith("linux"):
+#    import sirilpy.tkfilebrowser as filedialog
+#else:
+#    from tkinter import filedialog
+from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "1.0.1"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
+TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 2" ,"Dwarf 3"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
+    "Dwarf 2": ["No filter"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
 }
 
@@ -72,6 +75,18 @@ FILTER_COMMANDS_MAP = {
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
     },
     "Dwarf 3": {
+        "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
+        "Dual-Band": [
+            "-narrowband",
+            "-rwl=656.28",
+            "-rbw=18",
+            "-gwl=500.70",
+            "-gbw=30",
+            "-bwl=500.70",
+            "-bbw=30",
+        ],
+    },
+    "Dwarf 2": {
         "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
         "Dual-Band": [
             "-narrowband",
@@ -336,6 +351,8 @@ class PreprocessingInterface:
                 f"Converted {file_count} {dir_name} files for processing!",
                 LogColor.GREEN,
             )
+            # # check for dwarf 2 or other scopes
+            # self.update_lights_fits_headers(dir_name)
         else:
             self.siril.error_messagebox(f"Directory {directory} does not exist", True)
             raise NoImageError(
@@ -343,13 +360,40 @@ class PreprocessingInterface:
                     f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
                 )
             )
+        
+    def update_lights_fits_headers(self, dir_name: str, folder: str = "process"):
+        """
+        If telescope is 'dwarf 2', add FOCALLEN=100 to all FITS files in `process` dir
+        """
+        print(self.telescope_variable.get())
+        if self.telescope_variable.get() != "Dwarf 2":
+            return
+
+        for idx, filename in enumerate(sorted(os.listdir(folder))):
+            if filename.lower().startswith(dir_name.lower()) and filename.lower().endswith((".fit", ".fits")):
+                full_path = os.path.join(folder, filename)
+                try:
+                    with fits.open(full_path, mode='update') as hdul:
+                        hdr = hdul[0].header
+                        if 'FOCALLEN' not in hdr:
+                            hdr['FOCALLEN'] = 100
+                except Exception as e:
+                    self.siril.log(f"[{idx}] Failed to update {full_path}: {e}", LogColor.SALMON)
+
+        self.siril.log("Detected nonstandard headers, fits files updated accordingly", LogColor.GREEN)
+
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name):
         """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
+        args = ["seqplatesolve", seq_name, "-nocache", "-force", "-disto=ps_distortion"]
+
+        # If D2, blind solve the sequence. 
+        if self.telescope_variable.get() == "Dwarf 2":
+            args.extend(["-localasnet", "-blindpos", "-blindres"])
         try:
             self.siril.cmd(
-                "seqplatesolve", seq_name, "-nocache", "-force", "-disto=ps_distortion"
+                *args
             )
         except s.DataError as e:
             self.siril.error_messagebox(f"seqplatesolve failed: {e}")
@@ -655,7 +699,7 @@ class PreprocessingInterface:
         else:
             recoded_sensor = oscsensor
             """SPCC with oscsensor, filter, catalog, and whiteref."""
-            if oscsensor == "Dwarf 3":
+            if oscsensor in ["Dwarf 2", "Dwarf 3"]:
                 recoded_sensor = "Sony IMX678"
             else:
                 recoded_sensor = oscsensor
@@ -716,7 +760,8 @@ class PreprocessingInterface:
             process_dir = self.current_working_directory
         for f in os.listdir(process_dir):
             # Skip the stacked file
-            if f == f"{prefix}_stacked.fit" or f == "result.fit" or f == "result.fits":
+            name, ext = os.path.splitext(f.lower())
+            if name in (f"{prefix}_stacked", "result") and ext in (".fit", ".fits"):
                 continue
 
             # Check if file starts with prefix_ or pp_flats_
