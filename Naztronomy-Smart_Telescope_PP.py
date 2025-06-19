@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.0.1
+Version: 1.0.2
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -23,10 +23,9 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-1.0.1 - Fixed new bug to catch both result .fit or .fits
+1.0.2 - Allowing resize of UI 
+1.0.1 - minor refactoring to work with both .fit and .fits outputs (e.g. result.fit vs result.fits)
   - added support autocrop script created by Gottfried Rotter
-  - minor refactoring to work with both .fit and .fits outputs (e.g. result.fit vs result.fits)
-
 1.0.0 - initial release
 """
 
@@ -46,9 +45,9 @@ from astropy.io import fits
 import numpy as np
 
 # Uncomment this once beta3 is released
-#if sys.platform.startswith("linux"):
+# if sys.platform.startswith("linux"):
 #    import sirilpy.tkfilebrowser as filedialog
-#else:
+# else:
 #    from tkinter import filedialog
 from tkinter import filedialog
 
@@ -57,11 +56,10 @@ VERSION = "1.0.1"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 2" ,"Dwarf 3"]
+TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
-    "Dwarf 2": ["No filter"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
 }
 
@@ -75,18 +73,6 @@ FILTER_COMMANDS_MAP = {
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
     },
     "Dwarf 3": {
-        "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
-        "Dual-Band": [
-            "-narrowband",
-            "-rwl=656.28",
-            "-rbw=18",
-            "-gwl=500.70",
-            "-gbw=30",
-            "-bwl=500.70",
-            "-bbw=30",
-        ],
-    },
-    "Dwarf 2": {
         "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
         "Dual-Band": [
             "-narrowband",
@@ -144,9 +130,9 @@ class PreprocessingInterface:
         self.root.title(f"{APP_NAME} - v{VERSION}")
 
         self.root.geometry(
-            f"575x720+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
+            f"575x760+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
         )
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
 
         self.style = tksiril.standard_style()
 
@@ -351,8 +337,6 @@ class PreprocessingInterface:
                 f"Converted {file_count} {dir_name} files for processing!",
                 LogColor.GREEN,
             )
-            # # check for dwarf 2 or other scopes
-            # self.update_lights_fits_headers(dir_name)
         else:
             self.siril.error_messagebox(f"Directory {directory} does not exist", True)
             raise NoImageError(
@@ -360,41 +344,13 @@ class PreprocessingInterface:
                     f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
                 )
             )
-        
-    def update_lights_fits_headers(self, dir_name: str, folder: str = "process"):
-        """
-        If telescope is 'dwarf 2', add FOCALLEN=100 to all FITS files in `process` dir
-        """
-        print(self.telescope_variable.get())
-        if self.telescope_variable.get() != "Dwarf 2":
-            return
-
-        for idx, filename in enumerate(sorted(os.listdir(folder))):
-            if filename.lower().startswith(dir_name.lower()) and filename.lower().endswith((".fit", ".fits")):
-                full_path = os.path.join(folder, filename)
-                try:
-                    with fits.open(full_path, mode='update') as hdul:
-                        hdr = hdul[0].header
-                        if 'FOCALLEN' not in hdr:
-                            hdr['FOCALLEN'] = 100
-                except Exception as e:
-                    self.siril.log(f"[{idx}] Failed to update {full_path}: {e}", LogColor.SALMON)
-
-        self.siril.log("Detected nonstandard headers, fits files updated accordingly", LogColor.GREEN)
-
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name):
         """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
         args = ["seqplatesolve", seq_name, "-nocache", "-force", "-disto=ps_distortion"]
-
-        # If D2, blind solve the sequence. 
-        if self.telescope_variable.get() == "Dwarf 2":
-            args.extend(["-localasnet", "-blindpos", "-blindres"])
         try:
-            self.siril.cmd(
-                *args
-            )
+            self.siril.cmd(*args)
         except s.DataError as e:
             self.siril.error_messagebox(f"seqplatesolve failed: {e}")
             self.close_dialog()
@@ -678,11 +634,17 @@ class PreprocessingInterface:
         try:
             self.siril.cmd("pyscript", "autocrop.py", "--refinecrop", "--loadimage")
             # Giving autocrop enough time to finish - future versions of autocrop should return something or turn off threading
-            time.sleep(45)
+            time.sleep(30)
         except s.CommandError as e:
-            self.siril.error_messagebox(f"Autocrop command failed: {e}")
-            self.close_dialog()
-        self.siril.log("Autocropped image", LogColor.GREEN)
+            self.siril.log(
+                "Autocrop Failed, autocrop.py script may not be available, continuing without autocropping",
+                LogColor.SALMON,
+            )
+            # self.siril.log(f"Autocrop command failed: {e}", LogColor.SALMON)
+        self.siril.log(
+            "Autocropped image successfully. To access the uncropped image, look for the files withoout 'autocrop' in the filename.",
+            LogColor.GREEN,
+        )
 
     def spcc(
         self,
@@ -699,7 +661,7 @@ class PreprocessingInterface:
         else:
             recoded_sensor = oscsensor
             """SPCC with oscsensor, filter, catalog, and whiteref."""
-            if oscsensor in ["Dwarf 2", "Dwarf 3"]:
+            if oscsensor in ["Dwarf 3"]:
                 recoded_sensor = "Sony IMX678"
             else:
                 recoded_sensor = oscsensor
@@ -810,7 +772,7 @@ class PreprocessingInterface:
             "5. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
             "6. Feathering is not available for 2048+ Mode.\n"
             "7. If you use 2048+ Mode, you can either choose Drizzle or SPCC. Choosing both will result in an error.\n"
-            "8. Autocrop calls another script and has a wait time of 45 seconds. "
+            "8. Autocrop calls another script and has a wait time of 45 seconds.\n"
             "9. When asking for help, please have the logs handy."
         )
         self.siril.info_messagebox(help_text, True)
@@ -1017,18 +979,19 @@ class PreprocessingInterface:
         self.spcc_section = ttk.LabelFrame(main_frame, text="Post-Stacking", padding=10)
         self.spcc_section.pack(fill=tk.X, pady=5)
 
-
         # Autocrop checkbox start
         self.autocrop_checkbox_variable = tk.BooleanVar()
 
-        ttk.Checkbutton(
+        autocrop_checkbox = ttk.Checkbutton(
             self.spcc_section,
             text="Autocrop?",
             variable=self.autocrop_checkbox_variable,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        )
+        autocrop_checkbox.grid(row=0, column=0, columnspan=2, sticky="w")
 
-        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
-            pady=(15, 0), side=tk.LEFT
+        tksiril.create_tooltip(
+            autocrop_checkbox,
+            "This will only work if you have the Autocrop.py script downloaded!",
         )
 
         # Autocrop Checkbox end
@@ -1084,7 +1047,9 @@ class PreprocessingInterface:
                 self.spcc_section, text="✗ Local Gaia Not available", foreground="red"
             ).grid(row=3, column=2, sticky="w")
 
-        
+        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
+            pady=(15, 0), side=tk.LEFT
+        )
 
         # Run button
         ttk.Button(
@@ -1236,7 +1201,7 @@ class PreprocessingInterface:
         # load og image for autocrop/spcc
         if drizzle:
             img = os.path.basename(img) + ".fits"
-        else: 
+        else:
             img = os.path.basename(img)
         self.load_image(image_name=img)
 
@@ -1257,7 +1222,7 @@ class PreprocessingInterface:
             # self.autostretch(do_spcc=do_spcc)
             if drizzle:
                 img = os.path.basename(img) + ".fits"
-            else: 
+            else:
                 img = os.path.basename(img)
             self.load_image(
                 image_name=os.path.basename(img)
