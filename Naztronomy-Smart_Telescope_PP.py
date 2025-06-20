@@ -147,7 +147,7 @@ class PreprocessingInterface:
 
         self.spcc_section = ttk.LabelFrame()
         self.spcc_checkbox_variable = None
-        self.autocrop_checkbox_variable = None
+        # self.autocrop_checkbox_variable = None
         self.telescope_options = TELESCOPES
         self.telescope_variable = tk.StringVar(value="ZWO Seestar S50")
         self.filter_variable = tk.StringVar(value="broadband")
@@ -630,21 +630,21 @@ class PreprocessingInterface:
             self.close_dialog()
         self.siril.log("Platesolved image", LogColor.GREEN)
 
-    def autocrop(self):
-        try:
-            self.siril.cmd("pyscript", "autocrop.py", "--refinecrop", "--loadimage")
-            # Giving autocrop enough time to finish - future versions of autocrop should return something or turn off threading
-            time.sleep(30)
-        except s.CommandError as e:
-            self.siril.log(
-                "Autocrop Failed, autocrop.py script may not be available, continuing without autocropping",
-                LogColor.SALMON,
-            )
-            # self.siril.log(f"Autocrop command failed: {e}", LogColor.SALMON)
-        self.siril.log(
-            "Autocropped image successfully. To access the uncropped image, look for the files withoout 'autocrop' in the filename.",
-            LogColor.GREEN,
-        )
+    # def autocrop(self):
+    #     try:
+    #         self.siril.cmd("pyscript", "autocrop.py", "--refinecrop", "--loadimage")
+    #         # Giving autocrop enough time to finish - future versions of autocrop should return something or turn off threading
+    #         time.sleep(30)
+    #     except s.CommandError as e:
+    #         self.siril.log(
+    #             "Autocrop Failed, autocrop.py script may not be available, continuing without autocropping",
+    #             LogColor.SALMON,
+    #         )
+    #         # self.siril.log(f"Autocrop command failed: {e}", LogColor.SALMON)
+    #     self.siril.log(
+    #         "Autocropped image successfully. To access the uncropped image, look for the files withoout 'autocrop' in the filename.",
+    #         LogColor.GREEN,
+    #     )
 
     def spcc(
         self,
@@ -980,19 +980,19 @@ class PreprocessingInterface:
         self.spcc_section.pack(fill=tk.X, pady=5)
 
         # Autocrop checkbox start
-        self.autocrop_checkbox_variable = tk.BooleanVar()
+        # self.autocrop_checkbox_variable = tk.BooleanVar()
 
-        autocrop_checkbox = ttk.Checkbutton(
-            self.spcc_section,
-            text="Autocrop?",
-            variable=self.autocrop_checkbox_variable,
-        )
-        autocrop_checkbox.grid(row=0, column=0, columnspan=2, sticky="w")
+        # autocrop_checkbox = ttk.Checkbutton(
+        #     self.spcc_section,
+        #     text="Autocrop?",
+        #     variable=self.autocrop_checkbox_variable,
+        # )
+        # autocrop_checkbox.grid(row=0, column=0, columnspan=2, sticky="w")
 
-        tksiril.create_tooltip(
-            autocrop_checkbox,
-            "This will only work if you have the Autocrop.py script downloaded!",
-        )
+        # tksiril.create_tooltip(
+        #     autocrop_checkbox,
+        #     "This will only work if you have the Autocrop.py script downloaded!",
+        # )
 
         # Autocrop Checkbox end
 
@@ -1071,7 +1071,7 @@ class PreprocessingInterface:
                 pixel_fraction=pixel_fraction_spinbox.get(),
                 feather=feather_checkbox_variable.get(),
                 feather_amount=feather_amount_spinbox.get(),
-                do_autocrop=self.autocrop_checkbox_variable.get(),
+                # do_autocrop=self.autocrop_checkbox_variable.get(),
                 clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
@@ -1102,7 +1102,7 @@ class PreprocessingInterface:
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
-        do_autocrop: bool = False,
+        # do_autocrop: bool = False,
         clean_up_files: bool = False,
     ):
         self.siril.log(
@@ -1121,7 +1121,7 @@ class PreprocessingInterface:
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}"
-            f"autocrop={do_autocrop}\n"
+            # f"autocrop={do_autocrop}\n"
             f"clean_up_files={clean_up_files}",
             LogColor.BLUE,
         )
@@ -1208,8 +1208,8 @@ class PreprocessingInterface:
         # If autocrop
         # crop and save as _og_cropped or spcc cropped
 
-        if do_autocrop:
-            self.autocrop()
+        # if do_autocrop:
+        #     self.autocrop()
 
         if do_spcc:
             img = self.spcc(
