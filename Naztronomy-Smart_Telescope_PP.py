@@ -1200,7 +1200,7 @@ class PreprocessingInterface:
         img = self.save_image("_og")
         # load og image for autocrop/spcc
         if drizzle:
-            img = os.path.basename(img) + ".fits"
+            img = os.path.basename(img) + ".fit"
         else:
             img = os.path.basename(img)
         self.load_image(image_name=img)
@@ -1221,7 +1221,7 @@ class PreprocessingInterface:
 
             # self.autostretch(do_spcc=do_spcc)
             if drizzle:
-                img = os.path.basename(img) + ".fits"
+                img = os.path.basename(img) + ".fit"
             else:
                 img = os.path.basename(img)
             self.load_image(
