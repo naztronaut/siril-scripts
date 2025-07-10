@@ -23,7 +23,9 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-1.0.2 - Allowing resize of UI 
+1.1.0 - Minor version update:
+      - Added Batching support for 2000+ files on Windows
+      - Removed Autocrop due to reported errors
 1.0.1 - minor refactoring to work with both .fit and .fits outputs (e.g. result.fit vs result.fits)
   - added support autocrop script created by Gottfried Rotter
 1.0.0 - initial release
@@ -93,6 +95,7 @@ UI_DEFAULTS = {
     "feather_amount": 20.0,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
+    "max_files_per_batch": 2000
 }
 
 
@@ -132,7 +135,7 @@ class PreprocessingInterface:
         self.root.title(f"{APP_NAME} - v{VERSION}")
 
         self.root.geometry(
-            f"575x760+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
+            f"575x660+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
         )
         self.root.resizable(True, True)
 
@@ -141,9 +144,7 @@ class PreprocessingInterface:
         self.siril = s.SirilInterface()
 
         # Flags for mosaic mode and drizzle status
-        # If mosaic mode, fitseq will be used but cannot use framing max
         # if drizzle is off, images will be debayered on convert
-        self.fitseq_mode = False
         self.drizzle_status = False
         self.drizzle_factor = 0
 
@@ -304,17 +305,6 @@ class PreprocessingInterface:
                 ]
             )
 
-            # if (
-            #     sys.platform.startswith("win")
-            #     # and not self.fitseq_mode
-            #     and dir_name == "lights"
-            #     and file_count > 2048
-            # ):
-            #     self.siril.error_messagebox(
-            #         "More than 2048 images found on this Windows machine. Please select '2048+ Mode' and try again."
-            #     )
-            #     self.close_dialog()
-
             try:
                 args = ["convert", dir_name, "-out=../process"]
                 if "lights" in dir_name.lower():
@@ -359,10 +349,6 @@ class PreprocessingInterface:
             self.close_dialog()
         self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
 
-    def seq_graxpert_bg_extract(self):
-        """Runs Graxpert to extract bg for each file in the sequence. Uses GPU if available."""
-        self.siril.cmd("seqgraxpert_bg", "lights_", "-gpu")
-
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
         try:
@@ -374,18 +360,14 @@ class PreprocessingInterface:
 
     def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction):
         """Apply Existing Registration to the sequence."""
-        if self.fitseq_mode:
-            cmd_args = ["register", seq_name]
-
-        else:
-            cmd_args = [
-                "seqapplyreg",
-                seq_name,
-                "-filter-round=2.5k",
-                # "-filter-fwhm=2k",
-                "-kernel=square",
-                "-framing=max",
-            ]
+        cmd_args = [
+            "seqapplyreg",
+            seq_name,
+            "-filter-round=2.5k",
+            # "-filter-fwhm=2k",
+            "-kernel=square",
+            "-framing=max",
+        ]
         if self.drizzle_status:
             cmd_args.extend(
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
@@ -396,16 +378,6 @@ class PreprocessingInterface:
             self.siril.cmd(*cmd_args)
         except s.DataError as e:
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
-
-        # Need the extra reg for fitseq
-        if self.fitseq_mode:
-            try:
-                self.siril.cmd(
-                    "seqapplyreg", seq_name, "-filter-round=2.5k", "-filter-fwhm=2k"
-                )
-            except s.DataError as e:
-                self.siril.error_messagebox(f"seqapplyreg failed for fitseq: {e}")
-                self.close_dialog()
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
 
@@ -545,13 +517,14 @@ class PreprocessingInterface:
             self.siril.error_messagebox(f"Command execution failed: {e}")
             self.close_dialog()
 
-    def seq_stack(self, seq_name, feather, feather_amount, output_name=None):
+    def seq_stack(self, seq_name, feather, feather_amount, rejection=False, output_name=None):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
 
         cmd_args = [
             "stack",
-            f"{seq_name} rej 3 3",
+            f"{seq_name}", 
+            " rej 3 3" if rejection else " rej none",
             "-norm=addscale",
             "-output_norm",
             "-rgb_equal",
@@ -559,8 +532,7 @@ class PreprocessingInterface:
             "-filter-included",
             f"-out={out}",
         ]
-        if not self.fitseq_mode and feather and feather_amount is not None:
-            cmd_args.append(f"-feather={feather_amount}")
+        cmd_args.append(f"-feather={feather_amount}")
 
         self.siril.log(
             f"Running seq_stack with arguments:\n"
@@ -773,14 +745,12 @@ class PreprocessingInterface:
             "Discord: https://discord.gg/yXKqrawpjr\n\n"
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
-            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases"
-            "3. 2048+ Mode is only for Windows. Checking/Unchecking in Linux/Mac won't do anything.\n"
-            "4. 2048+ Mode cannot do Mosaics at the moment!\n"
-            "5. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "6. Feathering is not available for 2048+ Mode.\n"
-            "7. If you use 2048+ Mode, you can either choose Drizzle or SPCC. Choosing both will result in an error.\n"
-            "8. Autocrop calls another script and has a wait time of 45 seconds.\n"
-            "9. When asking for help, please have the logs handy."
+            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
+            f"3. If on Windows and you have more than {UI_DEFAULTS["max_files_per_batch"]} files, this script will automatically split them into batches.\n"
+            "4. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
+            "5. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
+            "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
+            "7. When asking for help, please have the logs handy."
         )
         self.siril.info_messagebox(help_text, True)
         self.siril.log(help_text, LogColor.BLUE)
@@ -856,28 +826,8 @@ class PreprocessingInterface:
         cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
         tksiril.create_tooltip(
             cleanup_checkbox,
-            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.",
-        )
-
-        # Mode to handle >2048 files
-        telescope_section.pack(fill=tk.X, pady=5)
-
-        ttk.Label(telescope_section, text="2048+ Files:", style="Bold.TLabel").grid(
-            row=3, column=0, sticky="w"
-        )
-
-        fitseq_checkbox_variable = tk.BooleanVar()
-
-        fitseq_checkbox = ttk.Checkbutton(
-            telescope_section, text="Enable", variable=fitseq_checkbox_variable
-        )
-        fitseq_checkbox.grid(row=3, column=1, columnspan=2, sticky="w", padx=5, pady=10)
-
-        # Add tooltip to the one and only checkbox
-        tksiril.create_tooltip(
-            fitseq_checkbox,
-            "Enable this option if you have more than 2048 images to process. A different workflow will be used and the sequence will not be plate solved and the framing method will be default."
-            "This can affect how large mosaic sessions look.",
+            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n" \
+            "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
         )
 
         # Optional Preprocessing Steps
@@ -955,12 +905,6 @@ class PreprocessingInterface:
             calib_section, text="Feather?", variable=feather_checkbox_variable
         )
         feather_checkbox.grid(row=5, column=1, sticky="w")
-        fitseq_checkbox_variable.trace_add(
-            "write",
-            lambda *args: feather_checkbox.config(
-                state=tk.DISABLED if fitseq_checkbox_variable.get() else tk.NORMAL
-            ),
-        )
 
         feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
         feather_amount_label.grid(row=5, column=2, sticky="w")
@@ -1064,7 +1008,6 @@ class PreprocessingInterface:
             text="Run",
             width=10,
             command=lambda: self.run_script(
-                # fitseq_mode=fitseq_checkbox_variable.get(),
                 do_spcc=self.spcc_checkbox_variable.get(),
                 filter=self.filter_variable.get(),
                 telescope=self.telescope_variable.get(),
@@ -1085,10 +1028,6 @@ class PreprocessingInterface:
 
         # Close button
         ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(
-            pady=(15, 0), side=tk.RIGHT
-        )
-        # Close button
-        ttk.Button(main_frame, text="SEQPLATE", width=10, command=lambda: self.seq_plate_solve("batch_lights2")).pack(
             pady=(15, 0), side=tk.RIGHT
         )
 
@@ -1112,6 +1051,7 @@ class PreprocessingInterface:
         clean_up_files: bool = False,
     ):
         # If we're batching, force cleanup files so we don't collide with existing files
+        self.siril.cmd("close")
         if output_name.startswith("batch_lights"):
             clean_up_files = True
 
@@ -1161,6 +1101,7 @@ class PreprocessingInterface:
             seq_name=seq_name,
             feather=feather,
             feather_amount=feather_amount,
+            rejection=True,
             output_name=output_name,
         )
 
@@ -1183,13 +1124,28 @@ class PreprocessingInterface:
     
     
     def unselect_bad_fits(self, seq_name, folder="process"):
+        """
+        Checks all FITS files in the given folder with the given prefix
+        for integrity and unselects any bad ones in the current sequence
+        in Siril.
+
+        Parameters
+        ----------
+        seq_name : str
+            The prefix of the sequence to check.
+        folder : str, optional
+            The folder to check for FITS files. Defaults to "process".
+
+        Returns
+        -------
+        None
+        """
         self.siril.log("Checking for bad FITS files...", LogColor.BLUE)
         bad_fits = []
         all_files = sorted([
             f for f in os.listdir(folder)
             if f.startswith(seq_name) and f.lower().endswith((".fit", ".fits"))
         ])
-        print(all_files)
         for idx, filename in enumerate(all_files):
             file_path = os.path.join(folder, filename)
             try:
@@ -1247,7 +1203,7 @@ class PreprocessingInterface:
             f"clean_up_files={clean_up_files}",
             LogColor.BLUE,
         )
-
+        self.siril.cmd("close")
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
@@ -1273,7 +1229,7 @@ class PreprocessingInterface:
         # create sub folders with more than 2048 divided by equal amounts
 
         lights_directory = "lights"
-        max_files_per_batch = 150
+        
 
         # Get list of all files in the lights directory
         all_files = [
@@ -1282,10 +1238,12 @@ class PreprocessingInterface:
             if os.path.isfile(os.path.join(lights_directory, name))
         ]
         num_files = len(all_files)
+        is_windows = sys.platform.startswith("win")
 
-        if num_files <= max_files_per_batch:
-            print(
-                f"{num_files} files: less than or equal to 2047 — no batching needed."
+        # only one batch will be run if less than max_files_per_batch OR not windows. 
+        if num_files <= UI_DEFAULTS["max_files_per_batch"] or not is_windows:
+            self.siril.log(
+                f"{num_files} files: less than or equal to {UI_DEFAULTS['max_files_per_batch']} — no batching needed.", LogColor.BLUE
             )
             file_name = self.batch(
                 output_name=lights_directory,
@@ -1303,10 +1261,10 @@ class PreprocessingInterface:
 
             self.load_image(image_name=file_name)
         else:
-            num_batches = math.ceil(num_files / max_files_per_batch)
+            num_batches = math.ceil(num_files / UI_DEFAULTS["max_files_per_batch"])
             batch_size = math.ceil(num_files / num_batches)
 
-            print(f"{num_files} files: splitting into {num_batches} batches...")
+            self.siril.log(f"{num_files} files: splitting into {num_batches} batches...", LogColor.BLUE)
 
             # Ensure temp folders exist and are empty
             for i in range(num_batches):
@@ -1318,7 +1276,7 @@ class PreprocessingInterface:
 
             # Split and copy files into batches
             for i, filename in enumerate(all_files):
-                batch_index = i // max_files_per_batch
+                batch_index = i // UI_DEFAULTS["max_files_per_batch"]
                 batch_dir = f"batch_lights{batch_index + 1}"
                 src_path = os.path.join(lights_directory, filename)
                 dest_path = os.path.join(batch_dir, filename)
@@ -1327,7 +1285,7 @@ class PreprocessingInterface:
             # Send each of the new lights dir into batch directory
             for i in range(num_batches):
                 batch_dir = f"batch_lights{i+1}"
-                print(f"Processing batch: {batch_dir}")
+                self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
                 self.batch(
                     output_name=batch_dir,
                     use_darks=use_darks,
@@ -1341,15 +1299,15 @@ class PreprocessingInterface:
                     feather_amount=feather_amount,
                     clean_up_files=clean_up_files,
                 )
-            print("Batching complete.")
+            self.siril.log("Batching complete.", LogColor.GREEN)
 
             # Create batched_lights directory
-            final_stack = "final_stack"
+            final_stack_seq_name = "final_stack"
             batch_lights = "batch_lights"
-            os.makedirs(final_stack, exist_ok=True)
+            os.makedirs(final_stack_seq_name, exist_ok=True)
             source_dir = os.path.join(os.getcwd(), "process")
             # Move batch result files into batched_lights
-            target_subdir = os.path.join(os.getcwd(), final_stack)
+            target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
 
             # Create the target subdirectory if it doesn't exist
             os.makedirs(target_subdir, exist_ok=True)
@@ -1363,101 +1321,44 @@ class PreprocessingInterface:
                 # Only move files, skip directories
                 if os.path.isfile(full_src_path):
                     shutil.move(full_src_path, full_dst_path)
-                    print(f"Moved: {filename}")
+                    self.siril.log(f"Moved: {filename}", LogColor.BLUE)
 
             # Clean up temp_lightsX directories
             for i in range(num_batches):
                 batch_dir = f"{batch_lights}{i+1}"
                 shutil.rmtree(batch_dir, ignore_errors=True)
 
-            self.convert_files(final_stack)
-            self.seq_plate_solve(seq_name=final_stack)
+            self.convert_files(final_stack_seq_name)
+            self.seq_plate_solve(seq_name=final_stack_seq_name)
             # turn off drizzle for this
             self.drizzle_status = False
             self.seq_apply_reg(
-                seq_name=final_stack,
+                seq_name=final_stack_seq_name,
                 drizzle_amount=drizzle_amount,
                 pixel_fraction=pixel_fraction,
             )
-
+            self.clean_up(prefix=final_stack_seq_name)
+            registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
+            # final stack needs feathering and amount 
+            self.drizzle_status = drizzle # Turn drizzle back to selected option
             self.seq_stack(
-                seq_name=f"r_{final_stack}",
-                feather=False,
-                feather_amount=feather_amount,
-                output_name=final_stack,
+                seq_name=registered_final_stack_seq_name,
+                feather=True,
+                rejection=False,
+                feather_amount=60,
+                output_name="final_result",
             )
-            self.load_image(image_name=final_stack)
+            self.load_image(image_name="final_result")
+            
+            # cleanup final_stack directory
+            shutil.rmtree(final_stack_seq_name, ignore_errors=True)
+            self.clean_up(prefix=registered_final_stack_seq_name)
 
             # Go back to working dir
             self.siril.cmd("cd", "../")
 
             # Save og image in WD - might have drizzle factor in name
             file_name = self.save_image("_batched")
-
-        # self.convert_files("lights")
-
-        # seq_name = "lights_"
-
-        # Using calibration frames puts pp_ prefix
-        # if use_flats or use_darks:
-        #     self.calibrate_lights(
-        #         seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
-        #     )
-        #     if clean_up_files:
-        #         self.clean_up(prefix=seq_name)  # clean up lights_
-        #     seq_name = "pp_" + seq_name
-
-        # if bg_extract:
-        #     self.seq_bg_extract(seq_name=seq_name)
-        #     if clean_up_files:
-        #         self.clean_up(
-        #             prefix=seq_name
-        #         )  # Remove "pp_lights_" or just "lights_" if not flat calibrated
-        #     seq_name = "bkg_" + seq_name
-
-        # seq_name stays the same after plate solve
-        # self.seq_apply_reg(
-        #     seq_name=seq_name,
-        #     drizzle_amount=drizzle_amount,
-        #     pixel_fraction=pixel_fraction,
-        # )
-        # if clean_up_files:
-        #     self.clean_up(
-        #         prefix=seq_name
-        #     )  # Clean up bkg_ files or pp_ if flat calibrated, otherwise lights_
-        # seq_name = f"r_{seq_name}"
-
-        # if drizzle:
-        #     self.scan_black_frames(seq_name=seq_name)
-
-        # self.seq_stack(
-        #     seq_name=seq_name, feather=feather, feather_amount=feather_amount
-        # )
-        # if clean_up_files:
-        #     self.clean_up(prefix=seq_name)  # clean up r_ files
-        # self.load_image(image_name="result")
-
-        # Force a plate solve if 2048+ mode so that SPCC works (if called)
-        # if self.fitseq_mode:
-        #     self.image_plate_solve()
-
-        # Go back to working dir
-        # self.siril.cmd("cd", "../")
-
-        # Save og image in WD
-        # img = self.save_image("_og")
-        # load og image for autocrop/spcc
-        # if drizzle:
-        #     img = os.path.basename(img) + ".fits"
-        # else:
-        #     img = os.path.basename(img)
-        # self.load_image(image_name=img)
-
-        # If autocrop
-        # crop and save as _og_cropped or spcc cropped
-
-        # if do_autocrop:
-        #     self.autocrop()
 
         # Spcc as a last step
         if do_spcc:
