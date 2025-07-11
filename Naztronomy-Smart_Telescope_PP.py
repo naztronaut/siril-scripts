@@ -95,7 +95,7 @@ UI_DEFAULTS = {
     "feather_amount": 20.0,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
-    "max_files_per_batch": 2000
+    "max_files_per_batch": 1000
 }
 
 
