@@ -9,6 +9,7 @@ Version: 1.1.0
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
+Support me on Patreon: https://www.patreon.com/c/naztronomy
 
 The following directory is required inside the working directory:
     lights/
@@ -26,6 +27,7 @@ CHANGELOG:
 1.1.0 - Minor version update:
       - Added Batching support for 2000+ files on Windows
       - Removed Autocrop due to reported errors
+      - Added support for Dwarf 2 and Celestron Origin
 1.0.1 - minor refactoring to work with both .fit and .fits outputs (e.g. result.fit vs result.fits)
   - added support autocrop script created by Gottfried Rotter
 1.0.0 - initial release
@@ -60,11 +62,20 @@ VERSION = "1.1.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
+TELESCOPES = [
+    "ZWO Seestar S30",
+    "ZWO Seestar S50",
+    "Dwarf 3",
+    "Dwarf 2",
+    "Celestron Origin",
+]
+
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
+    "Dwarf 2": ["Astro filter (UV/IR)"],
+    "Celestron Origin": ["No Filter (Broadband)"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -88,6 +99,10 @@ FILTER_COMMANDS_MAP = {
             "-bbw=30",
         ],
     },
+    "Dwarf 2": {"Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"]},
+    "Celestron Origin": {
+        "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+    },
 }
 
 
@@ -95,7 +110,7 @@ UI_DEFAULTS = {
     "feather_amount": 20.0,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
-    "max_files_per_batch": 1000
+    "max_files_per_batch": 1000,
 }
 
 
@@ -151,7 +166,9 @@ class PreprocessingInterface:
         self.spcc_section = ttk.LabelFrame()
         self.spcc_checkbox_variable = None
         # self.autocrop_checkbox_variable = None
+        self.chosen_telescope = "ZWO Seestar S30"
         self.telescope_options = TELESCOPES
+        self.target_coords = None
         self.telescope_variable = tk.StringVar(value="ZWO Seestar S50")
         self.filter_variable = tk.StringVar(value="broadband")
 
@@ -172,9 +189,9 @@ class PreprocessingInterface:
         except s.CommandError:
             self.close_dialog()
             return
-        
+
         self.fits_extension = self.siril.get_siril_config("core", "extension")
-        
+
         self.gaia_catalogue_available = False
         try:
             catalog_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
@@ -308,8 +325,8 @@ class PreprocessingInterface:
             try:
                 args = ["convert", dir_name, "-out=../process"]
                 if "lights" in dir_name.lower():
-                        if not self.drizzle_status:
-                            args.append("-debayer")
+                    if not self.drizzle_status:
+                        args.append("-debayer")
                 else:
                     if not self.drizzle_status:
                         # flats, darks, bias: only debayer if drizzle is not set
@@ -338,7 +355,23 @@ class PreprocessingInterface:
     def seq_plate_solve(self, seq_name):
         """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
         # self.siril.cmd("cd", "process")
-        args = ["seqplatesolve", seq_name, "-nocache", "-force", "-disto=ps_distortion"]
+        args = ["seqplatesolve", seq_name]
+
+        # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
+        if self.chosen_telescope == "Celestron Origin":
+            args.append(self.target_coords)
+            focal_len = 400
+            pixel_size = 2.4
+            args.append(f"-focal={focal_len}")
+            args.append(f"-pixelsize={pixel_size}")
+        if self.chosen_telescope == "Dwarf 2":
+            args.append(self.target_coords)
+            focal_len = 100
+            pixel_size = 1.45
+            args.append(f"-focal={focal_len}")
+            args.append(f"-pixelsize={pixel_size}")
+
+        args.extend(["-nocache", "-force", "-disto=ps_distortion"])
         # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
@@ -415,7 +448,7 @@ class PreprocessingInterface:
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
-                (".fit", ".fits")
+                self.fits_extension
             ):
                 filepath = os.path.join(folder, filename)
                 try:
@@ -517,13 +550,15 @@ class PreprocessingInterface:
             self.siril.error_messagebox(f"Command execution failed: {e}")
             self.close_dialog()
 
-    def seq_stack(self, seq_name, feather, feather_amount, rejection=False, output_name=None):
+    def seq_stack(
+        self, seq_name, feather, feather_amount, rejection=False, output_name=None
+    ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
 
         cmd_args = [
             "stack",
-            f"{seq_name}", 
+            f"{seq_name}",
             " rej 3 3" if rejection else " rej none",
             "-norm=addscale",
             "-output_norm",
@@ -702,7 +737,7 @@ class PreprocessingInterface:
         for f in os.listdir(process_dir):
             # Skip the stacked file
             name, ext = os.path.splitext(f.lower())
-            if name in (f"{prefix}_stacked", "result") and ext in (".fit", ".fits"):
+            if name in (f"{prefix}_stacked", "result") and ext in (self.fits_extension):
                 continue
 
             # Check if file starts with prefix_ or pp_flats_
@@ -721,7 +756,9 @@ class PreprocessingInterface:
     def update_filter_options(self, *args):
         selected_scope = self.telescope_variable.get()
         new_options = self.filter_options_map.get(selected_scope, [])
-        self.siril.log(selected_scope, LogColor.BLUE)
+        # self.siril.log(selected_scope, LogColor.BLUE)
+        self.chosen_telescope = selected_scope
+        self.siril.log(f"Chosen Telescope: {selected_scope}", LogColor.BLUE)
         # Clear current menu
         menu = self.filter_menu["menu"]
         menu.delete(0, "end")
@@ -742,7 +779,8 @@ class PreprocessingInterface:
         help_text = (
             f"Author: {AUTHOR} ({WEBSITE})\n"
             f"Youtube: {YOUTUBE}\n"
-            "Discord: https://discord.gg/yXKqrawpjr\n\n"
+            "Discord: https://discord.gg/yXKqrawpjr\n"
+            "Patreon: https://www.patreon.com/c/naztronomy\n\n"
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
             "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
@@ -826,7 +864,7 @@ class PreprocessingInterface:
         cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
         tksiril.create_tooltip(
             cleanup_checkbox,
-            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n" \
+            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
             "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
         )
 
@@ -1036,6 +1074,47 @@ class PreprocessingInterface:
         self.root.quit()
         self.root.destroy()
 
+    def extract_coords_from_fits(self, prefix: str):
+        # Only process for specific D2 and Origin
+        process_dir = "process"
+        matching_files = sorted(
+            [
+                f
+                for f in os.listdir(process_dir)
+                if f.startswith(prefix) and f.lower().endswith(self.fits_extension)
+            ]
+        )
+
+        if not matching_files:
+            self.siril.log(
+                f"No FITS files found in '{process_dir}' with prefix '{prefix}'",
+                LogColor.RED,
+            )
+            return
+
+        first_file = matching_files[0]
+        print(first_file)
+        file_path = os.path.join(process_dir, first_file)
+
+        try:
+            with fits.open(file_path) as hdul:
+                header = hdul[0].header
+                ra = header.get("RA")
+                dec = header.get("DEC")
+
+                if ra is not None and dec is not None:
+                    self.target_coords = f"{ra},{dec}"
+                    self.siril.log(
+                        f"Target coordinates extracted: {self.target_coords}",
+                        LogColor.GREEN,
+                    )
+                else:
+                    self.siril.log(
+                        "RA or DEC not found in FITS header.", LogColor.SALMON
+                    )
+        except Exception as e:
+            self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
+
     def batch(
         self,
         output_name: str,
@@ -1081,6 +1160,9 @@ class PreprocessingInterface:
                 )  # Remove "pp_lights_" or just "lights_" if not flat calibrated
             seq_name = "bkg_" + seq_name
 
+        if self.chosen_telescope in ["Celestron Origin", "Dwarf 2"]:
+            self.extract_coords_from_fits(prefix=seq_name)
+
         self.seq_plate_solve(seq_name=seq_name)
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
@@ -1121,8 +1203,7 @@ class PreprocessingInterface:
         file_name = self.save_image(f"_{out}")
 
         return file_name
-    
-    
+
     def unselect_bad_fits(self, seq_name, folder="process"):
         """
         Checks all FITS files in the given folder with the given prefix
@@ -1142,10 +1223,13 @@ class PreprocessingInterface:
         """
         self.siril.log("Checking for bad FITS files...", LogColor.BLUE)
         bad_fits = []
-        all_files = sorted([
-            f for f in os.listdir(folder)
-            if f.startswith(seq_name) and f.lower().endswith((".fit", ".fits"))
-        ])
+        all_files = sorted(
+            [
+                f
+                for f in os.listdir(folder)
+                if f.startswith(seq_name) and f.lower().endswith(self.fits_extension)
+            ]
+        )
         for idx, filename in enumerate(all_files):
             file_path = os.path.join(folder, filename)
             try:
@@ -1162,7 +1246,9 @@ class PreprocessingInterface:
                 try:
                     self.siril.cmd("unselect", seq_name, index, index)
                 except Exception as e:
-                    self.siril.log(f"Failed to unselect index {index}: {e}", LogColor.RED)
+                    self.siril.log(
+                        f"Failed to unselect index {index}: {e}", LogColor.RED
+                    )
         else:
             self.siril.log("No bad FITS files found.", LogColor.GREEN)
 
@@ -1229,7 +1315,6 @@ class PreprocessingInterface:
         # create sub folders with more than 2048 divided by equal amounts
 
         lights_directory = "lights"
-        
 
         # Get list of all files in the lights directory
         all_files = [
@@ -1240,10 +1325,11 @@ class PreprocessingInterface:
         num_files = len(all_files)
         is_windows = sys.platform.startswith("win")
 
-        # only one batch will be run if less than max_files_per_batch OR not windows. 
+        # only one batch will be run if less than max_files_per_batch OR not windows.
         if num_files <= UI_DEFAULTS["max_files_per_batch"] or not is_windows:
             self.siril.log(
-                f"{num_files} files: less than or equal to {UI_DEFAULTS['max_files_per_batch']} — no batching needed.", LogColor.BLUE
+                f"{num_files} files: less than or equal to {UI_DEFAULTS['max_files_per_batch']} — no batching needed.",
+                LogColor.BLUE,
             )
             file_name = self.batch(
                 output_name=lights_directory,
@@ -1264,7 +1350,10 @@ class PreprocessingInterface:
             num_batches = math.ceil(num_files / UI_DEFAULTS["max_files_per_batch"])
             batch_size = math.ceil(num_files / num_batches)
 
-            self.siril.log(f"{num_files} files: splitting into {num_batches} batches...", LogColor.BLUE)
+            self.siril.log(
+                f"{num_files} files: splitting into {num_batches} batches...",
+                LogColor.BLUE,
+            )
 
             # Ensure temp folders exist and are empty
             for i in range(num_batches):
@@ -1339,8 +1428,8 @@ class PreprocessingInterface:
             )
             self.clean_up(prefix=final_stack_seq_name)
             registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
-            # final stack needs feathering and amount 
-            self.drizzle_status = drizzle # Turn drizzle back to selected option
+            # final stack needs feathering and amount
+            self.drizzle_status = drizzle  # Turn drizzle back to selected option
             self.seq_stack(
                 seq_name=registered_final_stack_seq_name,
                 feather=True,
@@ -1349,7 +1438,7 @@ class PreprocessingInterface:
                 output_name="final_result",
             )
             self.load_image(image_name="final_result")
-            
+
             # cleanup final_stack directory
             shutil.rmtree(final_stack_seq_name, ignore_errors=True)
             self.clean_up(prefix=registered_final_stack_seq_name)
@@ -1379,6 +1468,24 @@ class PreprocessingInterface:
             )  # Load either og or spcc image
 
         # self.clean_up()
+        import datetime
+
+        self.siril.log(
+            f"Finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            LogColor.GREEN,
+        )
+        self.siril.log(
+            """
+        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
+        The author of this script is Nazmus Nasir (Naztronomy).
+        Website: https://www.Naztronomy.com 
+        YouTube: https://www.YouTube.com/Naztronomy 
+        Discord: https://discord.gg/yXKqrawpjr
+        Patreon: https://www.patreon.com/c/naztronomy
+        """,
+            LogColor.BLUE,
+        )
+
         self.close_dialog()
 
 
