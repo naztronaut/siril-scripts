@@ -376,10 +376,10 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*args)
-        except s.DataError as e:
+        except (s.CommandError, s.DataError) as e:
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.SALMON)
-            self.siril.error_messagebox(f"seqplatesolve failed: {e}")
-            self.close_dialog()
+            # self.siril.error_messagebox(f"seqplatesolve failed: {e}")
+            # self.close_dialog()
         self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
 
     def seq_bg_extract(self, seq_name):
