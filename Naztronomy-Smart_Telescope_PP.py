@@ -580,7 +580,7 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*cmd_args)
-        except s.DataError as e:
+        except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.error_messagebox(f"Command execution failed: {e}")
             self.close_dialog()
 
