@@ -1471,5 +1471,6 @@ if __name__ == "__main__":
 # Website: https://www.Naztronomy.com
 # YouTube: https://www.YouTube.com/Naztronomy
 # Discord: https://discord.gg/yXKqrawpjr
+# Patreon: https://www.patreon.com/c/naztronomy
 
 ##############################################################################
