@@ -566,7 +566,8 @@ class PreprocessingInterface:
             "-filter-included",
             f"-out={out}",
         ]
-        cmd_args.append(f"-feather={feather_amount}")
+        if feather:
+            cmd_args.append(f"-feather={feather_amount}")
 
         self.siril.log(
             f"Running seq_stack with arguments:\n"
