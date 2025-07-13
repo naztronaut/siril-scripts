@@ -150,7 +150,7 @@ class PreprocessingInterface:
         self.root.title(f"{APP_NAME} - v{VERSION}")
 
         self.root.geometry(
-            f"575x660+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
+            f"575x710+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
         )
         self.root.resizable(True, True)
 
@@ -333,8 +333,8 @@ class PreprocessingInterface:
 
                 self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
                 self.siril.cmd(*args)
-            except s.CommandError as e:
-                self.siril.error_messagebox(f"{e}")
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"File conversion failed: {e}", LogColor.RED)
                 self.close_dialog()
 
             self.siril.cmd("cd", "../process")
@@ -375,8 +375,8 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*args)
-        except (s.CommandError, s.DataError) as e:
-            self.siril.log(f"seqplatesolve failed: {e}", LogColor.SALMON)
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
             # self.siril.error_messagebox(f"seqplatesolve failed: {e}")
             # self.close_dialog()
         self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
@@ -385,8 +385,8 @@ class PreprocessingInterface:
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
         try:
             self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10")
-        except s.DataError as e:
-            self.siril.error_messagebox(f"seqsubsky failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Seq BG Extraction failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
@@ -408,7 +408,7 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*cmd_args)
-        except s.DataError as e:
+        except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
@@ -527,8 +527,8 @@ class PreprocessingInterface:
 
             try:
                 self.siril.cmd(*cmd_args)
-            except s.DataError as e:
-                self.siril.error_messagebox(f"Command execution failed: {e}")
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"Command execution failed: {e}", LogColor.RED)
                 self.close_dialog()
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
@@ -545,8 +545,8 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*cmd_args)
-        except s.DataError as e:
-            self.siril.error_messagebox(f"Command execution failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Command execution failed: {e}", LogColor.RED)
             self.close_dialog()
 
     def seq_stack(
@@ -581,7 +581,7 @@ class PreprocessingInterface:
         try:
             self.siril.cmd(*cmd_args)
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.error_messagebox(f"Command execution failed: {e}")
+            self.siril.log(f"Stacking failed: {e}", LogColor.RED)
             self.close_dialog()
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
@@ -621,8 +621,8 @@ class PreprocessingInterface:
                 f"{file_name}",
             )
             return file_name
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"save command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Save command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Saved file: {file_name}", LogColor.GREEN)
 
@@ -630,16 +630,16 @@ class PreprocessingInterface:
         """Loads the registered image. Currently unused"""
         try:
             self.siril.cmd("load", "result")
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"Load command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Load command execution failed: {e}", LogColor.RED)
         self.save_image("_og")
 
     def image_plate_solve(self):
         """Plate solve the loaded image with the '-force' argument."""
         try:
             self.siril.cmd("platesolve", "-force")
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"Plate solve command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Plate Solve command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Platesolved image", LogColor.GREEN)
 
@@ -681,8 +681,8 @@ class PreprocessingInterface:
             quoted_args = [f'"{arg}"' for arg in args]
             try:
                 self.siril.cmd("spcc", *quoted_args)
-            except (s.CommandError, s.DataError) as e:
-                self.siril.error_messagebox(f"SPCC command failed: {e}")
+            except (s.CommandError, s.DataError, s.SirilError) as e:
+                self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
                 self.close_dialog()
 
             img = self.save_image("_spcc")
@@ -693,8 +693,8 @@ class PreprocessingInterface:
         """Loads the result."""
         try:
             self.siril.cmd("load", image_name)
-        except (s.CommandError, s.DataError) as e:
-            self.siril.error_messagebox(f"Load command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Load image failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
 
@@ -702,8 +702,9 @@ class PreprocessingInterface:
         """Autostretch as a way to preview the final result"""
         try:
             self.siril.cmd("autostretch", *(["-linked"] if do_spcc else []))
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"Autostretch command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Autostretch command execution failed: {e}", LogColor.RED)
+
             self.close_dialog()
         self.siril.log(
             "Autostretched image."
@@ -1235,7 +1236,7 @@ class PreprocessingInterface:
         clean_up_files: bool = False,
     ):
         self.siril.log(
-            f"Running script with arguments:\n"
+            f"Running script version {VERSION} with arguments:\n"
             f"do_spcc={do_spcc}\n"
             f"filter={filter}\n"
             f"telescope={telescope}\n"
@@ -1291,7 +1292,7 @@ class PreprocessingInterface:
         # only one batch will be run if less than max_files_per_batch OR not windows.
         if num_files <= UI_DEFAULTS["max_files_per_batch"] or not is_windows:
             self.siril.log(
-                f"{num_files} files: less than or equal to {UI_DEFAULTS['max_files_per_batch']} — no batching needed.",
+                f"{num_files} files found in the lights directory which is less than or equal to {UI_DEFAULTS['max_files_per_batch']} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
             )
             file_name = self.batch(
@@ -1314,7 +1315,7 @@ class PreprocessingInterface:
             batch_size = math.ceil(num_files / num_batches)
 
             self.siril.log(
-                f"{num_files} files: splitting into {num_batches} batches...",
+                f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
                 LogColor.BLUE,
             )
 
