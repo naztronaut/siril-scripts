@@ -3,12 +3,13 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.0.2
+Version: 1.1.0
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
+Support me on Patreon: https://www.patreon.com/c/naztronomy
 
 The following directory is required inside the working directory:
     lights/
@@ -23,13 +24,18 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-1.0.2 - Allowing resize of UI 
+1.1.0 - Minor version update:
+      - Added Batching support for 2000+ files on Windows
+      - Removed Autocrop due to reported errors
+      - Added support for Dwarf 2 and Celestron Origin
 1.0.1 - minor refactoring to work with both .fit and .fits outputs (e.g. result.fit vs result.fits)
   - added support autocrop script created by Gottfried Rotter
 1.0.0 - initial release
 """
 
 
+import math
+import shutil
 import sirilpy as s
 
 s.ensure_installed("ttkthemes", "numpy", "astropy")
@@ -44,23 +50,32 @@ from ttkthemes import ThemedTk
 from astropy.io import fits
 import numpy as np
 
-# Uncomment this once beta3 is released
-# if sys.platform.startswith("linux"):
-#    import sirilpy.tkfilebrowser as filedialog
-# else:
-#    from tkinter import filedialog
-from tkinter import filedialog
+# Beta 3 
+if sys.platform.startswith("linux"):
+   import sirilpy.tkfilebrowser as filedialog
+else:
+   from tkinter import filedialog
+# from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
-TELESCOPES = ["ZWO Seestar S30", "ZWO Seestar S50", "Dwarf 3"]
+TELESCOPES = [
+    "ZWO Seestar S30",
+    "ZWO Seestar S50",
+    "Dwarf 3",
+    "Dwarf 2",
+    "Celestron Origin",
+]
+
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
+    "Dwarf 2": ["Astro filter (UV/IR)"],
+    "Celestron Origin": ["No Filter (Broadband)"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -84,6 +99,10 @@ FILTER_COMMANDS_MAP = {
             "-bbw=30",
         ],
     },
+    "Dwarf 2": {"Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"]},
+    "Celestron Origin": {
+        "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+    },
 }
 
 
@@ -91,6 +110,7 @@ UI_DEFAULTS = {
     "feather_amount": 20.0,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
+    "max_files_per_batch": 2000,
 }
 
 
@@ -130,7 +150,7 @@ class PreprocessingInterface:
         self.root.title(f"{APP_NAME} - v{VERSION}")
 
         self.root.geometry(
-            f"575x760+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
+            f"575x710+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
         )
         self.root.resizable(True, True)
 
@@ -139,16 +159,15 @@ class PreprocessingInterface:
         self.siril = s.SirilInterface()
 
         # Flags for mosaic mode and drizzle status
-        # If mosaic mode, fitseq will be used but cannot use framing max
         # if drizzle is off, images will be debayered on convert
-        self.fitseq_mode = False
         self.drizzle_status = False
         self.drizzle_factor = 0
 
         self.spcc_section = ttk.LabelFrame()
         self.spcc_checkbox_variable = None
-        self.autocrop_checkbox_variable = None
+        self.chosen_telescope = "ZWO Seestar S30"
         self.telescope_options = TELESCOPES
+        self.target_coords = None
         self.telescope_variable = tk.StringVar(value="ZWO Seestar S50")
         self.filter_variable = tk.StringVar(value="broadband")
 
@@ -169,6 +188,8 @@ class PreprocessingInterface:
         except s.CommandError:
             self.close_dialog()
             return
+
+        self.fits_extension = self.siril.get_siril_config("core", "extension")
 
         self.gaia_catalogue_available = False
         try:
@@ -300,27 +321,11 @@ class PreprocessingInterface:
                 ]
             )
 
-            if (
-                sys.platform.startswith("win")
-                and not self.fitseq_mode
-                and dir_name == "lights"
-                and file_count > 2048
-            ):
-                self.siril.error_messagebox(
-                    "More than 2048 images found on this Windows machine. Please select '2048+ Mode' and try again."
-                )
-                self.close_dialog()
-
             try:
                 args = ["convert", dir_name, "-out=../process"]
-                if dir_name.lower() == "lights":
-                    if self.fitseq_mode:
-                        args.append("-fitseq")
-                        if not self.drizzle_status:
-                            args.append("-debayer")
-                    else:
-                        if not self.drizzle_status:
-                            args.append("-debayer")
+                if "lights" in dir_name.lower():
+                    if not self.drizzle_status:
+                        args.append("-debayer")
                 else:
                     if not self.drizzle_status:
                         # flats, darks, bias: only debayer if drizzle is not set
@@ -328,8 +333,8 @@ class PreprocessingInterface:
 
                 self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
                 self.siril.cmd(*args)
-            except s.CommandError as e:
-                self.siril.error_messagebox(f"{e}")
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"File conversion failed: {e}", LogColor.RED)
                 self.close_dialog()
 
             self.siril.cmd("cd", "../process")
@@ -348,41 +353,53 @@ class PreprocessingInterface:
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name):
         """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
-        args = ["seqplatesolve", seq_name, "-nocache", "-force", "-disto=ps_distortion"]
+        # self.siril.cmd("cd", "process")
+        args = ["seqplatesolve", seq_name]
+
+        # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
+        if self.chosen_telescope == "Celestron Origin":
+            args.append(self.target_coords)
+            focal_len = 400
+            pixel_size = 2.4
+            args.append(f"-focal={focal_len}")
+            args.append(f"-pixelsize={pixel_size}")
+        if self.chosen_telescope == "Dwarf 2":
+            args.append(self.target_coords)
+            focal_len = 100
+            pixel_size = 1.45
+            args.append(f"-focal={focal_len}")
+            args.append(f"-pixelsize={pixel_size}")
+
+        args.extend(["-nocache", "-force", "-disto=ps_distortion"])
+        # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
+
         try:
             self.siril.cmd(*args)
-        except s.DataError as e:
-            self.siril.error_messagebox(f"seqplatesolve failed: {e}")
-            self.close_dialog()
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
+            # self.siril.error_messagebox(f"seqplatesolve failed: {e}")
+            # self.close_dialog()
         self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
-
-    def seq_graxpert_bg_extract(self):
-        """Runs Graxpert to extract bg for each file in the sequence. Uses GPU if available."""
-        self.siril.cmd("seqgraxpert_bg", "lights_", "-gpu")
 
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
         try:
             self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10")
-        except s.DataError as e:
-            self.siril.error_messagebox(f"seqsubsky failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Seq BG Extraction failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
     def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction):
         """Apply Existing Registration to the sequence."""
-        if self.fitseq_mode:
-            cmd_args = ["register", seq_name]
-
-        else:
-            cmd_args = [
-                "seqapplyreg",
-                seq_name,
-                "-filter-round=2.5k",
-                # "-filter-fwhm=2k",
-                "-kernel=square",
-                "-framing=max",
-            ]
+        cmd_args = [
+            "seqapplyreg",
+            seq_name,
+            "-filter-round=2.5k",
+            # "-filter-fwhm=2k",
+            "-kernel=square",
+            "-framing=max",
+        ]
         if self.drizzle_status:
             cmd_args.extend(
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
@@ -391,18 +408,8 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*cmd_args)
-        except s.DataError as e:
+        except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
-
-        # Need the extra reg for fitseq
-        if self.fitseq_mode:
-            try:
-                self.siril.cmd(
-                    "seqapplyreg", seq_name, "-filter-round=2.5k", "-filter-fwhm=2k"
-                )
-            except s.DataError as e:
-                self.siril.error_messagebox(f"seqapplyreg failed for fitseq: {e}")
-                self.close_dialog()
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
 
@@ -440,7 +447,7 @@ class PreprocessingInterface:
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
-                (".fit", ".fits")
+                self.fits_extension
             ):
                 filepath = os.path.join(folder, filename)
                 try:
@@ -488,7 +495,8 @@ class PreprocessingInterface:
         if seq_name == "flats":
             if os.path.exists(
                 os.path.join(
-                    self.current_working_directory, "process/biases_stacked.fit"
+                    self.current_working_directory,
+                    f"process/biases_stacked{self.fits_extension}",
                 )
             ):
                 # Saves as pp_flats
@@ -519,8 +527,8 @@ class PreprocessingInterface:
 
             try:
                 self.siril.cmd(*cmd_args)
-            except s.DataError as e:
-                self.siril.error_messagebox(f"Command execution failed: {e}")
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"Command execution failed: {e}", LogColor.RED)
                 self.close_dialog()
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
@@ -537,23 +545,28 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*cmd_args)
-        except s.DataError as e:
-            self.siril.error_messagebox(f"Command execution failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Command execution failed: {e}", LogColor.RED)
             self.close_dialog()
 
-    def seq_stack(self, seq_name, feather, feather_amount):
+    def seq_stack(
+        self, seq_name, feather, feather_amount, rejection=False, output_name=None
+    ):
         """Stack it all, and feather if it's provided"""
+        out = "result" if output_name is None else output_name
+
         cmd_args = [
             "stack",
-            f"{seq_name} rej 3 3",
+            f"{seq_name}",
+            " rej 3 3" if rejection else " rej none",
             "-norm=addscale",
             "-output_norm",
             "-rgb_equal",
             "-maximize",
             "-filter-included",
-            "-out=result",
+            f"-out={out}",
         ]
-        if not self.fitseq_mode and feather and feather_amount is not None:
+        if feather:
             cmd_args.append(f"-feather={feather_amount}")
 
         self.siril.log(
@@ -568,8 +581,8 @@ class PreprocessingInterface:
 
         try:
             self.siril.cmd(*cmd_args)
-        except s.DataError as e:
-            self.siril.error_messagebox(f"Command execution failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Stacking failed: {e}", LogColor.RED)
             self.close_dialog()
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
@@ -580,7 +593,8 @@ class PreprocessingInterface:
         current_datetime = datetime.now().strftime("%Y-%m-%d_%H%M")
 
         # Default filename
-        file_name = f"result_drizzle-{self.drizzle_factor}x__{current_datetime}{suffix}"
+        drizzle_str = str(self.drizzle_factor).replace(".", "-")
+        file_name = f"result__drizzle-{drizzle_str}x__{current_datetime}{suffix}"
 
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
@@ -598,7 +612,7 @@ class PreprocessingInterface:
 
         file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}"
         if self.drizzle_status:
-            file_name += f"_drizzle-{self.drizzle_factor}x"
+            file_name += f"__drizzle-{drizzle_str}x"
 
         file_name += f"__{current_datetime}{suffix}"
 
@@ -608,8 +622,8 @@ class PreprocessingInterface:
                 f"{file_name}",
             )
             return file_name
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"save command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Save command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Saved file: {file_name}", LogColor.GREEN)
 
@@ -617,34 +631,18 @@ class PreprocessingInterface:
         """Loads the registered image. Currently unused"""
         try:
             self.siril.cmd("load", "result")
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"Load command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Load command execution failed: {e}", LogColor.RED)
         self.save_image("_og")
 
     def image_plate_solve(self):
         """Plate solve the loaded image with the '-force' argument."""
         try:
             self.siril.cmd("platesolve", "-force")
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"Plate solve command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Plate Solve command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Platesolved image", LogColor.GREEN)
-
-    def autocrop(self):
-        try:
-            self.siril.cmd("pyscript", "autocrop.py", "--refinecrop", "--loadimage")
-            # Giving autocrop enough time to finish - future versions of autocrop should return something or turn off threading
-            time.sleep(30)
-        except s.CommandError as e:
-            self.siril.log(
-                "Autocrop Failed, autocrop.py script may not be available, continuing without autocropping",
-                LogColor.SALMON,
-            )
-            # self.siril.log(f"Autocrop command failed: {e}", LogColor.SALMON)
-        self.siril.log(
-            "Autocropped image successfully. To access the uncropped image, look for the files withoout 'autocrop' in the filename.",
-            LogColor.GREEN,
-        )
 
     def spcc(
         self,
@@ -684,8 +682,8 @@ class PreprocessingInterface:
             quoted_args = [f'"{arg}"' for arg in args]
             try:
                 self.siril.cmd("spcc", *quoted_args)
-            except (s.CommandError, s.DataError) as e:
-                self.siril.error_messagebox(f"SPCC command failed: {e}")
+            except (s.CommandError, s.DataError, s.SirilError) as e:
+                self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
                 self.close_dialog()
 
             img = self.save_image("_spcc")
@@ -696,8 +694,8 @@ class PreprocessingInterface:
         """Loads the result."""
         try:
             self.siril.cmd("load", image_name)
-        except (s.CommandError, s.DataError) as e:
-            self.siril.error_messagebox(f"Load command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Load image failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
 
@@ -705,8 +703,9 @@ class PreprocessingInterface:
         """Autostretch as a way to preview the final result"""
         try:
             self.siril.cmd("autostretch", *(["-linked"] if do_spcc else []))
-        except s.CommandError as e:
-            self.siril.error_messagebox(f"Autostretch command failed: {e}")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Autostretch command execution failed: {e}", LogColor.RED)
+
             self.close_dialog()
         self.siril.log(
             "Autostretched image."
@@ -723,7 +722,7 @@ class PreprocessingInterface:
         for f in os.listdir(process_dir):
             # Skip the stacked file
             name, ext = os.path.splitext(f.lower())
-            if name in (f"{prefix}_stacked", "result") and ext in (".fit", ".fits"):
+            if name in (f"{prefix}_stacked", "result") and ext in (self.fits_extension):
                 continue
 
             # Check if file starts with prefix_ or pp_flats_
@@ -742,7 +741,9 @@ class PreprocessingInterface:
     def update_filter_options(self, *args):
         selected_scope = self.telescope_variable.get()
         new_options = self.filter_options_map.get(selected_scope, [])
-        self.siril.log(selected_scope, LogColor.BLUE)
+        # self.siril.log(selected_scope, LogColor.BLUE)
+        self.chosen_telescope = selected_scope
+        self.siril.log(f"Chosen Telescope: {selected_scope}", LogColor.BLUE)
         # Clear current menu
         menu = self.filter_menu["menu"]
         menu.delete(0, "end")
@@ -763,17 +764,16 @@ class PreprocessingInterface:
         help_text = (
             f"Author: {AUTHOR} ({WEBSITE})\n"
             f"Youtube: {YOUTUBE}\n"
-            "Discord: https://discord.gg/yXKqrawpjr\n\n"
+            "Discord: https://discord.gg/yXKqrawpjr\n"
+            "Patreon: https://www.patreon.com/c/naztronomy\n\n"
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
-            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases"
-            "3. 2048+ Mode is only for Windows. Checking/Unchecking in Linux/Mac won't do anything.\n"
-            "4. 2048+ Mode cannot do Mosaics at the moment!\n"
-            "5. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "6. Feathering is not available for 2048+ Mode.\n"
-            "7. If you use 2048+ Mode, you can either choose Drizzle or SPCC. Choosing both will result in an error.\n"
-            "8. Autocrop calls another script and has a wait time of 45 seconds.\n"
-            "9. When asking for help, please have the logs handy."
+            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
+            f"3. If on Windows and you have more than {UI_DEFAULTS["max_files_per_batch"]} files, this script will automatically split them into batches.\n"
+            "4. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
+            "5. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
+            "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
+            "7. When asking for help, please have the logs handy."
         )
         self.siril.info_messagebox(help_text, True)
         self.siril.log(help_text, LogColor.BLUE)
@@ -849,28 +849,8 @@ class PreprocessingInterface:
         cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
         tksiril.create_tooltip(
             cleanup_checkbox,
-            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.",
-        )
-
-        # Mode to handle >2048 files
-        telescope_section.pack(fill=tk.X, pady=5)
-
-        ttk.Label(telescope_section, text="2048+ Files:", style="Bold.TLabel").grid(
-            row=3, column=0, sticky="w"
-        )
-
-        fitseq_checkbox_variable = tk.BooleanVar()
-
-        fitseq_checkbox = ttk.Checkbutton(
-            telescope_section, text="Enable", variable=fitseq_checkbox_variable
-        )
-        fitseq_checkbox.grid(row=3, column=1, columnspan=2, sticky="w", padx=5, pady=10)
-
-        # Add tooltip to the one and only checkbox
-        tksiril.create_tooltip(
-            fitseq_checkbox,
-            "Enable this option if you have more than 2048 images to process. A different workflow will be used and the sequence will not be plate solved and the framing method will be default."
-            "This can affect how large mosaic sessions look.",
+            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
+            "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
         )
 
         # Optional Preprocessing Steps
@@ -948,12 +928,6 @@ class PreprocessingInterface:
             calib_section, text="Feather?", variable=feather_checkbox_variable
         )
         feather_checkbox.grid(row=5, column=1, sticky="w")
-        fitseq_checkbox_variable.trace_add(
-            "write",
-            lambda *args: feather_checkbox.config(
-                state=tk.DISABLED if fitseq_checkbox_variable.get() else tk.NORMAL
-            ),
-        )
 
         feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
         feather_amount_label.grid(row=5, column=2, sticky="w")
@@ -978,23 +952,6 @@ class PreprocessingInterface:
         # SPCC Section
         self.spcc_section = ttk.LabelFrame(main_frame, text="Post-Stacking", padding=10)
         self.spcc_section.pack(fill=tk.X, pady=5)
-
-        # Autocrop checkbox start
-        self.autocrop_checkbox_variable = tk.BooleanVar()
-
-        autocrop_checkbox = ttk.Checkbutton(
-            self.spcc_section,
-            text="Autocrop?",
-            variable=self.autocrop_checkbox_variable,
-        )
-        autocrop_checkbox.grid(row=0, column=0, columnspan=2, sticky="w")
-
-        tksiril.create_tooltip(
-            autocrop_checkbox,
-            "This will only work if you have the Autocrop.py script downloaded!",
-        )
-
-        # Autocrop Checkbox end
 
         self.spcc_checkbox_variable = tk.BooleanVar()
 
@@ -1057,7 +1014,6 @@ class PreprocessingInterface:
             text="Run",
             width=10,
             command=lambda: self.run_script(
-                fitseq_mode=fitseq_checkbox_variable.get(),
                 do_spcc=self.spcc_checkbox_variable.get(),
                 filter=self.filter_variable.get(),
                 telescope=self.telescope_variable.get(),
@@ -1071,7 +1027,6 @@ class PreprocessingInterface:
                 pixel_fraction=pixel_fraction_spinbox.get(),
                 feather=feather_checkbox_variable.get(),
                 feather_amount=feather_amount_spinbox.get(),
-                do_autocrop=self.autocrop_checkbox_variable.get(),
                 clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
@@ -1086,13 +1041,50 @@ class PreprocessingInterface:
         self.root.quit()
         self.root.destroy()
 
-    def run_script(
+    def extract_coords_from_fits(self, prefix: str):
+        # Only process for specific D2 and Origin
+        process_dir = "process"
+        matching_files = sorted(
+            [
+                f
+                for f in os.listdir(process_dir)
+                if f.startswith(prefix) and f.lower().endswith(self.fits_extension)
+            ]
+        )
+
+        if not matching_files:
+            self.siril.log(
+                f"No FITS files found in '{process_dir}' with prefix '{prefix}'",
+                LogColor.RED,
+            )
+            return
+
+        first_file = matching_files[0]
+        print(first_file)
+        file_path = os.path.join(process_dir, first_file)
+
+        try:
+            with fits.open(file_path) as hdul:
+                header = hdul[0].header
+                ra = header.get("RA")
+                dec = header.get("DEC")
+
+                if ra is not None and dec is not None:
+                    self.target_coords = f"{ra},{dec}"
+                    self.siril.log(
+                        f"Target coordinates extracted: {self.target_coords}",
+                        LogColor.GREEN,
+                    )
+                else:
+                    self.siril.log(
+                        "RA or DEC not found in FITS header.", LogColor.SALMON
+                    )
+        except Exception as e:
+            self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
+
+    def batch(
         self,
-        fitseq_mode: bool = False,
-        do_spcc: bool = False,
-        filter: str = "broadband",
-        telescope: str = "ZWO Seestar S30",
-        catalog: str = "localgaia",
+        output_name: str,
         use_darks: bool = False,
         use_flats: bool = False,
         use_biases: bool = False,
@@ -1102,58 +1094,29 @@ class PreprocessingInterface:
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
-        do_autocrop: bool = False,
         clean_up_files: bool = False,
     ):
-        self.siril.log(
-            f"Running script with arguments:\n"
-            f"fitseq_mode={fitseq_mode}\n"
-            f"do_spcc={do_spcc}\n"
-            f"filter={filter}\n"
-            f"telescope={telescope}\n"
-            f"catalog={catalog}\n"
-            f"use_darks={use_darks}\n"
-            f"use_flats={use_flats}\n"
-            f"use_biases={use_biases}\n"
-            f"bg_extract={bg_extract}\n"
-            f"drizzle={drizzle}\n"
-            f"drizzle_amount={drizzle_amount}\n"
-            f"pixel_fraction={pixel_fraction}\n"
-            f"feather={feather}\n"
-            f"feather_amount={feather_amount}"
-            f"autocrop={do_autocrop}\n"
-            f"clean_up_files={clean_up_files}",
-            LogColor.BLUE,
-        )
-        self.fitseq_mode = fitseq_mode
+        # If we're batching, force cleanup files so we don't collide with existing files
+        self.siril.cmd("close")
+        if output_name.startswith("batch_lights"):
+            clean_up_files = True
+
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
-        if use_biases:
-            self.convert_files("biases")
-            self.calibration_stack("biases")
-            if clean_up_files:
-                self.clean_up("biases")
-        if use_flats:
-            self.convert_files("flats")
-            self.calibration_stack("flats")
-            if clean_up_files:
-                self.clean_up("flats")
-        if use_darks:
-            self.convert_files("darks")
-            self.calibration_stack("darks")
-            if clean_up_files:
-                self.clean_up("darks")
-        self.convert_files("lights")
 
-        seq_name = "lights" if fitseq_mode else "lights_"
+        # Output name is actually the name of the batched working directory
+        self.convert_files(dir_name=output_name)
+        self.unselect_bad_fits(seq_name=output_name)
 
-        # Using calibration frames puts pp_ prefix
+        seq_name = f"{output_name}_"
+
+        # self.siril.cmd("cd", batch_working_dir)
+
+        # Using calibration frames puts pp_ prefix in process directory
         if use_flats or use_darks:
             self.calibrate_lights(
                 seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
             )
-            if clean_up_files:
-                self.clean_up(prefix=seq_name)  # clean up lights_
             seq_name = "pp_" + seq_name
 
         if bg_extract:
@@ -1164,9 +1127,10 @@ class PreprocessingInterface:
                 )  # Remove "pp_lights_" or just "lights_" if not flat calibrated
             seq_name = "bkg_" + seq_name
 
-        # Don't plate solve if 2048+ mode on, doesn't do anything but waste time
-        if not self.fitseq_mode:
-            self.seq_plate_solve(seq_name=seq_name)
+        if self.chosen_telescope in ["Celestron Origin", "Dwarf 2"]:
+            self.extract_coords_from_fits(prefix=seq_name)
+
+        self.seq_plate_solve(seq_name=seq_name)
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
             seq_name=seq_name,
@@ -1183,34 +1147,274 @@ class PreprocessingInterface:
             self.scan_black_frames(seq_name=seq_name)
 
         self.seq_stack(
-            seq_name=seq_name, feather=feather, feather_amount=feather_amount
+            seq_name=seq_name,
+            feather=feather,
+            feather_amount=feather_amount,
+            rejection=True,
+            output_name=output_name,
         )
+
         if clean_up_files:
             self.clean_up(prefix=seq_name)  # clean up r_ files
-        self.load_image(image_name="result")
 
-        # Force a plate solve if 2048+ mode so that SPCC works (if called)
-        if self.fitseq_mode:
-            self.image_plate_solve()
-
+        # Load the result (e.g. batch_lights_001.fits)
+        self.load_image(image_name=output_name)
         # Go back to working dir
         self.siril.cmd("cd", "../")
 
-        # Save og image in WD
-        img = self.save_image("_og")
-        # load og image for autocrop/spcc
-        if drizzle:
-            img = os.path.basename(img) + ".fits"
+        # Save og image in WD - might have drizzle factor in name
+        if output_name.startswith("batch_lights"):
+            out = output_name
         else:
-            img = os.path.basename(img)
-        self.load_image(image_name=img)
+            out = "og"
+        file_name = self.save_image(f"_{out}")
 
-        # If autocrop
-        # crop and save as _og_cropped or spcc cropped
+        return file_name
 
-        if do_autocrop:
-            self.autocrop()
+    def unselect_bad_fits(self, seq_name, folder="process"):
+        """
+        Checks all FITS files in the given folder with the given prefix
+        for integrity and unselects any bad ones in the current sequence
+        in Siril.
 
+        Parameters
+        ----------
+        seq_name : str
+            The prefix of the sequence to check.
+        folder : str, optional
+            The folder to check for FITS files. Defaults to "process".
+
+        Returns
+        -------
+        None
+        """
+        self.siril.log("Checking for bad FITS files...", LogColor.BLUE)
+        bad_fits = []
+        all_files = sorted(
+            [
+                f
+                for f in os.listdir(folder)
+                if f.startswith(seq_name) and f.lower().endswith(self.fits_extension)
+            ]
+        )
+        for idx, filename in enumerate(all_files):
+            file_path = os.path.join(folder, filename)
+            try:
+                with fits.open(file_path) as hdul:
+                    _ = hdul[0].data  # Try to access data
+
+            except Exception as e:
+                self.siril.log(f"Bad FITS file: {filename} — {e}", LogColor.SALMON)
+                bad_fits.append(idx + 1)  # Siril indices start at 1
+
+        if bad_fits:
+            self.siril.log(f"Unselecting bad frames: {bad_fits}", LogColor.SALMON)
+            for index in bad_fits:
+                try:
+                    self.siril.cmd("unselect", seq_name, index, index)
+                except Exception as e:
+                    self.siril.log(
+                        f"Failed to unselect index {index}: {e}", LogColor.RED
+                    )
+        else:
+            self.siril.log("No bad FITS files found.", LogColor.GREEN)
+
+    def run_script(
+        self,
+        do_spcc: bool = False,
+        filter: str = "broadband",
+        telescope: str = "ZWO Seestar S30",
+        catalog: str = "localgaia",
+        use_darks: bool = False,
+        use_flats: bool = False,
+        use_biases: bool = False,
+        bg_extract: bool = False,
+        drizzle: bool = False,
+        drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
+        pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
+        feather: bool = False,
+        feather_amount: float = UI_DEFAULTS["feather_amount"],
+        clean_up_files: bool = False,
+    ):
+        self.siril.log(
+            f"Running script version {VERSION} with arguments:\n"
+            f"do_spcc={do_spcc}\n"
+            f"filter={filter}\n"
+            f"telescope={telescope}\n"
+            f"catalog={catalog}\n"
+            f"use_darks={use_darks}\n"
+            f"use_flats={use_flats}\n"
+            f"use_biases={use_biases}\n"
+            f"bg_extract={bg_extract}\n"
+            f"drizzle={drizzle}\n"
+            f"drizzle_amount={drizzle_amount}\n"
+            f"pixel_fraction={pixel_fraction}\n"
+            f"feather={feather}\n"
+            f"feather_amount={feather_amount}\n"
+            f"clean_up_files={clean_up_files}",
+            LogColor.BLUE,
+        )
+        self.siril.cmd("close")
+        # Check files - if more than 2048, batch them:
+        self.drizzle_status = drizzle
+        self.drizzle_factor = drizzle_amount
+
+        # TODO: Stack calibration frames and copy to the various batch dirs
+        if use_biases:
+            self.convert_files("biases")
+            self.calibration_stack("biases")
+            if clean_up_files:
+                self.clean_up("biases")
+        if use_flats:
+            self.convert_files("flats")
+            self.calibration_stack("flats")
+            if clean_up_files:
+                self.clean_up("flats")
+        if use_darks:
+            self.convert_files("darks")
+            self.calibration_stack("darks")
+            if clean_up_files:
+                self.clean_up("darks")
+
+        # Check files in working directory/lights.
+        # create sub folders with more than 2048 divided by equal amounts
+
+        lights_directory = "lights"
+
+        # Get list of all files in the lights directory
+        all_files = [
+            name
+            for name in os.listdir(lights_directory)
+            if os.path.isfile(os.path.join(lights_directory, name))
+        ]
+        num_files = len(all_files)
+        is_windows = sys.platform.startswith("win")
+
+        # only one batch will be run if less than max_files_per_batch OR not windows.
+        if num_files <= UI_DEFAULTS["max_files_per_batch"] or not is_windows:
+            self.siril.log(
+                f"{num_files} files found in the lights directory which is less than or equal to {UI_DEFAULTS['max_files_per_batch']} files allowed per batch - no batching needed.",
+                LogColor.BLUE,
+            )
+            file_name = self.batch(
+                output_name=lights_directory,
+                use_darks=use_darks,
+                use_flats=use_flats,
+                use_biases=use_biases,
+                bg_extract=bg_extract,
+                drizzle=drizzle,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+                feather=feather,
+                feather_amount=feather_amount,
+                clean_up_files=clean_up_files,
+            )
+
+            self.load_image(image_name=file_name)
+        else:
+            num_batches = math.ceil(num_files / UI_DEFAULTS["max_files_per_batch"])
+            batch_size = math.ceil(num_files / num_batches)
+
+            self.siril.log(
+                f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
+                LogColor.BLUE,
+            )
+
+            # Ensure temp folders exist and are empty
+            for i in range(num_batches):
+                batch_dir = f"batch_lights{i+1}"
+                os.makedirs(batch_dir, exist_ok=True)
+                # Optionally clean out existing files:
+                for f in os.listdir(batch_dir):
+                    os.remove(os.path.join(batch_dir, f))
+
+            # Split and copy files into batches
+            for i, filename in enumerate(all_files):
+                batch_index = i // UI_DEFAULTS["max_files_per_batch"]
+                batch_dir = f"batch_lights{batch_index + 1}"
+                src_path = os.path.join(lights_directory, filename)
+                dest_path = os.path.join(batch_dir, filename)
+                shutil.copy2(src_path, dest_path)
+
+            # Send each of the new lights dir into batch directory
+            for i in range(num_batches):
+                batch_dir = f"batch_lights{i+1}"
+                self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
+                self.batch(
+                    output_name=batch_dir,
+                    use_darks=use_darks,
+                    use_flats=use_flats,
+                    use_biases=use_biases,
+                    bg_extract=bg_extract,
+                    drizzle=drizzle,
+                    drizzle_amount=drizzle_amount,
+                    pixel_fraction=pixel_fraction,
+                    feather=feather,
+                    feather_amount=feather_amount,
+                    clean_up_files=clean_up_files,
+                )
+            self.siril.log("Batching complete.", LogColor.GREEN)
+
+            # Create batched_lights directory
+            final_stack_seq_name = "final_stack"
+            batch_lights = "batch_lights"
+            os.makedirs(final_stack_seq_name, exist_ok=True)
+            source_dir = os.path.join(os.getcwd(), "process")
+            # Move batch result files into batched_lights
+            target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
+
+            # Create the target subdirectory if it doesn't exist
+            os.makedirs(target_subdir, exist_ok=True)
+
+            # Loop through all files in the source directory
+            for filename in os.listdir(source_dir):
+                if f"{batch_lights}" in filename:
+                    full_src_path = os.path.join(source_dir, filename)
+                    full_dst_path = os.path.join(target_subdir, filename)
+
+                # Only move files, skip directories
+                if os.path.isfile(full_src_path):
+                    shutil.move(full_src_path, full_dst_path)
+                    self.siril.log(f"Moved: {filename}", LogColor.BLUE)
+
+            # Clean up temp_lightsX directories
+            for i in range(num_batches):
+                batch_dir = f"{batch_lights}{i+1}"
+                shutil.rmtree(batch_dir, ignore_errors=True)
+
+            self.convert_files(final_stack_seq_name)
+            self.seq_plate_solve(seq_name=final_stack_seq_name)
+            # turn off drizzle for this
+            self.drizzle_status = False
+            self.seq_apply_reg(
+                seq_name=final_stack_seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+            )
+            self.clean_up(prefix=final_stack_seq_name)
+            registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
+            # final stack needs feathering and amount
+            self.drizzle_status = drizzle  # Turn drizzle back to selected option
+            self.seq_stack(
+                seq_name=registered_final_stack_seq_name,
+                feather=True,
+                rejection=False,
+                feather_amount=60,
+                output_name="final_result",
+            )
+            self.load_image(image_name="final_result")
+
+            # cleanup final_stack directory
+            shutil.rmtree(final_stack_seq_name, ignore_errors=True)
+            self.clean_up(prefix=registered_final_stack_seq_name)
+
+            # Go back to working dir
+            self.siril.cmd("cd", "../")
+
+            # Save og image in WD - might have drizzle factor in name
+            file_name = self.save_image("_batched")
+
+        # Spcc as a last step
         if do_spcc:
             img = self.spcc(
                 oscsensor=telescope,
@@ -1221,7 +1425,7 @@ class PreprocessingInterface:
 
             # self.autostretch(do_spcc=do_spcc)
             if drizzle:
-                img = os.path.basename(img) + ".fits"
+                img = os.path.basename(img) + self.fits_extension
             else:
                 img = os.path.basename(img)
             self.load_image(
@@ -1229,6 +1433,24 @@ class PreprocessingInterface:
             )  # Load either og or spcc image
 
         # self.clean_up()
+        import datetime
+
+        self.siril.log(
+            f"Finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            LogColor.GREEN,
+        )
+        self.siril.log(
+            """
+        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
+        The author of this script is Nazmus Nasir (Naztronomy).
+        Website: https://www.Naztronomy.com 
+        YouTube: https://www.YouTube.com/Naztronomy 
+        Discord: https://discord.gg/yXKqrawpjr
+        Patreon: https://www.patreon.com/c/naztronomy
+        """,
+            LogColor.BLUE,
+        )
+
         self.close_dialog()
 
 
@@ -1251,5 +1473,6 @@ if __name__ == "__main__":
 # Website: https://www.Naztronomy.com
 # YouTube: https://www.YouTube.com/Naztronomy
 # Discord: https://discord.gg/yXKqrawpjr
+# Patreon: https://www.patreon.com/c/naztronomy
 
 ##############################################################################
