@@ -67,7 +67,7 @@ UI_DEFAULTS = {
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
 }
-FRAME_TYPES = ("darks", "flats", "biases", "lights")
+FRAME_TYPES = ( "lights", "darks", "flats", "biases")
 
 
 @dataclass
@@ -182,7 +182,9 @@ class PreprocessingInterface:
 
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label = self.current_working_directory
-
+        self.collected_lights_dir = os.path.join(self.current_working_directory, "collected_lights")
+        if not os.path.exists(self.collected_lights_dir):
+            os.makedirs(self.collected_lights_dir, exist_ok=True) 
         # self.root.withdraw()  # Hide the main window
         # changed_cwd = False  # a way not to run the prompting loop
         # initial_cwd = os.path.join(self.current_working_directory, "lights")
@@ -1436,19 +1438,45 @@ class PreprocessingInterface:
             session_name = f"session{idx + 1}"
             self.siril.cmd("cd", f"sessions/{session_name}")
             self.current_working_directory = self.siril.get_siril_wd()
+            session_file_counts = session.get_file_count()
 
-            # Convert files
             for image_type in ["darks", "biases", "flats"]:
-                self.convert_files(image_type=image_type)
-                self.calibration_stack(
-                    seq_name=image_type,
-                )
-                self.clean_up(prefix=image_type)
+                if session_file_counts.get(image_type, 0) > 0:
+                    self.convert_files(image_type=image_type)
+                    self.calibration_stack(seq_name=image_type)
+                    self.clean_up(prefix=image_type)
+                else:
+                    self.siril.log(f"Skipping {image_type}: no files found", LogColor.SALMON)
 
             # Process lights
-            self.siril.cmd("cd", "lights")
+            # self.siril.cmd("cd", "lights")
             self.convert_files(image_type="lights")
             self.calibrate_lights(seq_name="lights", use_darks=True, use_flats=True)
+
+            # Directory to move files to
+            
+
+            # Current directory where files are located
+            current_dir = os.path.join(self.current_working_directory, "process")
+
+            # Find and move all files starting with 'pp_lights'
+            for file_name in os.listdir(current_dir):
+                if file_name.startswith("pp_lights") and file_name.endswith(self.fits_extension):
+                    src_path = os.path.join(current_dir, file_name)
+                    
+                    # Prepend session_name to the filename
+                    new_file_name = f"{session_name}_{file_name}"
+                    dest_path = os.path.join(self.collected_lights_dir, new_file_name)
+                    
+                    shutil.copy2(src_path, dest_path)
+                    self.siril.log(
+                        f"Moved {file_name} to {self.collected_lights_dir} as {new_file_name}",
+                        LogColor.BLUE
+                    )
+
+            # Go back to the previous directory
+            self.siril.cmd("cd", "../../..")
+            self.current_working_directory = self.siril.get_siril_wd()
 
         # TODO: take the pp_lights from the above dir, and put it into cwd/calibrated_lights
 
