@@ -63,7 +63,8 @@ YOUTUBE = "YouTube.com/Naztronomy"
 
 UI_DEFAULTS = {
     "feather_amount": 20.0,
-    "wfwhm_value": 3.0,
+    "filter_round": 3.0,
+    "filter_wfwhm": 3.0,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
@@ -151,7 +152,7 @@ class PreprocessingInterface:
         self.root.title(f"{APP_NAME} - v{VERSION}")
 
         self.root.geometry(
-            f"900x700+{int(self.root.winfo_screenwidth()/3)}+{int(self.root.winfo_screenheight()/3)}"
+            f"900x700+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
         )
         self.root.resizable(True, True)
 
@@ -250,8 +251,6 @@ class PreprocessingInterface:
     def on_session_selected(self, event):
         selected_index = int(self.current_session.get().split()[-1]) - 1
         self.chosen_session = self.get_session_by_index(selected_index)
-        print(self.chosen_session)
-        print(selected_index)
         self.refresh_file_list()
 
     def add_dropdown_session(self):
@@ -298,7 +297,7 @@ class PreprocessingInterface:
             case "biases":
                 self.chosen_session.biases.extend(paths)
 
-        print(f"> Added {len(paths)} {filetype} files to {self.current_session.get()}")
+        self.siril.log(f"> Added {len(paths)} {filetype} files to {self.current_session.get()}", LogColor.BLUE)
         self.refresh_file_list()
 
     def copy_session_files(self, session: Session, session_name: str):
@@ -323,13 +322,13 @@ class PreprocessingInterface:
                 for file in files:
                     dest_path = session_dir / image_type / file.name
                     shutil.copy(file, dest_path)
-                    self.siril.log(f"Copied {file} to {dest_path}", LogColor.GREEN)
+                    self.siril.log(f"Copied {file} to {dest_path}", LogColor.BLUE)
             else:
                 self.siril.log(f"Skipping {image_type}: no files found", LogColor.SALMON)
             
     def refresh_file_list(self):
         self.file_listbox.delete(0, tk.END)
-        print(self.chosen_session)
+        self.siril.log(f"Switched to session {self.chosen_session}", LogColor.BLUE)
         if self.chosen_session:
             for file_type in FRAME_TYPES:
                 # file_list = chosen_session.get_file_lists().get(file_type, [])
@@ -342,12 +341,13 @@ class PreprocessingInterface:
                             f"{index + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}",
                         )
 
+    # Debug code
     def show_all_sessions(self):
         for session in self.sessions:
             for file_type in FRAME_TYPES:
                 files = session.get_files_by_type(file_type)
                 if files:
-                    print(f"--- {file_type.upper()} ---")
+                    self.siril.log(f"--- {file_type.upper()} ---", LogColor.BLUE)
                     for index, file in enumerate(files):
                         print(
                             f"{index + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}"
@@ -395,7 +395,7 @@ class PreprocessingInterface:
     # Dirname: lights, darks, biases, flats
     def convert_files(self, image_type):
         directory = os.path.join(self.current_working_directory, image_type)
-        print(directory)
+        self.siril.log(f"Converting files in {directory}", LogColor.BLUE)
         if os.path.isdir(directory):
             self.siril.cmd("cd", image_type)
             file_count = len(
@@ -469,13 +469,13 @@ class PreprocessingInterface:
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
-    def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction):
+    def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction, filter_wfwhm=3, filter_round=3):
         """Apply Existing Registration to the sequence."""
         cmd_args = [
             "seqapplyreg",
             seq_name,
-            "-filter-round=2.5k",
-            # "-filter-fwhm=2k",
+            f"-filter-round={filter_round}k",
+            f"-filter-wfwhm={filter_wfwhm}k",
             "-kernel=square",
             "-framing=max",
         ]
@@ -591,13 +591,6 @@ class PreprocessingInterface:
 
     def calibration_stack(self, seq_name):
         # not in /process dir here
-        print(f"Sequence name in calibration stacks: {seq_name}")
-        print(
-            os.path.join(
-                self.current_working_directory,
-                f"process/biases_stacked{self.fits_extension}",
-            )
-        )
         if seq_name == "flats":
             if os.path.exists(
                 os.path.join(
@@ -611,7 +604,6 @@ class PreprocessingInterface:
                     "stack", "pp_flats rej 3 3", "-norm=mul", f"-out={seq_name}_stacked"
                 )
                 self.siril.cmd("cd", "..")
-                print("DID THIS HERE")
                 return
             else:
                 self.siril.cmd(
@@ -677,7 +669,7 @@ class PreprocessingInterface:
             self.close_dialog()
 
     def seq_stack(
-        self, seq_name, feather, feather_amount, rejection=False, wfwhm_value=3, output_name=None
+        self, seq_name, feather, feather_amount, rejection=False, output_name=None
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -691,7 +683,7 @@ class PreprocessingInterface:
             "-rgb_equal",
             "-maximize",
             "-filter-included",
-            f"-filter-wfwhm={wfwhm_value}k",
+            "-weight=wfwhm",
             f"-out={out}",
         ]
         if feather:
@@ -702,7 +694,6 @@ class PreprocessingInterface:
             f"seq_name={seq_name}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
-            f"wfwhm_value={wfwhm_value}\n"
             f"output_name={out}",
             LogColor.BLUE,
         )
@@ -983,9 +974,9 @@ class PreprocessingInterface:
             file_button_row, text="Reset Everything", command=self.reset_everything
         ).pack(side="left", padx=5)
 
-        ttk.Button(
-            file_button_row, text="Debug Print", command=self.show_all_sessions
-        ).pack(side="left", padx=5)
+        # ttk.Button(
+        #     file_button_row, text="Debug Print", command=self.show_all_sessions
+        # ).pack(side="left", padx=5)
 
 
 
@@ -994,32 +985,100 @@ class PreprocessingInterface:
         # Frame 2 Start
 
         # Stacking section
-        # stacking_section = ttk.LabelFrame(frame2, text="Preprocessing Settings", padding=10)
-        # stacking_section.pack(fill=tk.X, pady=5)
-        # ttk.Label(stacking_section, text="Telescope:", style="Bold.TLabel").grid(
+        registration_section = ttk.LabelFrame(frame2, text="Registration Settings", padding=10)
+        registration_section.pack(fill=tk.X, pady=5)
+        # ttk.Label(registration_section, text="Telescope:", style="Bold.TLabel").grid(
         #     row=0, column=0, sticky="w"
         # )
 
-        # # Optional Calibration Frames
+        roundness_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_round"])
+        roundness_label = ttk.Label(registration_section, text="Filter Roundness:")
+        roundness_label.grid(row=1, column=0, sticky="w")
+        roundness_spinbox = ttk.Spinbox(
+            registration_section,
+            textvariable=roundness_variable,
+            from_=1,
+            to=4,
+            increment=0.1
+        )
+        roundness_spinbox.grid(row=1, column=2, sticky="w")
 
-        # ttk.Label(stacking_section, text="Clean Up Files:", style="Bold.TLabel").grid(
-        #     row=2, column=0, sticky="w"
-        # )
+        tksiril.create_tooltip(
+            roundness_spinbox,
+            "Filter frames based on roundness. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower).",
+        )
 
-        # cleanup_files_checkbox_variable = tk.BooleanVar()
-        # cleanup_checkbox = ttk.Checkbutton(
-        #     stacking_section, text="", variable=cleanup_files_checkbox_variable
-        # )
-        # cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
-        # tksiril.create_tooltip(
-        #     cleanup_checkbox,
-        #     "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
-        #     "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
-        # )
+        wfwhm_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_wfwhm"])
+        wfwhm_label = ttk.Label(registration_section, text="Filter Weighted FWHM:")
+        wfwhm_label.grid(row=2, column=0, sticky="w")
+        wfwhm_spinbox = ttk.Spinbox(
+            registration_section,
+            textvariable=wfwhm_variable,
+            from_=1,
+            to=4,
+            increment=0.1
+        )
+        wfwhm_spinbox.grid(row=2, column=2, sticky="w")
 
+        tksiril.create_tooltip(
+            wfwhm_spinbox,
+            "Filters based on weighted FWHM value. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower).",
+        )
+
+
+
+        drizzle_label = ttk.Label(registration_section, text="Enable Drizzle:")
+        drizzle_label.grid(row=3, column=0, sticky="w")
+
+        drizzle_checkbox_variable = tk.BooleanVar()
+        ttk.Checkbutton(
+            registration_section,  variable=drizzle_checkbox_variable
+        ).grid(row=3, column=1, sticky="w")
+
+        drizzle_amount_label = ttk.Label(registration_section, text="Drizzle Factor:")
+        drizzle_amount_label.grid(row=4, column=1, sticky="w")
+        drizzle_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["drizzle_amount"])
+        drizzle_amount_spinbox = ttk.Spinbox(
+            registration_section,
+            textvariable=drizzle_amount_variable,
+            from_=0.1,
+            to=3.0,
+            increment=0.1,
+            state=tk.DISABLED,
+        )
+        drizzle_amount_spinbox.grid(row=4, column=2, sticky="w")
+        drizzle_checkbox_variable.trace_add(
+            "write",
+            lambda *args: drizzle_amount_spinbox.config(
+                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
+                textvariable=drizzle_amount_variable,
+            ),
+        )
+        ttk.Label(registration_section, text="Pixel Fraction:").grid(
+            row=5, column=1, sticky="w"
+        )
+        pixel_fraction_variable = tk.DoubleVar(value=UI_DEFAULTS["pixel_fraction"])
+        pixel_fraction_spinbox = ttk.Spinbox(
+            registration_section,
+            textvariable=pixel_fraction_variable,
+            from_=0.1,
+            to=10.0,
+            increment=0.01,
+            state=tk.DISABLED,
+        )
+        pixel_fraction_spinbox.grid(row=5, column=2, sticky="w")
+        drizzle_checkbox_variable.trace_add(
+            "write",
+            lambda *args: pixel_fraction_spinbox.config(
+                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
+                textvariable=pixel_fraction_variable,
+            ),
+        )
+
+       
         # Optional Preprocessing Steps
         calib_section = ttk.LabelFrame(
-            frame2, text="Optional Preprocessing Steps", padding=10
+            frame2, text="Other Optional Steps", padding=10
         )
 
         calib_section.pack(fill=tk.X, pady=5)
@@ -1034,67 +1093,24 @@ class PreprocessingInterface:
             variable=bg_extract_checkbox_variable,
         ).grid(row=2, column=1, sticky="w")
 
-        ttk.Label(calib_section, text="Registration:", style="Bold.TLabel").grid(
-            row=3, column=0, sticky="w"
-        )
+        # ttk.Label(calib_section, text="Registration:", style="Bold.TLabel").grid(
+        #     row=3, column=0, sticky="w"
+        # )
 
-        drizzle_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            calib_section, text="Drizzle?", variable=drizzle_checkbox_variable
-        ).grid(row=3, column=1, sticky="w")
+        
 
-        drizzle_amount_label = ttk.Label(calib_section, text="Drizzle amount:")
-        drizzle_amount_label.grid(row=3, column=2, sticky="w")
-        drizzle_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["drizzle_amount"])
-        drizzle_amount_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=drizzle_amount_variable,
-            from_=0.1,
-            to=3.0,
-            increment=0.1,
-            state=tk.DISABLED,
-        )
-        drizzle_amount_spinbox.grid(row=3, column=3, sticky="w")
-        drizzle_checkbox_variable.trace_add(
-            "write",
-            lambda *args: drizzle_amount_spinbox.config(
-                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
-                textvariable=drizzle_amount_variable,
-            ),
-        )
-        ttk.Label(calib_section, text="Pixel Fraction:").grid(
-            row=4, column=2, sticky="w"
-        )
-        pixel_fraction_variable = tk.DoubleVar(value=UI_DEFAULTS["pixel_fraction"])
-        pixel_fraction_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=pixel_fraction_variable,
-            from_=0.1,
-            to=10.0,
-            increment=0.01,
-            state=tk.DISABLED,
-        )
-        pixel_fraction_spinbox.grid(row=4, column=3, sticky="w")
-        drizzle_checkbox_variable.trace_add(
-            "write",
-            lambda *args: pixel_fraction_spinbox.config(
-                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
-                textvariable=pixel_fraction_variable,
-            ),
-        )
-
-        ttk.Label(calib_section, text="Stacking:", style="Bold.TLabel").grid(
+        ttk.Label(calib_section, text="Feather Frames:", style="Bold.TLabel").grid(
             row=5, column=0, sticky="w"
         )
 
         feather_checkbox_variable = tk.BooleanVar()
         feather_checkbox = ttk.Checkbutton(
-            calib_section, text="Feather?", variable=feather_checkbox_variable
+            calib_section, variable=feather_checkbox_variable
         )
         feather_checkbox.grid(row=5, column=1, sticky="w")
 
         feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
-        feather_amount_label.grid(row=5, column=2, sticky="w")
+        feather_amount_label.grid(row=6, column=1, sticky="w")
         feather_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["feather_amount"])
         feather_amount_spinbox = ttk.Spinbox(
             calib_section,
@@ -1104,7 +1120,7 @@ class PreprocessingInterface:
             increment=5,
             state=tk.DISABLED,
         )
-        feather_amount_spinbox.grid(row=5, column=3, sticky="w")
+        feather_amount_spinbox.grid(row=6, column=2, sticky="w")
         feather_checkbox_variable.trace_add(
             "write",
             lambda *args: feather_amount_spinbox.config(
@@ -1112,23 +1128,23 @@ class PreprocessingInterface:
                 textvariable=feather_amount_variable,
             ),
         )
+
+        ttk.Label(calib_section, text="Clean Up Files:", style="Bold.TLabel").grid(
+            row=7, column=0, sticky="w"
+        )
+
+        cleanup_files_checkbox_variable = tk.BooleanVar()
+        cleanup_checkbox = ttk.Checkbutton(
+            calib_section, text="", variable=cleanup_files_checkbox_variable
+        )
+        cleanup_checkbox.grid(row=7, column=1, sticky="w")
+        tksiril.create_tooltip(
+            cleanup_checkbox,
+            "Enable this option to delete all intermediary session files. This will NOT delete the gathered pp_lights files which can be found in the 'collected_lights' folder.",
+        )
+
+
         
-        wfwhm_variable = tk.DoubleVar(value=UI_DEFAULTS["wfwhm_value"])
-        wfwhm_label = ttk.Label(calib_section, text="Weighted FWHM amount:")
-        wfwhm_label.grid(row=6, column=2, sticky="w")
-        wfwhm_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=wfwhm_variable,
-            from_=1,
-            to=4,
-            increment=0.1
-        )
-        wfwhm_spinbox.grid(row=6, column=3, sticky="w")
-
-
-        ttk.Button(frame2, text="Help", width=10, command=self.show_help).pack(
-            pady=(15, 0), side=tk.LEFT
-        )
 
         # Run button
         ttk.Button(
@@ -1142,13 +1158,17 @@ class PreprocessingInterface:
                 pixel_fraction=pixel_fraction_spinbox.get(),
                 feather=feather_checkbox_variable.get(),
                 feather_amount=feather_amount_spinbox.get(),
-                wfwhm_value=wfwhm_variable.get(),
-                # clean_up_files=cleanup_files_checkbox_variable.get(),
+                filter_round=roundness_variable.get(),
+                filter_wfwhm=wfwhm_variable.get(),
+                clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
 
         # Frame 2 end
-
+        # Help button
+        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
+            pady=(15, 0), side=tk.LEFT
+        )
         # Close button
         ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(
             pady=(15, 0), side=tk.RIGHT
@@ -1178,7 +1198,6 @@ class PreprocessingInterface:
             return
 
         first_file = matching_files[0]
-        print(first_file)
         file_path = os.path.join(process_dir, first_file)
 
         try:
@@ -1339,8 +1358,9 @@ class PreprocessingInterface:
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
-        wfwhm_value: float = UI_DEFAULTS["wfwhm_value"],
-        # clean_up_files: bool = False,
+        filter_round: float = UI_DEFAULTS["filter_round"],
+        filter_wfwhm: float = UI_DEFAULTS["filter_wfwhm"],
+        clean_up_files: bool = False,
     ):
         self.siril.log(
             f"Running script version {VERSION} with arguments:\n"
@@ -1350,8 +1370,10 @@ class PreprocessingInterface:
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
-            # f"clean_up_files={clean_up_files}"
-            , LogColor.BLUE,
+            f"filter_round={filter_round}\n"
+            f"filter_wfwhm={filter_wfwhm}\n"
+            f"clean_up_files={clean_up_files}",
+            LogColor.BLUE,
         )
         self.siril.cmd("close")
         # Check files - if more than 2048, batch them:
@@ -1415,6 +1437,9 @@ class PreprocessingInterface:
             # Go back to the previous directory
             self.siril.cmd("cd", "../../..")
             self.current_working_directory = self.siril.get_siril_wd()
+            # If clean up is selected, delete the session# directories one after another.
+            if clean_up_files:
+                shutil.rmtree(os.path.join(self.current_working_directory, "sessions", session_name))
 
 
         self.siril.cmd("cd", self.collected_lights_dir)
@@ -1472,14 +1497,16 @@ class PreprocessingInterface:
             feather=feather,
             feather_amount=feather_amount,
             rejection=True,
-            wfwhm_value=wfwhm_value,
             output_name="merge_stacked",
         )
 
         self.load_image(image_name="merge_stacked")
         self.siril.cmd("cd", "../")
+        self.current_working_directory = self.siril.get_siril_wd()
         file_name = self.save_image("_og")
-
+        # Delete the blank sessions dir
+        if clean_up_files:
+            shutil.rmtree(os.path.join(self.current_working_directory, "sessions"))
         
 
         # self.clean_up()
