@@ -63,6 +63,7 @@ YOUTUBE = "YouTube.com/Naztronomy"
 
 UI_DEFAULTS = {
     "feather_amount": 20.0,
+    "wfwhm_value": 3.0,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
@@ -182,108 +183,12 @@ class PreprocessingInterface:
 
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label = self.current_working_directory
+
+        # Create collected_lights directory to store all pp_lights files 
         self.collected_lights_dir = os.path.join(self.current_working_directory, "collected_lights")
         if not os.path.exists(self.collected_lights_dir):
             os.makedirs(self.collected_lights_dir, exist_ok=True) 
-        # self.root.withdraw()  # Hide the main window
-        # changed_cwd = False  # a way not to run the prompting loop
-        # initial_cwd = os.path.join(self.current_working_directory, "lights")
-        # if os.path.isdir(initial_cwd):
-        #     self.siril.log(
-        #         f"Current working directory is valid: {self.current_working_directory}",
-        #         LogColor.GREEN,
-        #     )
-        #     self.siril.cmd("cd", f'"{self.current_working_directory}"')
-        #     self.cwd_label.set(
-        #         f"Current working directory: {self.current_working_directory}"
-        #     )
-        #     changed_cwd = True
-        #     # self.root.deiconify()
-        # elif os.path.basename(self.current_working_directory.lower()) == "lights":
-        #     msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
-        #     answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
-        #     if answer:
-        #         self.siril.cmd("cd", "../")
-        #         os.chdir(os.path.dirname(self.current_working_directory))
-        #         self.current_working_directory = os.path.dirname(
-        #             self.current_working_directory
-        #         )
-        #         self.cwd_label.set(
-        #             f"Current working directory: {self.current_working_directory}"
-        #         )
-        #         self.siril.log(
-        #             f"Updated current working directory to: {self.current_working_directory}",
-        #             LogColor.GREEN,
-        #         )
-        #         changed_cwd = True
-        #         # self.root.deiconify()
-        #     else:
-        #         self.siril.log(
-        #             f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
-        #             LogColor.SALMON,
-        #         )
-        #         changed_cwd = False
 
-        # if not changed_cwd:
-        #     dialog_helper = MacOSFriendlyDialog(self.root)
-
-        #     while True:
-        #         prompt_title = (
-        #             "Select the parent directory containing the 'lights' directory"
-        #         )
-
-        #         if sys.platform == "darwin":
-        #             self.root.lift()
-        #             self.root.attributes("-topmost", True)
-        #             self.root.update()
-        #             self.root.attributes("-topmost", False)
-
-        #         selected_dir = dialog_helper.askdirectory(
-        #             initialdir=self.current_working_directory,
-        #             title=prompt_title,
-        #         )
-
-        #         if not selected_dir:
-        #             self.siril.log(
-        #                 "Canceled selecting directory. Restart the script to try again.",
-        #                 LogColor.SALMON,
-        #             )
-        #             self.siril.disconnect()
-        #             self.root.quit()
-        #             self.root.destroy()
-        #             break
-
-        #         lights_directory = os.path.join(selected_dir, "lights")
-        #         if os.path.isdir(lights_directory):
-        #             self.siril.cmd("cd", f'"{selected_dir}"')
-        #             os.chdir(selected_dir)
-        #             self.current_working_directory = selected_dir
-        #             self.cwd_label.set(f"Current working directory: {selected_dir}")
-        #             self.siril.log(
-        #                 f"Updated current working directory to: {selected_dir}",
-        #                 LogColor.GREEN,
-        #             )
-        #             break
-
-        #         elif os.path.basename(selected_dir.lower()) == "lights":
-        #             msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
-        #             answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
-        #             if answer:
-        #                 parent_dir = os.path.dirname(selected_dir)
-        #                 self.siril.cmd("cd", f'"{parent_dir}"')
-        #                 os.chdir(parent_dir)
-        #                 self.current_working_directory = parent_dir
-        #                 self.cwd_label.set(f"Current working directory: {parent_dir}")
-        #                 self.siril.log(
-        #                     f"Updated current working directory to: {parent_dir}",
-        #                     LogColor.GREEN,
-        #                 )
-        #                 break
-        #         else:
-        #             msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please try again."
-        #             self.siril.log(msg, LogColor.SALMON)
-        #             tk.messagebox.showerror("Invalid Directory", msg)
-        #             continue
 
         # Sessions
         # self.sessions = []
@@ -351,9 +256,6 @@ class PreprocessingInterface:
 
     def add_dropdown_session(self):
         self.add_session(Session())
-        # next_number = len(sessions) + 1
-        # new_session = f"Session {next_number}"
-        # sessions.append(new_session)
         self.update_dropdown()
         self.current_session.set(f"Session {len(self.sessions)}")
         self.chosen_session = self.sessions[
@@ -363,7 +265,9 @@ class PreprocessingInterface:
 
     def remove_session(self):
         if len(self.sessions) <= 1:
+            self.siril.log("Cannot remove the last session.", LogColor.BLUE)
             return  # don't allow removing the last session
+            
         current = self.current_session.get()
         current_session_index = int(current.split()[-1]) - 1
         sess = self.get_session_by_index(current_session_index)  # Validate index
@@ -399,8 +303,6 @@ class PreprocessingInterface:
 
     def copy_session_files(self, session: Session, session_name: str):
         """Copies all files from the session to the specified destination directory."""
-        # if not os.path.isdir(destination):
-        #     raise FileNotFoundError(f"Destination directory {destination} does not exist.")
 
         destination = Path("sessions")
         if not destination.exists():
@@ -775,7 +677,7 @@ class PreprocessingInterface:
             self.close_dialog()
 
     def seq_stack(
-        self, seq_name, feather, feather_amount, rejection=False, output_name=None
+        self, seq_name, feather, feather_amount, rejection=False, wfwhm_value=3, output_name=None
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -789,6 +691,7 @@ class PreprocessingInterface:
             "-rgb_equal",
             "-maximize",
             "-filter-included",
+            f"-filter-wfwhm={wfwhm_value}k",
             f"-out={out}",
         ]
         if feather:
@@ -798,7 +701,9 @@ class PreprocessingInterface:
             f"Running seq_stack with arguments:\n"
             f"seq_name={seq_name}\n"
             f"feather={feather}\n"
-            f"feather_amount={feather_amount}",
+            f"feather_amount={feather_amount}\n"
+            f"wfwhm_value={wfwhm_value}\n"
+            f"output_name={out}",
             LogColor.BLUE,
         )
 
@@ -851,14 +756,6 @@ class PreprocessingInterface:
             self.siril.log(f"Save command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Saved file: {file_name}", LogColor.GREEN)
-
-    def load_registered_image(self):
-        """Loads the registered image. Currently unused"""
-        try:
-            self.siril.cmd("load", "result")
-        except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"Load command execution failed: {e}", LogColor.RED)
-        self.save_image("_og")
 
     def image_plate_solve(self):
         """Plate solve the loaded image with the '-force' argument."""
@@ -924,19 +821,6 @@ class PreprocessingInterface:
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
 
-    def autostretch(self, do_spcc):
-        """Autostretch as a way to preview the final result"""
-        try:
-            self.siril.cmd("autostretch", *(["-linked"] if do_spcc else []))
-        except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"Autostretch command execution failed: {e}", LogColor.RED)
-
-            self.close_dialog()
-        self.siril.log(
-            "Autostretched image."
-            + (" You may want to open the _spcc file instead." if do_spcc else ""),
-            LogColor.GREEN,
-        )
 
     def clean_up(self, prefix=None):
         """Cleans up all files in the process directory."""
@@ -969,11 +853,11 @@ class PreprocessingInterface:
             "Discord: https://discord.gg/yXKqrawpjr\n"
             "Patreon: https://www.patreon.com/c/naztronomy\n\n"
             "Info:\n"
-            '1. Must have a "lights" subdirectory inside of the working directory.\n'
-            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
-            f"3. If on Windows and you have more than {UI_DEFAULTS["max_files_per_batch"]} files, this script will automatically split them into batches.\n"
-            "4. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
-            "5. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
+            '1. Recommended to use a blank working directory to have a clean setup.\n'
+            "2. You can run this with or without calibration frames.\n"
+            f"3. You can have as many sessions as you'd like. Each individual session currently has a limit of 2048 files.\n"
+            "4. All preprocessed lights (pp_lights) are saved in the collected_lights directory and are not removed.\n"
+            "5. This script makes a copy of all of your images so that the originals are not modified.\n"
             "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
             "7. When asking for help, please have the logs handy."
         )
@@ -1063,7 +947,7 @@ class PreprocessingInterface:
         ttk.Button(
             frame_buttons, text="Add Biases", command=lambda: self.load_files("Biases")
         ).pack(side="left", padx=10)
-        
+
         # LabelFrame container for the section
         self.list_frame = ttk.LabelFrame(frame1, text="Files in Current Session")
         self.list_frame.pack(fill="both", expand=True, padx=5, pady=10)
@@ -1110,28 +994,28 @@ class PreprocessingInterface:
         # Frame 2 Start
 
         # Stacking section
-        stacking_section = ttk.LabelFrame(frame2, text="Stacking Settings", padding=10)
-        stacking_section.pack(fill=tk.X, pady=5)
-        ttk.Label(stacking_section, text="Telescope:", style="Bold.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
+        # stacking_section = ttk.LabelFrame(frame2, text="Preprocessing Settings", padding=10)
+        # stacking_section.pack(fill=tk.X, pady=5)
+        # ttk.Label(stacking_section, text="Telescope:", style="Bold.TLabel").grid(
+        #     row=0, column=0, sticky="w"
+        # )
 
-        # Optional Calibration Frames
+        # # Optional Calibration Frames
 
-        ttk.Label(stacking_section, text="Clean Up Files:", style="Bold.TLabel").grid(
-            row=2, column=0, sticky="w"
-        )
+        # ttk.Label(stacking_section, text="Clean Up Files:", style="Bold.TLabel").grid(
+        #     row=2, column=0, sticky="w"
+        # )
 
-        cleanup_files_checkbox_variable = tk.BooleanVar()
-        cleanup_checkbox = ttk.Checkbutton(
-            stacking_section, text="", variable=cleanup_files_checkbox_variable
-        )
-        cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
-        tksiril.create_tooltip(
-            cleanup_checkbox,
-            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
-            "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
-        )
+        # cleanup_files_checkbox_variable = tk.BooleanVar()
+        # cleanup_checkbox = ttk.Checkbutton(
+        #     stacking_section, text="", variable=cleanup_files_checkbox_variable
+        # )
+        # cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
+        # tksiril.create_tooltip(
+        #     cleanup_checkbox,
+        #     "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
+        #     "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
+        # )
 
         # Optional Preprocessing Steps
         calib_section = ttk.LabelFrame(
@@ -1228,6 +1112,19 @@ class PreprocessingInterface:
                 textvariable=feather_amount_variable,
             ),
         )
+        
+        wfwhm_variable = tk.DoubleVar(value=UI_DEFAULTS["wfwhm_value"])
+        wfwhm_label = ttk.Label(calib_section, text="Weighted FWHM amount:")
+        wfwhm_label.grid(row=6, column=2, sticky="w")
+        wfwhm_spinbox = ttk.Spinbox(
+            calib_section,
+            textvariable=wfwhm_variable,
+            from_=1,
+            to=4,
+            increment=0.1
+        )
+        wfwhm_spinbox.grid(row=6, column=3, sticky="w")
+
 
         ttk.Button(frame2, text="Help", width=10, command=self.show_help).pack(
             pady=(15, 0), side=tk.LEFT
@@ -1245,7 +1142,8 @@ class PreprocessingInterface:
                 pixel_fraction=pixel_fraction_spinbox.get(),
                 feather=feather_checkbox_variable.get(),
                 feather_amount=feather_amount_spinbox.get(),
-                clean_up_files=cleanup_files_checkbox_variable.get(),
+                wfwhm_value=wfwhm_variable.get(),
+                # clean_up_files=cleanup_files_checkbox_variable.get(),
             ),
         ).pack(pady=(15, 0), side=tk.RIGHT)
 
@@ -1441,7 +1339,8 @@ class PreprocessingInterface:
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
-        clean_up_files: bool = False,
+        wfwhm_value: float = UI_DEFAULTS["wfwhm_value"],
+        # clean_up_files: bool = False,
     ):
         self.siril.log(
             f"Running script version {VERSION} with arguments:\n"
@@ -1451,8 +1350,8 @@ class PreprocessingInterface:
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
-            f"clean_up_files={clean_up_files}",
-            LogColor.BLUE,
+            # f"clean_up_files={clean_up_files}"
+            , LogColor.BLUE,
         )
         self.siril.cmd("close")
         # Check files - if more than 2048, batch them:
@@ -1563,14 +1462,17 @@ class PreprocessingInterface:
 
         seq_name = f"r_{seq_name}"
 
+        # Scans for black frames due to existing Siril bug.
         if drizzle:
             self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
 
+        # Stacks the sequence with rejection 
         self.seq_stack(
             seq_name=seq_name,
             feather=feather,
             feather_amount=feather_amount,
             rejection=True,
+            wfwhm_value=wfwhm_value,
             output_name="merge_stacked",
         )
 
@@ -1578,144 +1480,12 @@ class PreprocessingInterface:
         self.siril.cmd("cd", "../")
         file_name = self.save_image("_og")
 
-        # TODO: run process to stack all pp lights
-
-        # lights_directory = "lights"
-
-        # Get list of all files in the lights directory
-        # all_files = [
-        #     name
-        #     for name in os.listdir(lights_directory)
-        #     if os.path.isfile(os.path.join(lights_directory, name))
-        # ]
-        # num_files = len(all_files)
-        # is_windows = sys.platform.startswith("win")
-
-        # # only one batch will be run if less than max_files_per_batch OR not windows.
-        # if num_files <= UI_DEFAULTS["max_files_per_batch"] or not is_windows:
-        #     self.siril.log(
-        #         f"{num_files} files found in the lights directory which is less than or equal to {UI_DEFAULTS['max_files_per_batch']} files allowed per batch - no batching needed.",
-        #         LogColor.BLUE,
-        #     )
-        #     file_name = self.batch(
-        #         output_name=lights_directory,
-        #         bg_extract=bg_extract,
-        #         drizzle=drizzle,
-        #         drizzle_amount=drizzle_amount,
-        #         pixel_fraction=pixel_fraction,
-        #         feather=feather,
-        #         feather_amount=feather_amount,
-        #         clean_up_files=clean_up_files,
-        #     )
-
-        #     self.load_image(image_name=file_name)
-        # else:
-        #     num_batches = math.ceil(num_files / UI_DEFAULTS["max_files_per_batch"])
-        #     batch_size = math.ceil(num_files / num_batches)
-
-        #     self.siril.log(
-        #         f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
-        #         LogColor.BLUE,
-        #     )
-
-        #     # Ensure temp folders exist and are empty
-        #     for i in range(num_batches):
-        #         batch_dir = f"batch_lights{i+1}"
-        #         os.makedirs(batch_dir, exist_ok=True)
-        #         # Optionally clean out existing files:
-        #         for f in os.listdir(batch_dir):
-        #             os.remove(os.path.join(batch_dir, f))
-
-        #     # Split and copy files into batches
-        #     for i, filename in enumerate(all_files):
-        #         batch_index = i // UI_DEFAULTS["max_files_per_batch"]
-        #         batch_dir = f"batch_lights{batch_index + 1}"
-        #         src_path = os.path.join(lights_directory, filename)
-        #         dest_path = os.path.join(batch_dir, filename)
-        #         shutil.copy2(src_path, dest_path)
-
-        #     # Send each of the new lights dir into batch directory
-        #     for i in range(num_batches):
-        #         batch_dir = f"batch_lights{i+1}"
-        #         self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
-        #         self.batch(
-        #             output_name=batch_dir,
-        #             bg_extract=bg_extract,
-        #             drizzle=drizzle,
-        #             drizzle_amount=drizzle_amount,
-        #             pixel_fraction=pixel_fraction,
-        #             feather=feather,
-        #             feather_amount=feather_amount,
-        #             clean_up_files=clean_up_files,
-        #         )
-        #     self.siril.log("Batching complete.", LogColor.GREEN)
-
-        #     # Create batched_lights directory
-        #     final_stack_seq_name = "final_stack"
-        #     batch_lights = "batch_lights"
-        #     os.makedirs(final_stack_seq_name, exist_ok=True)
-        #     source_dir = os.path.join(os.getcwd(), "process")
-        #     # Move batch result files into batched_lights
-        #     target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
-
-        #     # Create the target subdirectory if it doesn't exist
-        #     os.makedirs(target_subdir, exist_ok=True)
-
-        #     # Loop through all files in the source directory
-        #     for filename in os.listdir(source_dir):
-        #         if f"{batch_lights}" in filename:
-        #             full_src_path = os.path.join(source_dir, filename)
-        #             full_dst_path = os.path.join(target_subdir, filename)
-
-        #         # Only move files, skip directories
-        #         if os.path.isfile(full_src_path):
-        #             shutil.move(full_src_path, full_dst_path)
-        #             self.siril.log(f"Moved: {filename}", LogColor.BLUE)
-
-        #     # Clean up temp_lightsX directories
-        #     for i in range(num_batches):
-        #         batch_dir = f"{batch_lights}{i+1}"
-        #         shutil.rmtree(batch_dir, ignore_errors=True)
-
-        #     self.convert_files(final_stack_seq_name)
-        #     self.seq_plate_solve(seq_name=final_stack_seq_name)
-        #     # turn off drizzle for this
-        #     self.drizzle_status = False
-        #     self.seq_apply_reg(
-        #         seq_name=final_stack_seq_name,
-        #         drizzle_amount=drizzle_amount,
-        #         pixel_fraction=pixel_fraction,
-        #     )
-        #     self.clean_up(prefix=final_stack_seq_name)
-        #     registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
-        #     # final stack needs feathering and amount
-        #     self.drizzle_status = drizzle  # Turn drizzle back to selected option
-        #     self.seq_stack(
-        #         seq_name=registered_final_stack_seq_name,
-        #         feather=True,
-        #         rejection=False,
-        #         feather_amount=60,
-        #         output_name="final_result",
-        #     )
-        #     self.load_image(image_name="final_result")
-
-        #     # cleanup final_stack directory
-        #     shutil.rmtree(final_stack_seq_name, ignore_errors=True)
-        #     self.clean_up(prefix=registered_final_stack_seq_name)
-
-        #     # Go back to working dir
-        #     self.siril.cmd("cd", "../")
-
-        #     # Save og image in WD - might have drizzle factor in name
-        #     file_name = self.save_image("_batched")
-
-        # Spcc as a last step
+        
 
         # self.clean_up()
-        import datetime
 
         self.siril.log(
-            f"Finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             LogColor.GREEN,
         )
         self.siril.log(
