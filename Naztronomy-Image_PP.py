@@ -409,18 +409,22 @@ class PreprocessingInterface:
         if not session_dir.exists():
             os.mkdir(session_dir)
 
-        for file_type in FRAME_TYPES:
-            type_dir = session_dir / file_type
-            if not type_dir.exists():
-                os.mkdir(type_dir)
+        file_counts = session.get_file_count()
 
-        for file_type in FRAME_TYPES:
-            files = session.get_files_by_type(file_type)
-            for file in files:
-                dest_path = session_dir / file_type / file.name
-                shutil.copy(file, dest_path)
-                self.siril.log(f"Copied {file} to {dest_path}", LogColor.GREEN)
+        for image_type in FRAME_TYPES:
+            if file_counts.get(image_type, 0) > 0:
+                type_dir = session_dir / image_type
+                if not type_dir.exists():
+                    os.mkdir(type_dir)
 
+                files = session.get_files_by_type(image_type)
+                for file in files:
+                    dest_path = session_dir / image_type / file.name
+                    shutil.copy(file, dest_path)
+                    self.siril.log(f"Copied {file} to {dest_path}", LogColor.GREEN)
+            else:
+                self.siril.log(f"Skipping {image_type}: no files found", LogColor.SALMON)
+            
     def refresh_file_list(self):
         self.file_listbox.delete(0, tk.END)
         print(self.chosen_session)
@@ -541,30 +545,18 @@ class PreprocessingInterface:
         # self.siril.cmd("cd", "process")
         args = ["seqplatesolve", seq_name]
 
-        # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
-        if self.chosen_telescope == "Celestron Origin":
-            args.append(self.target_coords)
-            focal_len = 400
-            pixel_size = 2.4
-            args.append(f"-focal={focal_len}")
-            args.append(f"-pixelsize={pixel_size}")
-        if self.chosen_telescope == "Dwarf 2":
-            args.append(self.target_coords)
-            focal_len = 100
-            pixel_size = 1.45
-            args.append(f"-focal={focal_len}")
-            args.append(f"-pixelsize={pixel_size}")
-
         args.extend(["-nocache", "-force", "-disto=ps_distortion"])
-        # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
             self.siril.cmd(*args)
+            self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
+            return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
+            self.siril.log(f"seqplatesolve failed, going to try regular registration: {e}", LogColor.SALMON)
+            return False
             # self.siril.error_messagebox(f"seqplatesolve failed: {e}")
             # self.close_dialog()
-        self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
+        
 
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
@@ -590,6 +582,26 @@ class PreprocessingInterface:
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
             )
         self.siril.log("Command arguments: " + " ".join(cmd_args), LogColor.BLUE)
+
+        try:
+            self.siril.cmd(*cmd_args)
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Data error occurred: {e}", LogColor.RED)
+
+        self.siril.log(f"Applied existing registration to seq {seq_name}", LogColor.GREEN)
+
+    def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
+        """Registers the sequence using the 'register' command."""
+        cmd_args = [
+            "register",
+            seq_name,
+            "-2pass"
+        ]
+        if self.drizzle_status:
+            cmd_args.extend(
+                ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
+            )
+        self.siril.log("Regular Registration Done: " + " ".join(cmd_args), LogColor.BLUE)
 
         try:
             self.siril.cmd(*cmd_args)
@@ -1478,7 +1490,66 @@ class PreprocessingInterface:
             self.siril.cmd("cd", "../../..")
             self.current_working_directory = self.siril.get_siril_wd()
 
-        # TODO: take the pp_lights from the above dir, and put it into cwd/calibrated_lights
+
+        self.siril.cmd("cd", self.collected_lights_dir)
+        self.current_working_directory = self.siril.get_siril_wd()
+        # Create a new sequence for each session
+        for idx, session in enumerate(session_to_process):
+            self.siril.create_new_seq(
+                f"session{idx + 1}_pp_lights_"
+            )
+        # Find all files starting with 'session' and ending with '.seq'
+        session_files = [
+            file_name for file_name in os.listdir(self.current_working_directory)
+            if file_name.startswith('session') and file_name.endswith('.seq')
+        ]
+
+        # Merge all session files
+        seq_name = "pp_lights_merged_"
+        if session_files:
+            self.siril.cmd("merge", *session_files, seq_name)
+            self.siril.log(f"Merged session files: {', '.join(session_files)}", LogColor.GREEN)
+        else:
+            self.siril.log("No session files found to merge", LogColor.SALMON)
+
+        if bg_extract:
+            self.seq_bg_extract(seq_name=seq_name)
+            seq_name = "bkg_" + seq_name
+
+        plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
+
+        if plate_solve_status:
+            self.seq_apply_reg(
+                seq_name=seq_name, drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction
+            )
+        else: 
+            # If Siril can't plate solve, we apply regular registration with 2pass and then apply registration with max framing
+            self.regular_register_seq(
+                seq_name=seq_name, drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction
+            )
+            self.seq_apply_reg(
+                seq_name=seq_name, drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction
+            )
+
+        seq_name = f"r_{seq_name}"
+
+        if drizzle:
+            self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
+
+        self.seq_stack(
+            seq_name=seq_name,
+            feather=feather,
+            feather_amount=feather_amount,
+            rejection=True,
+            output_name="merge_stacked",
+        )
+
+        self.load_image(image_name="merge_stacked")
+        self.siril.cmd("cd", "../")
+        file_name = self.save_image("_og")
 
         # TODO: run process to stack all pp lights
 
