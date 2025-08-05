@@ -1016,67 +1016,94 @@ class PreprocessingInterface:
 
         # self.current_session = tk.StringVar(value=len(self.sessions))
         # Frame 1 Start
+
+        # Session selection row
+        session_row = ttk.Frame(frame1)
+        session_row.pack(anchor="w", fill="x", pady=5)
+
+        ttk.Label(session_row, text="Session:").pack(side="left", padx=(0, 5))
+
         self.session_dropdown = ttk.Combobox(
-            frame1,
+            session_row,
             textvariable=self.current_session,
             values=[f"Session {i+1}" for i in range(len(self.sessions))],
             state="readonly",
+            width=30,
         )
-        self.session_dropdown.pack(anchor="w", fill="x")
+        self.session_dropdown.pack(side="left")
         self.session_dropdown.bind("<<ComboboxSelected>>", self.on_session_selected)
 
-        button_frame = ttk.Frame(frame1)
-        button_frame.pack(anchor="w", pady=10)
-
         ttk.Button(
-            button_frame, text="Add Session", command=self.add_dropdown_session
-        ).pack(side="left", padx=5)
-        ttk.Button(
-            button_frame, text="Remove Session", command=self.remove_session
+            session_row, text="+ Add Session", command=self.add_dropdown_session
         ).pack(side="left", padx=5)
 
-        button_frame = ttk.LabelFrame(frame1, text="Add Frames")
-        button_frame.pack(pady=10, fill="x")
+        ttk.Button(
+            session_row, text="– Remove Session", command=self.remove_session
+        ).pack(side="left", padx=5)
+
+        # Separator (optional)
+        ttk.Separator(frame1, orient="horizontal").pack(fill="x", pady=10)
+
+        # Frame addition row
+        frame_buttons = ttk.Frame(frame1)
+        frame_buttons.pack(anchor="center", pady=5)
 
         ttk.Button(
-            button_frame, text="Add Lights", command=lambda: self.load_files("Lights")
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            button_frame, text="Add Darks", command=lambda: self.load_files("Darks")
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            button_frame, text="Add Flats", command=lambda: self.load_files("Flats")
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            button_frame, text="Add Biases", command=lambda: self.load_files("Biases")
-        ).pack(fill="x", pady=2)
+            frame_buttons, text="Add Lights", command=lambda: self.load_files("Lights")
+        ).pack(side="left", padx=10)
 
-        # Frame for file list
+        ttk.Button(
+            frame_buttons, text="Add Darks", command=lambda: self.load_files("Darks")
+        ).pack(side="left", padx=10)
+
+        ttk.Button(
+            frame_buttons, text="Add Flats", command=lambda: self.load_files("Flats")
+        ).pack(side="left", padx=10)
+
+        ttk.Button(
+            frame_buttons, text="Add Biases", command=lambda: self.load_files("Biases")
+        ).pack(side="left", padx=10)
+        
+        # LabelFrame container for the section
         self.list_frame = ttk.LabelFrame(frame1, text="Files in Current Session")
         self.list_frame.pack(fill="both", expand=True, padx=5, pady=10)
 
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(self.list_frame)
-        scrollbar.pack(side="right", fill="y")
+        # Label above listbox
+        # ttk.Label(self.list_frame, text="Files in Current Session:").pack(anchor="w", pady=(10, 0))
 
-        # Listbox to display files
+        # === Frame for Listbox and Scrollbar side-by-side ===
+        list_container = ttk.Frame(self.list_frame)
+        list_container.pack(fill="both", expand=True)
+
+        # Listbox
         self.file_listbox = tk.Listbox(
-            self.list_frame, selectmode=tk.EXTENDED, yscrollcommand=scrollbar.set
+            list_container,
+            selectmode=tk.EXTENDED,
+            yscrollcommand=lambda *args: scrollbar.set(*args),
         )
         self.file_listbox.pack(side="left", fill="both", expand=True)
 
-        scrollbar.config(command=self.file_listbox.yview)
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=self.file_listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+
+        # === Frame for buttons under the listbox ===
+        file_button_row = ttk.Frame(self.list_frame)
+        file_button_row.pack(pady=(10, 0))
+
         ttk.Button(
-            self.list_frame, text="Remove Selected", command=self.remove_selected_files
-        ).pack(pady=(5, 0))
+            file_button_row, text="Remove Selected File(s)", command=self.remove_selected_files
+        ).pack(side="left", padx=5)
+
         ttk.Button(
-            self.list_frame, text="Reset Everything", command=self.reset_everything
-        ).pack(pady=(5, 0))
+            file_button_row, text="Reset Everything", command=self.reset_everything
+        ).pack(side="left", padx=5)
+
         ttk.Button(
-            self.list_frame,
-            text="Print Sessions (Debug)",
-            command=self.show_all_sessions,
-        ).pack(pady=(5, 0))
+            file_button_row, text="Debug Print", command=self.show_all_sessions
+        ).pack(side="left", padx=5)
+
+
 
         # Frame 1 End
 
