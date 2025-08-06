@@ -69,7 +69,7 @@ UI_DEFAULTS = {
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
 }
-FRAME_TYPES = ( "lights", "darks", "flats", "biases")
+FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
 
 @dataclass
@@ -185,11 +185,12 @@ class PreprocessingInterface:
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label = self.current_working_directory
 
-        # Create collected_lights directory to store all pp_lights files 
-        self.collected_lights_dir = os.path.join(self.current_working_directory, "collected_lights")
+        # Create collected_lights directory to store all pp_lights files
+        self.collected_lights_dir = os.path.join(
+            self.current_working_directory, "collected_lights"
+        )
         if not os.path.exists(self.collected_lights_dir):
-            os.makedirs(self.collected_lights_dir, exist_ok=True) 
-
+            os.makedirs(self.collected_lights_dir, exist_ok=True)
 
         # Sessions
         # self.sessions = []
@@ -266,7 +267,7 @@ class PreprocessingInterface:
         if len(self.sessions) <= 1:
             self.siril.log("Cannot remove the last session.", LogColor.BLUE)
             return  # don't allow removing the last session
-            
+
         current = self.current_session.get()
         current_session_index = int(current.split()[-1]) - 1
         sess = self.get_session_by_index(current_session_index)  # Validate index
@@ -297,7 +298,10 @@ class PreprocessingInterface:
             case "biases":
                 self.chosen_session.biases.extend(paths)
 
-        self.siril.log(f"> Added {len(paths)} {filetype} files to {self.current_session.get()}", LogColor.BLUE)
+        self.siril.log(
+            f"> Added {len(paths)} {filetype} files to {self.current_session.get()}",
+            LogColor.BLUE,
+        )
         self.refresh_file_list()
 
     def copy_session_files(self, session: Session, session_name: str):
@@ -324,8 +328,10 @@ class PreprocessingInterface:
                     shutil.copy(file, dest_path)
                     self.siril.log(f"Copied {file} to {dest_path}", LogColor.BLUE)
             else:
-                self.siril.log(f"Skipping {image_type}: no files found", LogColor.SALMON)
-            
+                self.siril.log(
+                    f"Skipping {image_type}: no files found", LogColor.SALMON
+                )
+
     def refresh_file_list(self):
         self.file_listbox.delete(0, tk.END)
         self.siril.log(f"Switched to session {self.chosen_session}", LogColor.BLUE)
@@ -454,11 +460,13 @@ class PreprocessingInterface:
             self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"seqplatesolve failed, going to try regular registration: {e}", LogColor.SALMON)
+            self.siril.log(
+                f"seqplatesolve failed, going to try regular registration: {e}",
+                LogColor.SALMON,
+            )
             return False
             # self.siril.error_messagebox(f"seqplatesolve failed: {e}")
             # self.close_dialog()
-        
 
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
@@ -469,7 +477,9 @@ class PreprocessingInterface:
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
-    def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction, filter_wfwhm=3, filter_round=3):
+    def seq_apply_reg(
+        self, seq_name, drizzle_amount, pixel_fraction, filter_wfwhm=3, filter_round=3
+    ):
         """Apply Existing Registration to the sequence."""
         cmd_args = [
             "seqapplyreg",
@@ -490,20 +500,20 @@ class PreprocessingInterface:
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
-        self.siril.log(f"Applied existing registration to seq {seq_name}", LogColor.GREEN)
+        self.siril.log(
+            f"Applied existing registration to seq {seq_name}", LogColor.GREEN
+        )
 
     def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
         """Registers the sequence using the 'register' command."""
-        cmd_args = [
-            "register",
-            seq_name,
-            "-2pass"
-        ]
+        cmd_args = ["register", seq_name, "-2pass"]
         if self.drizzle_status:
             cmd_args.extend(
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
             )
-        self.siril.log("Regular Registration Done: " + " ".join(cmd_args), LogColor.BLUE)
+        self.siril.log(
+            "Regular Registration Done: " + " ".join(cmd_args), LogColor.BLUE
+        )
 
         try:
             self.siril.cmd(*cmd_args)
@@ -812,7 +822,6 @@ class PreprocessingInterface:
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
 
-
     def clean_up(self, prefix=None):
         """Cleans up all files in the process directory."""
         if not self.current_working_directory.endswith("process"):
@@ -844,7 +853,7 @@ class PreprocessingInterface:
             "Discord: https://discord.gg/yXKqrawpjr\n"
             "Patreon: https://www.patreon.com/c/naztronomy\n\n"
             "Info:\n"
-            '1. Recommended to use a blank working directory to have a clean setup.\n'
+            "1. Recommended to use a blank working directory to have a clean setup.\n"
             "2. You can run this with or without calibration frames.\n"
             f"3. You can have as many sessions as you'd like. Each individual session currently has a limit of 2048 files.\n"
             "4. All preprocessed lights (pp_lights) are saved in the collected_lights directory and are not removed.\n"
@@ -959,7 +968,9 @@ class PreprocessingInterface:
         self.file_listbox.pack(side="left", fill="both", expand=True)
 
         # Scrollbar
-        scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=self.file_listbox.yview)
+        scrollbar = ttk.Scrollbar(
+            list_container, orient="vertical", command=self.file_listbox.yview
+        )
         scrollbar.pack(side="right", fill="y")
 
         # === Frame for buttons under the listbox ===
@@ -967,7 +978,9 @@ class PreprocessingInterface:
         file_button_row.pack(pady=(10, 0))
 
         ttk.Button(
-            file_button_row, text="Remove Selected File(s)", command=self.remove_selected_files
+            file_button_row,
+            text="Remove Selected File(s)",
+            command=self.remove_selected_files,
         ).pack(side="left", padx=5)
 
         ttk.Button(
@@ -978,14 +991,14 @@ class PreprocessingInterface:
         #     file_button_row, text="Debug Print", command=self.show_all_sessions
         # ).pack(side="left", padx=5)
 
-
-
         # Frame 1 End
 
         # Frame 2 Start
 
         # Stacking section
-        registration_section = ttk.LabelFrame(frame2, text="Registration Settings", padding=10)
+        registration_section = ttk.LabelFrame(
+            frame2, text="Registration Settings", padding=10
+        )
         registration_section.pack(fill=tk.X, pady=5)
         # ttk.Label(registration_section, text="Telescope:", style="Bold.TLabel").grid(
         #     row=0, column=0, sticky="w"
@@ -999,7 +1012,7 @@ class PreprocessingInterface:
             textvariable=roundness_variable,
             from_=1,
             to=4,
-            increment=0.1
+            increment=0.1,
         )
         roundness_spinbox.grid(row=1, column=2, sticky="w")
 
@@ -1016,7 +1029,7 @@ class PreprocessingInterface:
             textvariable=wfwhm_variable,
             from_=1,
             to=4,
-            increment=0.1
+            increment=0.1,
         )
         wfwhm_spinbox.grid(row=2, column=2, sticky="w")
 
@@ -1025,15 +1038,13 @@ class PreprocessingInterface:
             "Filters based on weighted FWHM value. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower).",
         )
 
-
-
         drizzle_label = ttk.Label(registration_section, text="Enable Drizzle:")
         drizzle_label.grid(row=3, column=0, sticky="w")
 
         drizzle_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            registration_section,  variable=drizzle_checkbox_variable
-        ).grid(row=3, column=1, sticky="w")
+        ttk.Checkbutton(registration_section, variable=drizzle_checkbox_variable).grid(
+            row=3, column=1, sticky="w"
+        )
 
         drizzle_amount_label = ttk.Label(registration_section, text="Drizzle Factor:")
         drizzle_amount_label.grid(row=4, column=1, sticky="w")
@@ -1075,11 +1086,8 @@ class PreprocessingInterface:
             ),
         )
 
-       
         # Optional Preprocessing Steps
-        calib_section = ttk.LabelFrame(
-            frame2, text="Other Optional Steps", padding=10
-        )
+        calib_section = ttk.LabelFrame(frame2, text="Other Optional Steps", padding=10)
 
         calib_section.pack(fill=tk.X, pady=5)
         ttk.Label(
@@ -1096,8 +1104,6 @@ class PreprocessingInterface:
         # ttk.Label(calib_section, text="Registration:", style="Bold.TLabel").grid(
         #     row=3, column=0, sticky="w"
         # )
-
-        
 
         ttk.Label(calib_section, text="Feather Frames:", style="Bold.TLabel").grid(
             row=5, column=0, sticky="w"
@@ -1142,9 +1148,6 @@ class PreprocessingInterface:
             cleanup_checkbox,
             "Enable this option to delete all intermediary session files. This will NOT delete the gathered pp_lights files which can be found in the 'collected_lights' folder.",
         )
-
-
-        
 
         # Run button
         ttk.Button(
@@ -1219,137 +1222,6 @@ class PreprocessingInterface:
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
 
-    def batch(
-        self,
-        output_name: str,
-        bg_extract: bool = False,
-        drizzle: bool = False,
-        drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
-        pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
-        feather: bool = False,
-        feather_amount: float = UI_DEFAULTS["feather_amount"],
-        clean_up_files: bool = False,
-    ):
-        # If we're batching, force cleanup files so we don't collide with existing files
-        self.siril.cmd("close")
-        if output_name.startswith("batch_lights"):
-            clean_up_files = True
-
-        self.drizzle_status = drizzle
-        self.drizzle_factor = drizzle_amount
-
-        # Output name is actually the name of the batched working directory
-        self.convert_files(image_type=output_name)
-        self.unselect_bad_fits(seq_name=output_name)
-
-        seq_name = f"{output_name}_"
-
-        # self.siril.cmd("cd", batch_working_dir)
-
-        # Using calibration frames puts pp_ prefix in process directory
-        if use_flats or use_darks:
-            self.calibrate_lights(
-                seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
-            )
-            seq_name = "pp_" + seq_name
-
-        if bg_extract:
-            self.seq_bg_extract(seq_name=seq_name)
-            if clean_up_files:
-                self.clean_up(
-                    prefix=seq_name
-                )  # Remove "pp_lights_" or just "lights_" if not flat calibrated
-            seq_name = "bkg_" + seq_name
-
-        self.seq_plate_solve(seq_name=seq_name)
-        # seq_name stays the same after plate solve
-        self.seq_apply_reg(
-            seq_name=seq_name,
-            drizzle_amount=drizzle_amount,
-            pixel_fraction=pixel_fraction,
-        )
-        if clean_up_files:
-            self.clean_up(
-                prefix=seq_name
-            )  # Clean up bkg_ files or pp_ if flat calibrated, otherwise lights_
-        seq_name = f"r_{seq_name}"
-
-        if drizzle:
-            self.scan_black_frames(seq_name=seq_name)
-
-        self.seq_stack(
-            seq_name=seq_name,
-            feather=feather,
-            feather_amount=feather_amount,
-            rejection=True,
-            output_name=output_name,
-        )
-
-        if clean_up_files:
-            self.clean_up(prefix=seq_name)  # clean up r_ files
-
-        # Load the result (e.g. batch_lights_001.fits)
-        self.load_image(image_name=output_name)
-        # Go back to working dir
-        self.siril.cmd("cd", "../")
-
-        # Save og image in WD - might have drizzle factor in name
-        if output_name.startswith("batch_lights"):
-            out = output_name
-        else:
-            out = "og"
-        file_name = self.save_image(f"_{out}")
-
-        return file_name
-
-    def unselect_bad_fits(self, seq_name, folder="process"):
-        """
-        Checks all FITS files in the given folder with the given prefix
-        for integrity and unselects any bad ones in the current sequence
-        in Siril.
-
-        Parameters
-        ----------
-        seq_name : str
-            The prefix of the sequence to check.
-        folder : str, optional
-            The folder to check for FITS files. Defaults to "process".
-
-        Returns
-        -------
-        None
-        """
-        self.siril.log("Checking for bad FITS files...", LogColor.BLUE)
-        bad_fits = []
-        all_files = sorted(
-            [
-                f
-                for f in os.listdir(folder)
-                if f.startswith(seq_name) and f.lower().endswith(self.fits_extension)
-            ]
-        )
-        for idx, filename in enumerate(all_files):
-            file_path = os.path.join(folder, filename)
-            try:
-                with fits.open(file_path) as hdul:
-                    _ = hdul[0].data  # Try to access data
-
-            except Exception as e:
-                self.siril.log(f"Bad FITS file: {filename} — {e}", LogColor.SALMON)
-                bad_fits.append(idx + 1)  # Siril indices start at 1
-
-        if bad_fits:
-            self.siril.log(f"Unselecting bad frames: {bad_fits}", LogColor.SALMON)
-            for index in bad_fits:
-                try:
-                    self.siril.cmd("unselect", seq_name, index, index)
-                except Exception as e:
-                    self.siril.log(
-                        f"Failed to unselect index {index}: {e}", LogColor.RED
-                    )
-        else:
-            self.siril.log("No bad FITS files found.", LogColor.GREEN)
-
     def run_script(
         self,
         bg_extract: bool = False,
@@ -1392,8 +1264,7 @@ class PreprocessingInterface:
             # Copy session files to directories
             self.copy_session_files(session, f"session{idx + 1}")
 
-        # TODO: Go into each session and run convert, process flats, and process lights
-        # CD sessions/session1
+        # e.g. CD sessions/session1
         for idx, session in enumerate(session_to_process):
             session_name = f"session{idx + 1}"
             self.siril.cmd("cd", f"sessions/{session_name}")
@@ -1406,7 +1277,9 @@ class PreprocessingInterface:
                     self.calibration_stack(seq_name=image_type)
                     self.clean_up(prefix=image_type)
                 else:
-                    self.siril.log(f"Skipping {image_type}: no files found", LogColor.SALMON)
+                    self.siril.log(
+                        f"Skipping {image_type}: no files found", LogColor.SALMON
+                    )
 
             # Process lights
             # self.siril.cmd("cd", "lights")
@@ -1414,24 +1287,25 @@ class PreprocessingInterface:
             self.calibrate_lights(seq_name="lights", use_darks=True, use_flats=True)
 
             # Directory to move files to
-            
 
             # Current directory where files are located
             current_dir = os.path.join(self.current_working_directory, "process")
 
             # Find and move all files starting with 'pp_lights'
             for file_name in os.listdir(current_dir):
-                if file_name.startswith("pp_lights") and file_name.endswith(self.fits_extension):
+                if file_name.startswith("pp_lights") and file_name.endswith(
+                    self.fits_extension
+                ):
                     src_path = os.path.join(current_dir, file_name)
-                    
+
                     # Prepend session_name to the filename
                     new_file_name = f"{session_name}_{file_name}"
                     dest_path = os.path.join(self.collected_lights_dir, new_file_name)
-                    
+
                     shutil.copy2(src_path, dest_path)
                     self.siril.log(
                         f"Moved {file_name} to {self.collected_lights_dir} as {new_file_name}",
-                        LogColor.BLUE
+                        LogColor.BLUE,
                     )
 
             # Go back to the previous directory
@@ -1439,27 +1313,31 @@ class PreprocessingInterface:
             self.current_working_directory = self.siril.get_siril_wd()
             # If clean up is selected, delete the session# directories one after another.
             if clean_up_files:
-                shutil.rmtree(os.path.join(self.current_working_directory, "sessions", session_name))
-
+                shutil.rmtree(
+                    os.path.join(
+                        self.current_working_directory, "sessions", session_name
+                    )
+                )
 
         self.siril.cmd("cd", self.collected_lights_dir)
         self.current_working_directory = self.siril.get_siril_wd()
         # Create a new sequence for each session
         for idx, session in enumerate(session_to_process):
-            self.siril.create_new_seq(
-                f"session{idx + 1}_pp_lights_"
-            )
+            self.siril.create_new_seq(f"session{idx + 1}_pp_lights_")
         # Find all files starting with 'session' and ending with '.seq'
         session_files = [
-            file_name for file_name in os.listdir(self.current_working_directory)
-            if file_name.startswith('session') and file_name.endswith('.seq')
+            file_name
+            for file_name in os.listdir(self.current_working_directory)
+            if file_name.startswith("session") and file_name.endswith(".seq")
         ]
 
         # Merge all session files
         seq_name = "pp_lights_merged_"
         if session_files:
             self.siril.cmd("merge", *session_files, seq_name)
-            self.siril.log(f"Merged session files: {', '.join(session_files)}", LogColor.GREEN)
+            self.siril.log(
+                f"Merged session files: {', '.join(session_files)}", LogColor.GREEN
+            )
         else:
             self.siril.log("No session files found to merge", LogColor.SALMON)
 
@@ -1471,18 +1349,21 @@ class PreprocessingInterface:
 
         if plate_solve_status:
             self.seq_apply_reg(
-                seq_name=seq_name, drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction
+                seq_name=seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
             )
-        else: 
+        else:
             # If Siril can't plate solve, we apply regular registration with 2pass and then apply registration with max framing
             self.regular_register_seq(
-                seq_name=seq_name, drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction
+                seq_name=seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
             )
             self.seq_apply_reg(
-                seq_name=seq_name, drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction
+                seq_name=seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
             )
 
         seq_name = f"r_{seq_name}"
@@ -1491,7 +1372,7 @@ class PreprocessingInterface:
         if drizzle:
             self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
 
-        # Stacks the sequence with rejection 
+        # Stacks the sequence with rejection
         self.seq_stack(
             seq_name=seq_name,
             feather=feather,
@@ -1507,7 +1388,6 @@ class PreprocessingInterface:
         # Delete the blank sessions dir
         if clean_up_files:
             shutil.rmtree(os.path.join(self.current_working_directory, "sessions"))
-        
 
         # self.clean_up()
 
