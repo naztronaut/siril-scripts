@@ -1325,21 +1325,25 @@ class PreprocessingInterface:
         for idx, session in enumerate(session_to_process):
             self.siril.create_new_seq(f"session{idx + 1}_pp_lights_")
         # Find all files starting with 'session' and ending with '.seq'
-        session_files = [
-            file_name
-            for file_name in os.listdir(self.current_working_directory)
-            if file_name.startswith("session") and file_name.endswith(".seq")
-        ]
 
-        # Merge all session files
-        seq_name = "pp_lights_merged_"
-        if session_files:
-            self.siril.cmd("merge", *session_files, seq_name)
-            self.siril.log(
-                f"Merged session files: {', '.join(session_files)}", LogColor.GREEN
-            )
+        if len(session_to_process) > 1:
+            session_files = [
+                file_name
+                for file_name in os.listdir(self.current_working_directory)
+                if file_name.startswith("session") and file_name.endswith(".seq")
+            ]
+
+            # Merge all session files
+            seq_name = "pp_lights_merged_"
+            if session_files:
+                self.siril.cmd("merge", *session_files, seq_name)
+                self.siril.log(
+                    f"Merged session files: {', '.join(session_files)}", LogColor.GREEN
+                )
+            else:
+                self.siril.log("No session files found to merge", LogColor.SALMON)
         else:
-            self.siril.log("No session files found to merge", LogColor.SALMON)
+            seq_name = "session1_pp_lights_"
 
         if bg_extract:
             self.seq_bg_extract(seq_name=seq_name)
