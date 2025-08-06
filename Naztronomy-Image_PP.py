@@ -189,8 +189,8 @@ class PreprocessingInterface:
         self.collected_lights_dir = os.path.join(
             self.current_working_directory, "collected_lights"
         )
-        if not os.path.exists(self.collected_lights_dir):
-            os.makedirs(self.collected_lights_dir, exist_ok=True)
+        # if not os.path.exists(self.collected_lights_dir):
+        #     os.makedirs(self.collected_lights_dir, exist_ok=True)
 
         # Sessions
         # self.sessions = []
@@ -732,6 +732,7 @@ class PreprocessingInterface:
 
         object_name = current_fits_headers.get("OBJECT", "Unknown").replace(" ", "_")
         exptime = int(current_fits_headers.get("EXPTIME", 0))
+        livetime = int(current_fits_headers.get("LIVETIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
         date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
 
@@ -741,7 +742,7 @@ class PreprocessingInterface:
         except ValueError:
             date_obs_str = datetime.now().strftime("%Y%m%d")
 
-        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}"
+        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_{date_obs_str}"
         if self.drizzle_status:
             file_name += f"__drizzle-{drizzle_str}x"
 
@@ -855,7 +856,7 @@ class PreprocessingInterface:
             "Info:\n"
             "1. Recommended to use a blank working directory to have a clean setup.\n"
             "2. You can run this with or without calibration frames.\n"
-            f"3. You can have as many sessions as you'd like. Each individual session currently has a limit of 2048 files.\n"
+            f"3. You can have as many sessions as you'd like. Each individual session currently has a limit of 2048 files on Windows machines.\n"
             "4. All preprocessed lights (pp_lights) are saved in the collected_lights directory and are not removed.\n"
             "5. This script makes a copy of all of your images so that the originals are not modified.\n"
             "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
@@ -1114,6 +1115,10 @@ class PreprocessingInterface:
             calib_section, variable=feather_checkbox_variable
         )
         feather_checkbox.grid(row=5, column=1, sticky="w")
+        tksiril.create_tooltip(
+            feather_checkbox,
+            "Only check this box if you're doing a multi panel mosaic!",
+        )
 
         feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
         feather_amount_label.grid(row=6, column=1, sticky="w")
@@ -1222,6 +1227,21 @@ class PreprocessingInterface:
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
 
+    def print_footer(self):
+        self.siril.log(
+        f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        LogColor.GREEN,
+        )
+        self.siril.log(
+            """
+        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
+        The author of this script is Nazmus Nasir (Naztronomy).
+        Website: https://www.Naztronomy.com 
+        YouTube: https://www.YouTube.com/Naztronomy 
+        Discord: https://discord.gg/yXKqrawpjr
+        Patreon: https://www.patreon.com/c/naztronomy
+        """, LogColor.BLUE)
+
     def run_script(
         self,
         bg_extract: bool = False,
@@ -1283,6 +1303,18 @@ class PreprocessingInterface:
 
             # Process lights
             # self.siril.cmd("cd", "lights")
+
+            # Don't continue if no light frames
+            total_lights = 0
+            for session in self.sessions:
+                file_counts = session.get_file_count()
+                total_lights += file_counts.get("lights", 0)
+
+            if total_lights == 0:
+                self.siril.log("No light frames found. Only master calibration frames were created. Stopping script.", LogColor.BLUE)
+                self.print_footer()
+                self.siril.cmd("cd", "../..")
+                return
             self.convert_files(image_type="lights")
             self.calibrate_lights(seq_name="lights", use_darks=True, use_flats=True)
 
@@ -1379,41 +1411,38 @@ class PreprocessingInterface:
             self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
 
         # Stacks the sequence with rejection
+        stack_name = "merge_stacked" if len(session_to_process) > 1 else "final_stacked"
         self.seq_stack(
             seq_name=seq_name,
             feather=feather,
             feather_amount=feather_amount,
             rejection=True,
-            output_name="merge_stacked",
+            output_name=stack_name,
         )
 
-        self.load_image(image_name="merge_stacked")
+        self.load_image(image_name=stack_name)
         self.siril.cmd("cd", "../")
         self.current_working_directory = self.siril.get_siril_wd()
         file_name = self.save_image("_og")
         # Delete the blank sessions dir
         if clean_up_files:
             shutil.rmtree(os.path.join(self.current_working_directory, "sessions"))
+            extension = self.fits_extension.lstrip(".")
+            collected_lights_dir = os.path.join(self.current_working_directory, "collected_lights")
+            for filename in os.listdir(collected_lights_dir):
+                file_path = os.path.join(collected_lights_dir, filename)
+
+                if os.path.isfile(file_path) and not (filename.startswith("session") and filename.endswith(extension)):
+                    os.remove(file_path)
+            shutil.rmtree(os.path.join(collected_lights_dir, "cache"))
+
+            self.siril.log("Cleaned up collected_lights directory", LogColor.BLUE)
 
         # self.clean_up()
 
-        self.siril.log(
-            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            LogColor.GREEN,
-        )
-        self.siril.log(
-            """
-        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
-        The author of this script is Nazmus Nasir (Naztronomy).
-        Website: https://www.Naztronomy.com 
-        YouTube: https://www.YouTube.com/Naztronomy 
-        Discord: https://discord.gg/yXKqrawpjr
-        Patreon: https://www.patreon.com/c/naztronomy
-        """,
-            LogColor.BLUE,
-        )
+        self.print_footer()
 
-        self.close_dialog()
+        # self.close_dialog()
 
 
 def main():
