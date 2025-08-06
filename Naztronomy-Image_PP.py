@@ -1291,6 +1291,8 @@ class PreprocessingInterface:
             # Current directory where files are located
             current_dir = os.path.join(self.current_working_directory, "process")
 
+            # Mitigate bug: If collected_lights doesn't exist, create it here because sometimes it doesn't get created earlier
+            os.makedirs(self.collected_lights_dir, exist_ok=True)
             # Find and move all files starting with 'pp_lights'
             for file_name in os.listdir(current_dir):
                 if file_name.startswith("pp_lights") and file_name.endswith(
