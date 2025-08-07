@@ -1040,6 +1040,7 @@ class PreprocessingInterface:
             style="White.TSpinbox"
         )
         roundness_spinbox.grid(row=1, column=2, sticky="w")
+        ttk.Label(registration_section, text="σ", style="White.TLabel").grid(row=1, column=3, sticky="w")
         roundess_tooltip_text = "Filter frames based on roundness. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
         tksiril.create_tooltip(
             roundness_spinbox,
@@ -1063,7 +1064,8 @@ class PreprocessingInterface:
             style="White.TSpinbox"
         )
         wfwhm_spinbox.grid(row=2, column=2, sticky="w")
-        wfwhm_tooltip_text = "Filters based on weighted FWHM value. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
+        ttk.Label(registration_section, text="σ", style="White.TLabel").grid(row=2, column=3, sticky="w")
+        wfwhm_tooltip_text = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. A lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
 
         tksiril.create_tooltip(
             wfwhm_spinbox,
@@ -1082,7 +1084,7 @@ class PreprocessingInterface:
         drizzle_checkbox.grid(
             row=3, column=1, sticky="w"
         )
-
+        
         drizzle_checkbox_tooltip_text = "Works best with well dithered data."
         tksiril.create_tooltip(
             drizzle_checkbox,
@@ -1107,6 +1109,7 @@ class PreprocessingInterface:
             style="White.TSpinbox"
         )
         drizzle_amount_spinbox.grid(row=4, column=2, sticky="w")
+        ttk.Label(registration_section, text="x", style="White.TLabel").grid(row=4, column=3, sticky="w")
         drizzle_checkbox_variable.trace_add(
             "write",
             lambda *args: drizzle_amount_spinbox.config(
@@ -1142,6 +1145,7 @@ class PreprocessingInterface:
             style="White.TSpinbox"
         )
         pixel_fraction_spinbox.grid(row=5, column=2, sticky="w")
+        ttk.Label(registration_section, text="px", style="White.TLabel").grid(row=5, column=3, sticky="w")
         drizzle_checkbox_variable.trace_add(
             "write",
             lambda *args: pixel_fraction_spinbox.config(
@@ -1222,6 +1226,7 @@ class PreprocessingInterface:
             style="White.TSpinbox"
         )
         feather_amount_spinbox.grid(row=6, column=2, sticky="w")
+        ttk.Label(calib_section, text="px", style="White.TLabel").grid(row=6, column=3, sticky="w")
         feather_checkbox_variable.trace_add(
             "write",
             lambda *args: feather_amount_spinbox.config(
