@@ -734,15 +734,15 @@ class PreprocessingInterface:
         exptime = int(current_fits_headers.get("EXPTIME", 0))
         livetime = int(current_fits_headers.get("LIVETIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
-        date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
+        # date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
 
-        try:
-            dt = datetime.fromisoformat(date_obs)
-            date_obs_str = dt.strftime("%Y-%m-%d")
-        except ValueError:
-            date_obs_str = datetime.now().strftime("%Y%m%d")
+        # try:
+        #     dt = datetime.fromisoformat(date_obs)
+        #     date_obs_str = dt.strftime("%Y-%m-%d")
+        # except ValueError:
+        #     date_obs_str = datetime.now().strftime("%Y%m%d")
 
-        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_{date_obs_str}"
+        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_" #{date_obs_str}"
         if self.drizzle_status:
             file_name += f"__drizzle-{drizzle_str}x"
 
@@ -1016,10 +1016,15 @@ class PreprocessingInterface:
             increment=0.1,
         )
         roundness_spinbox.grid(row=1, column=2, sticky="w")
-
+        roundess_tooltip_text = "Filter frames based on roundness. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
         tksiril.create_tooltip(
             roundness_spinbox,
-            "Filter frames based on roundness. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower).",
+            roundess_tooltip_text
+        )
+
+        tksiril.create_tooltip(
+            roundness_label,
+            roundess_tooltip_text
         )
 
         wfwhm_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_wfwhm"])
@@ -1033,18 +1038,35 @@ class PreprocessingInterface:
             increment=0.1,
         )
         wfwhm_spinbox.grid(row=2, column=2, sticky="w")
+        wfwhm_tooltip_text = "Filters based on weighted FWHM value. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
 
         tksiril.create_tooltip(
             wfwhm_spinbox,
-            "Filters based on weighted FWHM value. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower).",
+            wfwhm_tooltip_text,
+        )
+        tksiril.create_tooltip(
+            wfwhm_label,
+            wfwhm_tooltip_text,
         )
 
         drizzle_label = ttk.Label(registration_section, text="Enable Drizzle:")
         drizzle_label.grid(row=3, column=0, sticky="w")
 
         drizzle_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(registration_section, variable=drizzle_checkbox_variable).grid(
+        drizzle_checkbox = ttk.Checkbutton(registration_section, variable=drizzle_checkbox_variable)
+        drizzle_checkbox.grid(
             row=3, column=1, sticky="w"
+        )
+
+        drizzle_checkbox_tooltip_text = "Works best with well dithered data."
+        tksiril.create_tooltip(
+            drizzle_checkbox,
+            drizzle_checkbox_tooltip_text
+        )
+
+        tksiril.create_tooltip(
+            drizzle_label,
+            drizzle_checkbox_tooltip_text
         )
 
         drizzle_amount_label = ttk.Label(registration_section, text="Drizzle Factor:")
@@ -1066,7 +1088,21 @@ class PreprocessingInterface:
                 textvariable=drizzle_amount_variable,
             ),
         )
-        ttk.Label(registration_section, text="Pixel Fraction:").grid(
+
+        drizzle_spinbox_tooltip_text = "Higher the drizzle factor, the longer it will take the stack your session. Larger value will upscale the image."
+        tksiril.create_tooltip(
+            drizzle_amount_spinbox,
+            drizzle_spinbox_tooltip_text
+        )
+        tksiril.create_tooltip(
+            drizzle_amount_label,    
+            drizzle_spinbox_tooltip_text
+        )
+        
+
+
+        pixel_fraction_label = ttk.Label(registration_section, text="Pixel Fraction:")
+        pixel_fraction_label.grid(
             row=5, column=1, sticky="w"
         )
         pixel_fraction_variable = tk.DoubleVar(value=UI_DEFAULTS["pixel_fraction"])
@@ -1087,26 +1123,48 @@ class PreprocessingInterface:
             ),
         )
 
+        pixel_fraction_tooltip_text = "Pixel size controls the drizzle output. Lower value can increase sharpness but can also product artifacts."
+        tksiril.create_tooltip(
+            pixel_fraction_spinbox,
+            pixel_fraction_tooltip_text
+        )
+        tksiril.create_tooltip(
+            pixel_fraction_label,    
+            pixel_fraction_tooltip_text
+        )
+
         # Optional Preprocessing Steps
         calib_section = ttk.LabelFrame(frame2, text="Other Optional Steps", padding=10)
 
         calib_section.pack(fill=tk.X, pady=5)
-        ttk.Label(
+        background_extraction_label = ttk.Label(
             calib_section, text="Background Extraction:", style="Bold.TLabel"
-        ).grid(row=2, column=0, sticky="w")
+        )
+        background_extraction_label.grid(row=2, column=0, sticky="w")
 
         bg_extract_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
+        bg_extract_checkbox = ttk.Checkbutton(
             calib_section,
             text="",
             variable=bg_extract_checkbox_variable,
-        ).grid(row=2, column=1, sticky="w")
+        )
+        bg_extract_checkbox.grid(row=2, column=1, sticky="w")
 
+        bg_extract_tooltip_text = "Enable this option to extract the background from each individual image. Uses polynomial factor 1 for extraction."
+        tksiril.create_tooltip(
+            bg_extract_checkbox,
+            bg_extract_tooltip_text
+        )
+        tksiril.create_tooltip(
+            background_extraction_label,
+            bg_extract_tooltip_text
+        )
         # ttk.Label(calib_section, text="Registration:", style="Bold.TLabel").grid(
         #     row=3, column=0, sticky="w"
         # )
 
-        ttk.Label(calib_section, text="Feather Frames:", style="Bold.TLabel").grid(
+        feather_checkbox_label = ttk.Label(calib_section, text="Feather Frames:", style="Bold.TLabel")
+        feather_checkbox_label.grid(
             row=5, column=0, sticky="w"
         )
 
@@ -1115,11 +1173,15 @@ class PreprocessingInterface:
             calib_section, variable=feather_checkbox_variable
         )
         feather_checkbox.grid(row=5, column=1, sticky="w")
+        feather_tooltip_text = "Only check this box if you're doing a multi panel mosaic! This will help remove artifacts between panels."
         tksiril.create_tooltip(
             feather_checkbox,
-            "Only check this box if you're doing a multi panel mosaic!",
+            feather_tooltip_text
         )
-
+        tksiril.create_tooltip(
+            feather_checkbox_label,
+            feather_tooltip_text
+        )
         feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
         feather_amount_label.grid(row=6, column=1, sticky="w")
         feather_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["feather_amount"])
@@ -1140,7 +1202,8 @@ class PreprocessingInterface:
             ),
         )
 
-        ttk.Label(calib_section, text="Clean Up Files:", style="Bold.TLabel").grid(
+        cleanup_files_label =ttk.Label(calib_section, text="Clean Up Files:", style="Bold.TLabel")
+        cleanup_files_label.grid(
             row=7, column=0, sticky="w"
         )
 
@@ -1149,9 +1212,14 @@ class PreprocessingInterface:
             calib_section, text="", variable=cleanup_files_checkbox_variable
         )
         cleanup_checkbox.grid(row=7, column=1, sticky="w")
+        cleanup_checkbox_tooltip_text = "Enable this option to delete all intermediary session files. This will NOT delete the gathered pp_lights files which can be found in the 'collected_lights' folder."
         tksiril.create_tooltip(
             cleanup_checkbox,
-            "Enable this option to delete all intermediary session files. This will NOT delete the gathered pp_lights files which can be found in the 'collected_lights' folder.",
+            cleanup_checkbox_tooltip_text
+        )
+        tksiril.create_tooltip(
+            cleanup_files_label,
+            cleanup_checkbox_tooltip_text
         )
 
         # Run button
@@ -1424,6 +1492,7 @@ class PreprocessingInterface:
         self.siril.cmd("cd", "../")
         self.current_working_directory = self.siril.get_siril_wd()
         file_name = self.save_image("_og")
+        self.load_image(image_name=file_name)
         # Delete the blank sessions dir
         if clean_up_files:
             shutil.rmtree(os.path.join(self.current_working_directory, "sessions"))
