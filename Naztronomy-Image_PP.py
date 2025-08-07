@@ -174,6 +174,7 @@ class PreprocessingInterface:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
         tksiril.match_theme_to_siril(self.root, self.siril)
+
         try:
             self.siril.cmd("requires", "1.3.6")
         except s.CommandError:
@@ -874,19 +875,31 @@ class PreprocessingInterface:
 
         # Define styles
         bold_label = ttk.Style()
-        bold_label.configure("Bold.TLabel", font=("TkDefaultFont", 10, "bold"))
+        bold_label.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"), foreground="white")
+        white_label = ttk.Style()
+        white_label.configure("White.TLabel", font=("Segoe UI", 10), foreground="white")
+
+        style = ttk.Style()
+        style.configure("TButton", foreground="white")
+        # style.configure("TLabel", foreground="white")
+        style.configure("TCheckbutton", foreground="white")
+        style.configure("TRadiobutton", foreground="white")
+        style.configure("TMenubutton", foreground="white")
+        style.configure("TEntry", foreground="white")
+        style.configure("TCombobox", foreground="white")
+        style.configure("TNotebook.Tab", foreground="white", font=("Segoe UI", 9, "bold"))
+        style.configure("White.TSpinbox", foreground="white")
 
         # Title and version
         ttk.Label(
             main_frame,
             text=f"{APP_NAME}",
             style="Bold.TLabel",
-            font=("Segoe UI", 10, "bold"),
         ).pack(pady=(10, 10))
 
         ttk.Label(
             main_frame,
-            text=f"{self.cwd_label}",
+            text=f"Current working directory: {self.cwd_label}",
         ).pack(anchor="w", pady=(0, 10))
 
         # tab 1
@@ -906,7 +919,7 @@ class PreprocessingInterface:
         session_row = ttk.Frame(frame1)
         session_row.pack(anchor="w", fill="x", pady=5)
 
-        ttk.Label(session_row, text="Session:").pack(side="left", padx=(0, 5))
+        ttk.Label(session_row, text="Session:", style="White.TLabel").pack(side="left", padx=(0, 5))
 
         self.session_dropdown = ttk.Combobox(
             session_row,
@@ -945,12 +958,17 @@ class PreprocessingInterface:
             frame_buttons, text="Add Flats", command=lambda: self.load_files("Flats")
         ).pack(side="left", padx=10)
 
-        ttk.Button(
+        add_bias_button = ttk.Button(
             frame_buttons, text="Add Biases", command=lambda: self.load_files("Biases")
-        ).pack(side="left", padx=10)
+        )
+        add_bias_button.pack(side="left", padx=10)
 
+        tksiril.create_tooltip(
+            add_bias_button,
+            "Bias frames or Dark Flats can be used.")
+        
         # LabelFrame container for the section
-        self.list_frame = ttk.LabelFrame(frame1, text="Files in Current Session")
+        self.list_frame = ttk.LabelFrame(frame1, text="Files in Current Session", style="White.TLabel")
         self.list_frame.pack(fill="both", expand=True, padx=5, pady=10)
 
         # Label above listbox
@@ -984,9 +1002,14 @@ class PreprocessingInterface:
             command=self.remove_selected_files,
         ).pack(side="left", padx=5)
 
-        ttk.Button(
+        reset_button = ttk.Button(
             file_button_row, text="Reset Everything", command=self.reset_everything
-        ).pack(side="left", padx=5)
+        )
+        reset_button.pack(side="left", padx=5)
+
+        tksiril.create_tooltip(
+            reset_button,
+            "Warning: This will remove all sessions and files!")
 
         # ttk.Button(
         #     file_button_row, text="Debug Print", command=self.show_all_sessions
@@ -1006,7 +1029,7 @@ class PreprocessingInterface:
         # )
 
         roundness_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_round"])
-        roundness_label = ttk.Label(registration_section, text="Filter Roundness:")
+        roundness_label = ttk.Label(registration_section, text="Filter Roundness:", style="White.TLabel")
         roundness_label.grid(row=1, column=0, sticky="w")
         roundness_spinbox = ttk.Spinbox(
             registration_section,
@@ -1014,6 +1037,7 @@ class PreprocessingInterface:
             from_=1,
             to=4,
             increment=0.1,
+            style="White.TSpinbox"
         )
         roundness_spinbox.grid(row=1, column=2, sticky="w")
         roundess_tooltip_text = "Filter frames based on roundness. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
@@ -1028,7 +1052,7 @@ class PreprocessingInterface:
         )
 
         wfwhm_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_wfwhm"])
-        wfwhm_label = ttk.Label(registration_section, text="Filter Weighted FWHM:")
+        wfwhm_label = ttk.Label(registration_section, text="Filter Weighted FWHM:", style="White.TLabel")
         wfwhm_label.grid(row=2, column=0, sticky="w")
         wfwhm_spinbox = ttk.Spinbox(
             registration_section,
@@ -1036,6 +1060,7 @@ class PreprocessingInterface:
             from_=1,
             to=4,
             increment=0.1,
+            style="White.TSpinbox"
         )
         wfwhm_spinbox.grid(row=2, column=2, sticky="w")
         wfwhm_tooltip_text = "Filters based on weighted FWHM value. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
@@ -1049,7 +1074,7 @@ class PreprocessingInterface:
             wfwhm_tooltip_text,
         )
 
-        drizzle_label = ttk.Label(registration_section, text="Enable Drizzle:")
+        drizzle_label = ttk.Label(registration_section, text="Enable Drizzle:", style="White.TLabel")
         drizzle_label.grid(row=3, column=0, sticky="w")
 
         drizzle_checkbox_variable = tk.BooleanVar()
@@ -1069,7 +1094,7 @@ class PreprocessingInterface:
             drizzle_checkbox_tooltip_text
         )
 
-        drizzle_amount_label = ttk.Label(registration_section, text="Drizzle Factor:")
+        drizzle_amount_label = ttk.Label(registration_section, text="Drizzle Factor:", style="White.TLabel")
         drizzle_amount_label.grid(row=4, column=1, sticky="w")
         drizzle_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["drizzle_amount"])
         drizzle_amount_spinbox = ttk.Spinbox(
@@ -1079,6 +1104,7 @@ class PreprocessingInterface:
             to=3.0,
             increment=0.1,
             state=tk.DISABLED,
+            style="White.TSpinbox"
         )
         drizzle_amount_spinbox.grid(row=4, column=2, sticky="w")
         drizzle_checkbox_variable.trace_add(
@@ -1101,7 +1127,7 @@ class PreprocessingInterface:
         
 
 
-        pixel_fraction_label = ttk.Label(registration_section, text="Pixel Fraction:")
+        pixel_fraction_label = ttk.Label(registration_section, text="Pixel Fraction:", style="White.TLabel")
         pixel_fraction_label.grid(
             row=5, column=1, sticky="w"
         )
@@ -1113,6 +1139,7 @@ class PreprocessingInterface:
             to=10.0,
             increment=0.01,
             state=tk.DISABLED,
+            style="White.TSpinbox"
         )
         pixel_fraction_spinbox.grid(row=5, column=2, sticky="w")
         drizzle_checkbox_variable.trace_add(
@@ -1138,7 +1165,7 @@ class PreprocessingInterface:
 
         calib_section.pack(fill=tk.X, pady=5)
         background_extraction_label = ttk.Label(
-            calib_section, text="Background Extraction:", style="Bold.TLabel"
+            calib_section, text="Background Extraction:", style="White.TLabel"
         )
         background_extraction_label.grid(row=2, column=0, sticky="w")
 
@@ -1163,7 +1190,7 @@ class PreprocessingInterface:
         #     row=3, column=0, sticky="w"
         # )
 
-        feather_checkbox_label = ttk.Label(calib_section, text="Feather Frames:", style="Bold.TLabel")
+        feather_checkbox_label = ttk.Label(calib_section, text="Feather Frames:", style="White.TLabel")
         feather_checkbox_label.grid(
             row=5, column=0, sticky="w"
         )
@@ -1182,7 +1209,7 @@ class PreprocessingInterface:
             feather_checkbox_label,
             feather_tooltip_text
         )
-        feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
+        feather_amount_label = ttk.Label(calib_section, text="Feather amount:", style="White.TLabel")
         feather_amount_label.grid(row=6, column=1, sticky="w")
         feather_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["feather_amount"])
         feather_amount_spinbox = ttk.Spinbox(
@@ -1192,6 +1219,7 @@ class PreprocessingInterface:
             to=2000,
             increment=5,
             state=tk.DISABLED,
+            style="White.TSpinbox"
         )
         feather_amount_spinbox.grid(row=6, column=2, sticky="w")
         feather_checkbox_variable.trace_add(
@@ -1202,7 +1230,16 @@ class PreprocessingInterface:
             ),
         )
 
-        cleanup_files_label =ttk.Label(calib_section, text="Clean Up Files:", style="Bold.TLabel")
+        feather_amount_tooltip_text = "Feather amount in pixels. "
+        tksiril.create_tooltip(
+            feather_amount_spinbox,
+            feather_amount_tooltip_text
+        )
+        tksiril.create_tooltip(
+            feather_amount_label,
+            feather_amount_tooltip_text
+        )
+        cleanup_files_label =ttk.Label(calib_section, text="Clean Up Files:", style="White.TLabel")
         cleanup_files_label.grid(
             row=7, column=0, sticky="w"
         )
