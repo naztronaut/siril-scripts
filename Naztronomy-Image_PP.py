@@ -2,7 +2,7 @@
 (c) Nazmus Nasir 2025
 SPDX-License-Identifier: GPL-3.0-or-later
 
-Telescope Preprocessing script
+Naztronomy - OSC Preprocessing script
 Version: 1.1.0
 =====================================
 
@@ -11,24 +11,28 @@ https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 Support me on Patreon: https://www.patreon.com/c/naztronomy
 
-TODO: Update below notes for non-smart scope setups
-The following directory is required inside the working directory:
-    lights/
+This script is designed to process OSC images only at this time. Although mono images will process, they will be
+incorrectly debayered and be saved as an RGB image. 
 
-The following subdirectories are optional:
-    darks/
-    flats/
-    biases/
+If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically 
+plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
+
+This script can be run from any directory but recommended to create a blank directory. 
+
+All images are currently copied before processed so it can take up some disk space. This is to mitigate systems that don't allow symlinks. This also 
+allows you to choose files from any folder and drive and they will all be consolidated into a single location. 
 
 """
 
 """
 CHANGELOG:
+
 1.0.0 - initial release
+      - Supports both Mosaics and star alignment for imags without proper headers
+      - Cleans up all intermediate files BUT keeps all preprocessed lights so they can be combined later
 """
 
 
-import math
 from pathlib import Path
 import shutil
 import sirilpy as s
@@ -160,7 +164,6 @@ class PreprocessingInterface:
 
         self.siril = s.SirilInterface()
 
-        # Flags for mosaic mode and drizzle status
         # if drizzle is off, images will be debayered on convert
         self.drizzle_status = False
         self.drizzle_factor = 0
@@ -186,20 +189,16 @@ class PreprocessingInterface:
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label = self.current_working_directory
 
-        # Create collected_lights directory to store all pp_lights files
+        # Assigns collected_lights directory to store all pp_lights files
         self.collected_lights_dir = os.path.join(
             self.current_working_directory, "collected_lights"
         )
-        # if not os.path.exists(self.collected_lights_dir):
-        #     os.makedirs(self.collected_lights_dir, exist_ok=True)
+
 
         # Sessions
-        # self.sessions = []
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
         self.current_session = tk.StringVar(value=f"Session {len(self.sessions)}")
-        # self.session_dropdown = None
-        # self.file_listbox = None
 
         # End Session
         self.create_widgets()
@@ -399,7 +398,7 @@ class PreprocessingInterface:
     # end session methods
 
     # Start Siril processing methods
-    # Dirname: lights, darks, biases, flats
+    # image_type: lights, darks, biases, flats
     def convert_files(self, image_type):
         directory = os.path.join(self.current_working_directory, image_type)
         self.siril.log(f"Converting files in {directory}", LogColor.BLUE)
@@ -735,13 +734,6 @@ class PreprocessingInterface:
         exptime = int(current_fits_headers.get("EXPTIME", 0))
         livetime = int(current_fits_headers.get("LIVETIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
-        # date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
-
-        # try:
-        #     dt = datetime.fromisoformat(date_obs)
-        #     date_obs_str = dt.strftime("%Y-%m-%d")
-        # except ValueError:
-        #     date_obs_str = datetime.now().strftime("%Y%m%d")
 
         file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_" #{date_obs_str}"
         if self.drizzle_status:
@@ -768,52 +760,6 @@ class PreprocessingInterface:
             self.siril.log(f"Plate Solve command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Platesolved image", LogColor.GREEN)
-
-    def spcc(
-        self,
-        oscsensor="ZWO Seestar S30",
-        filter="No Filter (Broadband)",
-        catalog="localgaia",
-        whiteref="Average Spiral Galaxy",
-    ):
-        if oscsensor == "Unistellar Evscope 2":
-            self.siril.cmd("pcc", f"-catalog={catalog}")
-            self.siril.log(
-                "PCC'd Image, SPCC Unavailable for Evscope 2", LogColor.GREEN
-            )
-        else:
-            recoded_sensor = oscsensor
-            """SPCC with oscsensor, filter, catalog, and whiteref."""
-            if oscsensor in ["Dwarf 3"]:
-                recoded_sensor = "Sony IMX678"
-            else:
-                recoded_sensor = oscsensor
-
-            args = [
-                f"-oscsensor={recoded_sensor}",
-                f"-catalog={catalog}",
-                f"-whiteref={whiteref}",
-            ]
-
-            # Add filter-specific arguments
-            filter_args = FILTER_COMMANDS_MAP.get(oscsensor, {}).get(filter)
-            if filter_args:
-                args.extend(filter_args)
-            else:
-                # Default to UV/IR Block
-                args.append("-oscfilter=UV/IR Block")
-
-            # Double Quote each argument due to potential spaces
-            quoted_args = [f'"{arg}"' for arg in args]
-            try:
-                self.siril.cmd("spcc", *quoted_args)
-            except (s.CommandError, s.DataError, s.SirilError) as e:
-                self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
-                self.close_dialog()
-
-            img = self.save_image("_spcc")
-            self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
-            return img
 
     def load_image(self, image_name):
         """Loads the result."""
@@ -1010,11 +956,6 @@ class PreprocessingInterface:
         tksiril.create_tooltip(
             reset_button,
             "Warning: This will remove all sessions and files!")
-
-        # ttk.Button(
-        #     file_button_row, text="Debug Print", command=self.show_all_sessions
-        # ).pack(side="left", padx=5)
-
         # Frame 1 End
 
         # Frame 2 Start
@@ -1296,46 +1237,6 @@ class PreprocessingInterface:
         self.siril.disconnect()
         self.root.quit()
         self.root.destroy()
-
-    def extract_coords_from_fits(self, prefix: str):
-        # Only process for specific D2 and Origin
-        process_dir = "process"
-        matching_files = sorted(
-            [
-                f
-                for f in os.listdir(process_dir)
-                if f.startswith(prefix) and f.lower().endswith(self.fits_extension)
-            ]
-        )
-
-        if not matching_files:
-            self.siril.log(
-                f"No FITS files found in '{process_dir}' with prefix '{prefix}'",
-                LogColor.RED,
-            )
-            return
-
-        first_file = matching_files[0]
-        file_path = os.path.join(process_dir, first_file)
-
-        try:
-            with fits.open(file_path) as hdul:
-                header = hdul[0].header
-                ra = header.get("RA")
-                dec = header.get("DEC")
-
-                if ra is not None and dec is not None:
-                    self.target_coords = f"{ra},{dec}"
-                    self.siril.log(
-                        f"Target coordinates extracted: {self.target_coords}",
-                        LogColor.GREEN,
-                    )
-                else:
-                    self.siril.log(
-                        "RA or DEC not found in FITS header.", LogColor.SALMON
-                    )
-        except Exception as e:
-            self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
 
     def print_footer(self):
         self.siril.log(
