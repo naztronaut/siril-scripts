@@ -2,7 +2,7 @@
 (c) Nazmus Nasir 2025
 SPDX-License-Identifier: GPL-3.0-or-later
 
-Naztronomy - OSC Preprocessing script
+Naztronomy - OSC Image Preprocessing script
 Version: 1.1.0
 =====================================
 
@@ -58,7 +58,7 @@ else:
     from tkinter import filedialog
 # from tkinter import filedialog
 
-APP_NAME = "Naztronomy - Image Preprocessor"
+APP_NAME = "Naztronomy - OSC Image Preprocessor"
 VERSION = "1.0.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
@@ -205,36 +205,115 @@ class PreprocessingInterface:
 
     # Start session methods
     def create_sessions(self, n_sessions: int) -> list[Session]:
+        """
+        Create a list of Sessions of length n_sessions.
+
+        Args:
+            n_sessions: The number of sessions to create.
+
+        Returns:
+            A list of Session objects.
+        """
+
         return [Session() for _ in range(n_sessions)]
 
     def get_session_count(self) -> int:
+        """
+        Return the number of sessions.
+
+        Returns:
+            int: The number of sessions.
+        """
+
         return len(self.sessions)
 
     def get_session_by_index(self, index: int) -> Session:
+        """
+        Return the session at the given index.
+
+        Args:
+            index: The index of the session to return.
+
+        Returns:
+            Session: The session at the given index.
+
+        Raises:
+            IndexError: If the index is out of range.
+        """
         if 0 <= index < len(self.sessions):
             return self.sessions[index]
         else:
             raise IndexError("Session index out of range.")
 
     def get_all_sessions(self) -> List[Session]:
+        """
+        Return a copy of the list of all sessions.
+
+        Returns:
+            List[Session]: A copy of the list of all sessions.
+        """
         return self.sessions.copy()
 
     def clear_all_sessions(self):
+        """
+        Clear all sessions by resetting each session.
+
+        Resets the lights, darks, flats, and biases of each session to empty lists.
+
+        Returns:
+            List[Session]: The list of sessions after being cleared.
+        """
+
         for session in self.sessions:
             session.reset()
         return self.sessions
 
     def remove_session_by_index(self, index: int) -> List[Session]:
+        """
+        Remove the session at the given index from the list of sessions.
+
+        Args:
+            index: The index of the session to remove.
+
+        Returns:
+            List[Session]: The list of sessions after the session at the given index has been removed.
+
+        Raises:
+            IndexError: If the index is out of range.
+        """
+
         if 0 <= index < len(self.sessions):
             return self.sessions[:index] + self.sessions[index + 1 :]
         else:
             raise IndexError("Session index out of range.")
 
     def add_session(self, session: Session) -> List[Session]:
+        """
+        Add a session to the list of sessions.
+
+        Args:
+            session: The session to add to the list of sessions.
+
+        Returns:
+            List[Session]: The list of sessions after adding the given session.
+        """
         self.sessions.append(session)
         return self.sessions
 
     def update_session(self, index: int, session: Session) -> List[Session]:
+        """
+        Update the session at the given index in the list of sessions.
+
+        Args:
+            index: The index of the session to update.
+            session: The new session to replace the one at the given index.
+
+        Returns:
+            List[Session]: The list of sessions after the session at the given index has been updated.
+
+        Raises:
+            IndexError: If the index is out of range.
+        """
         if 0 <= index < len(self.sessions):
             self.sessions[index] = session
             return self.sessions
@@ -737,9 +816,9 @@ class PreprocessingInterface:
 
         file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_" #{date_obs_str}"
         if self.drizzle_status:
-            file_name += f"__drizzle-{drizzle_str}x"
+            file_name += f"_drizzle-{drizzle_str}x_"
 
-        file_name += f"__{current_datetime}{suffix}"
+        file_name += f"{current_datetime}{suffix}"
 
         try:
             self.siril.cmd(
@@ -1364,7 +1443,7 @@ class PreprocessingInterface:
                     )
                 )
 
-        self.siril.cmd("cd", self.collected_lights_dir)
+        self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
         self.current_working_directory = self.siril.get_siril_wd()
         # Create a new sequence for each session
         for idx, session in enumerate(session_to_process):
