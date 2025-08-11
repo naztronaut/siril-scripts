@@ -56,7 +56,7 @@ if sys.platform.startswith("linux"):
     import sirilpy.tkfilebrowser as filedialog
 else:
     from tkinter import filedialog
-# from tkinter import filedialog
+
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
 VERSION = "1.0.0"
@@ -118,35 +118,6 @@ class Session:
         self.darks.clear()
         self.flats.clear()
         self.biases.clear()
-
-
-class MacOSFriendlyDialog:
-    def __init__(self, parent):
-        self.parent = parent
-
-    def askdirectory(self, **kwargs):
-        """Dialogue de sélection de dossier optimisé pour macOS"""
-        if sys.platform == "darwin":
-            if self.parent:
-                original_state = self.parent.state()
-
-                self.parent.lift()
-                self.parent.focus_force()
-                self.parent.update_idletasks()
-
-                kwargs_copy = kwargs.copy()
-                if "parent" in kwargs_copy:
-                    del kwargs_copy["parent"]
-
-                result = filedialog.askdirectory(**kwargs_copy)
-
-                if original_state == "normal":
-                    self.parent.deiconify()
-                self.parent.lift()
-
-                return result
-
-        return filedialog.askdirectory(**kwargs)
 
 
 class PreprocessingInterface:
