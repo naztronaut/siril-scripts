@@ -118,6 +118,7 @@ class Session:
         self.darks.clear()
         self.flats.clear()
         self.biases.clear()
+        self.siril.log("Reset all sessions. Only the default session remains.", LogColor.SALMON)
 
 
 class PreprocessingInterface:
@@ -408,7 +409,7 @@ class PreprocessingInterface:
                         print(
                             f"{index + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}"
                         )
-            print(session)
+
 
     def remove_selected_files(self):
         selected_indices = self.file_listbox.curselection()
