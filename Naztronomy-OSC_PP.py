@@ -118,7 +118,6 @@ class Session:
         self.darks.clear()
         self.flats.clear()
         self.biases.clear()
-        self.siril.log("Reset all sessions. Only the default session remains.", LogColor.SALMON)
 
 
 class PreprocessingInterface:
@@ -333,7 +332,10 @@ class PreprocessingInterface:
         self.session_dropdown["values"] = session_names
 
     def load_files(self, filetype: str):
-        file_paths = filedialog.askopenfilenames(title=f"Select {filetype} Files")
+        if sys.platform.startswith("linux"):
+            file_paths = filedialog.askopenfilenames(title=f"Select {filetype} Files", initialdir = self.siril.get_siril_wd())
+        else: 
+            file_paths = filedialog.askopenfilenames(title=f"Select {filetype} Files")
         if not file_paths:
             return
 
@@ -356,32 +358,45 @@ class PreprocessingInterface:
         self.refresh_file_list()
 
     def copy_session_files(self, session: Session, session_name: str):
-        """Copies all files from the session to the specified destination directory."""
-
+        """Copies all files from the session to the specified destination directory.
+        Attempts to create symlinks first, falls back to copying if not supported."""
         destination = Path("sessions")
         if not destination.exists():
             os.mkdir(destination)
         session_dir = destination / session_name
         if not session_dir.exists():
             os.mkdir(session_dir)
-
+        
         file_counts = session.get_file_count()
-
         for image_type in FRAME_TYPES:
             if file_counts.get(image_type, 0) > 0:
                 type_dir = session_dir / image_type
                 if not type_dir.exists():
                     os.mkdir(type_dir)
-
                 files = session.get_files_by_type(image_type)
                 for file in files:
                     dest_path = session_dir / image_type / file.name
-                    shutil.copy(file, dest_path)
-                    self.siril.log(f"Copied {file} to {dest_path}", LogColor.BLUE)
+                    
+                    try:
+                        # Convert to absolute paths for reliable symlinks
+                        src_abs = Path(file).resolve()
+                        dest_abs = dest_path.resolve()
+                        
+                        # Attempt to create symlink
+                        os.symlink(src_abs, dest_abs)
+                        self.siril.log(f"Symlinked {file} to {dest_path}", LogColor.BLUE)
+                        
+                    except (OSError, NotImplementedError):
+                        # Fall back to copying if symlink fails
+                        # OSError covers permission issues and unsupported filesystems
+                        # NotImplementedError covers platforms that don't support symlinks
+                        shutil.copy(file, dest_path)
+                        self.siril.log(f"Copied {file} to {dest_path}", LogColor.BLUE)
             else:
                 self.siril.log(
                     f"Skipping {image_type}: no files found", LogColor.SALMON
                 )
+
 
     def refresh_file_list(self):
         self.file_listbox.delete(0, tk.END)
@@ -870,22 +885,26 @@ class PreprocessingInterface:
         main_frame = ttk.Frame(self.root, padding=15)
         main_frame.pack(fill=tk.BOTH, expand=True, anchor=tk.NW)
 
-        # Define styles
-        bold_label = ttk.Style()
-        bold_label.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"), foreground="white")
-        white_label = ttk.Style()
-        white_label.configure("White.TLabel", font=("Segoe UI", 10), foreground="white")
+        if self.siril.get_siril_config("gui", "theme") == 0:
+            # Define styles
+            bold_label = ttk.Style()
+            bold_label.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"), foreground="white")
+            white_label = ttk.Style()
+            white_label.configure("White.TLabel", font=("Segoe UI", 10), foreground="white")
 
-        style = ttk.Style()
-        style.configure("TButton", foreground="white")
-        # style.configure("TLabel", foreground="white")
-        style.configure("TCheckbutton", foreground="white")
-        style.configure("TRadiobutton", foreground="white")
-        style.configure("TMenubutton", foreground="white")
-        style.configure("TEntry", foreground="white")
-        style.configure("TCombobox", foreground="white")
-        style.configure("TNotebook.Tab", foreground="white", font=("Segoe UI", 9, "bold"))
-        style.configure("White.TSpinbox", foreground="white")
+            style = ttk.Style()
+            style.configure("TButton", foreground="white")
+            # style.configure("TLabel", foreground="white")
+            style.configure("TCheckbutton", foreground="white")
+            style.configure("TRadiobutton", foreground="white")
+            style.configure("TMenubutton", foreground="white")
+            style.configure("TEntry", foreground="white")
+            style.configure("TCombobox", foreground="white")
+            style.configure("TNotebook.Tab", foreground="white", font=("Segoe UI", 9, "bold"))
+            style.configure("White.TSpinbox", foreground="white")
+        else:
+            bold_label = ttk.Style()
+            bold_label.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"))
 
         # Title and version
         ttk.Label(
