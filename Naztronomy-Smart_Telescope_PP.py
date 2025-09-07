@@ -359,7 +359,7 @@ class PreprocessingInterface:
         # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
         if self.chosen_telescope == "Celestron Origin":
             args.append(self.target_coords)
-            focal_len = 400
+            focal_len = 335
             pixel_size = 2.4
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
@@ -1117,6 +1117,10 @@ class PreprocessingInterface:
             self.calibrate_lights(
                 seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
             )
+            if clean_up_files:
+                self.clean_up(
+                    prefix=seq_name
+                )  # Remove "batch_lights_" or just "lights_" if not flat calibrated
             seq_name = "pp_" + seq_name
 
         if bg_extract:
@@ -1373,6 +1377,7 @@ class PreprocessingInterface:
                     full_dst_path = os.path.join(target_subdir, filename)
 
                 # Only move files, skip directories
+                # Should only moved the final batched files
                 if os.path.isfile(full_src_path):
                     shutil.move(full_src_path, full_dst_path)
                     self.siril.log(f"Moved: {filename}", LogColor.BLUE)
