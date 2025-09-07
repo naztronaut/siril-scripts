@@ -24,6 +24,9 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+1.1.1 - Bug fixes: 
+      - Fixed Celestron Origin focal length to 335mm
+      - Fixed clean up for pre-pp files
 1.1.0 - Minor version update:
       - Added Batching support for 2000+ files on Windows
       - Removed Autocrop due to reported errors
