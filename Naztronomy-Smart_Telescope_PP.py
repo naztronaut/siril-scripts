@@ -769,7 +769,7 @@ class PreprocessingInterface:
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
             "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
-            f"3. If on Windows and you have more than {UI_DEFAULTS["max_files_per_batch"]} files, this script will automatically split them into batches.\n"
+            f"3. If on Windows and you have more than {UI_DEFAULTS['max_files_per_batch']} files, this script will automatically split them into batches.\n"
             "4. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
             "5. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
             "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
