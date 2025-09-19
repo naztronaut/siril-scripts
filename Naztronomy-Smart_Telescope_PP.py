@@ -183,6 +183,8 @@ class PreprocessingInterface:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
         tksiril.match_theme_to_siril(self.root, self.siril)
+        
+        self.configure_text_selection_colors()
         try:
             self.siril.cmd("requires", "1.3.6")
         except s.CommandError:
@@ -1040,6 +1042,28 @@ class PreprocessingInterface:
         self.siril.disconnect()
         self.root.quit()
         self.root.destroy()
+
+    def configure_text_selection_colors(self):
+        """Configure text selection colors for input fields to ensure visibility."""
+        try:
+            # Set selection colors with good contrast
+            # Use a blue highlight background with white text for good visibility
+            selection_bg = '#0078D4'  # Windows blue
+            selection_fg = 'white'
+            
+            # Configure the style for Entry and Spinbox widgets
+            self.style.configure('TEntry', selectbackground=selection_bg, selectforeground=selection_fg)
+            self.style.configure('TSpinbox', selectbackground=selection_bg, selectforeground=selection_fg)
+            
+            # Also configure for regular tkinter widgets if needed
+            self.root.option_add('*Entry*selectBackground', selection_bg)
+            self.root.option_add('*Entry*selectForeground', selection_fg)
+            self.root.option_add('*Spinbox*selectBackground', selection_bg)
+            self.root.option_add('*Spinbox*selectForeground', selection_fg)
+            
+        except Exception as e:
+            # If configuration fails, log it but don't crash the application
+            self.siril.log(f"Warning: Could not configure text selection colors: {e}", LogColor.SALMON)
 
     def extract_coords_from_fits(self, prefix: str):
         # Only process for specific D2 and Origin
