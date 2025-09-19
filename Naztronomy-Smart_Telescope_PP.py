@@ -1046,23 +1046,18 @@ class PreprocessingInterface:
     def configure_text_selection_colors(self):
         """Configure text selection colors for input fields to ensure visibility."""
         try:
-            # Set selection colors with good contrast
-            # Use a blue highlight background with white text for good visibility
-            selection_bg = '#0078D4'  # Windows blue
+            selection_bg = '#0078D4'
             selection_fg = 'white'
             
-            # Configure the style for Entry and Spinbox widgets
             self.style.configure('TEntry', selectbackground=selection_bg, selectforeground=selection_fg)
             self.style.configure('TSpinbox', selectbackground=selection_bg, selectforeground=selection_fg)
             
-            # Also configure for regular tkinter widgets if needed
             self.root.option_add('*Entry*selectBackground', selection_bg)
             self.root.option_add('*Entry*selectForeground', selection_fg)
             self.root.option_add('*Spinbox*selectBackground', selection_bg)
             self.root.option_add('*Spinbox*selectForeground', selection_fg)
             
         except Exception as e:
-            # If configuration fails, log it but don't crash the application
             self.siril.log(f"Warning: Could not configure text selection colors: {e}", LogColor.SALMON)
 
     def extract_coords_from_fits(self, prefix: str):
