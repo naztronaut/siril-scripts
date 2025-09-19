@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.1.0
+Version: 1.1.1
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -24,6 +24,8 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+1.1.1 - Minor version update:
+      - Added auto-population of telescope and filter options from FITS header
 1.1.0 - Minor version update:
       - Added Batching support for 2000+ files on Windows
       - Removed Autocrop due to reported errors
@@ -103,6 +105,15 @@ FILTER_COMMANDS_MAP = {
     "Celestron Origin": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
     },
+}
+
+# FITS header mappings
+TELESCOP_HEADER_MAP = {
+    "DWARFIII": "Dwarf 3",
+}
+
+FILTER_HEADER_MAP = {
+    "Duo-Band": "Dual-Band",
 }
 
 
@@ -307,6 +318,9 @@ class PreprocessingInterface:
                     continue
 
         self.create_widgets()
+        
+        # Auto-populate telescope and filter options from FITS header after UI is created
+        self.auto_populate_from_fits_header()
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -1081,6 +1095,60 @@ class PreprocessingInterface:
                     )
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
+
+    def auto_populate_from_fits_header(self):
+        """
+        Reads the FITS header from the first lights file and auto-populates
+        telescope and filter options based on header values.
+        """
+        lights_directory = os.path.join(self.current_working_directory, "lights")
+        
+        if not os.path.isdir(lights_directory):
+            self.siril.log("No lights directory found, skipping auto-population from FITS header", LogColor.BLUE)
+            return
+            
+        # Get the first FITS file from lights directory
+        try:
+            fits_files = [f for f in os.listdir(lights_directory) 
+                         if f.lower().endswith(('.fit', '.fits')) 
+                         and os.path.isfile(os.path.join(lights_directory, f))]
+            
+            if not fits_files:
+                self.siril.log("No FITS files found in lights directory, skipping auto-population", LogColor.BLUE)
+                return
+                
+            first_fits = sorted(fits_files)[0]  # Get first file alphabetically
+            fits_path = os.path.join(lights_directory, first_fits)
+            
+            self.siril.log(f"Reading FITS header from: {first_fits}", LogColor.BLUE)
+            
+            # Read the FITS header
+            with fits.open(fits_path) as hdul:
+                header = hdul[0].header
+                
+                # Map telescope from TELESCOP header
+                telescop_header = header.get('TELESCOP', '').strip()
+                if telescop_header and telescop_header in TELESCOP_HEADER_MAP:
+                    mapped_telescope = TELESCOP_HEADER_MAP[telescop_header]
+                    self.telescope_variable.set(mapped_telescope)
+                    self.chosen_telescope = mapped_telescope
+                    self.siril.log(f"Auto-detected telescope: {mapped_telescope} (from TELESCOP='{telescop_header}')", LogColor.GREEN)
+                    
+                    # Manually trigger filter options update
+                    self.update_filter_options()
+                
+                # Map filter from FILTER header
+                filter_header = header.get('FILTER', '').strip()
+                if filter_header and filter_header in FILTER_HEADER_MAP:
+                    mapped_filter = FILTER_HEADER_MAP[filter_header]
+                    # Check if this filter is available for the current telescope
+                    available_filters = self.filter_options_map.get(self.telescope_variable.get(), [])
+                    if mapped_filter in available_filters:
+                        self.filter_variable.set(mapped_filter)
+                        self.siril.log(f"Auto-detected filter: {mapped_filter} (from FILTER='{filter_header}')", LogColor.GREEN)
+                        
+        except Exception as e:
+            self.siril.log(f"Error reading FITS header for auto-population: {e}", LogColor.SALMON)
 
     def batch(
         self,
