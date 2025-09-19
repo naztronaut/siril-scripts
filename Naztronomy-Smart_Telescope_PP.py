@@ -24,6 +24,8 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+1.1.1 - Minor version update:
+      - Added auto-population of telescope and filter options from FITS header
 1.1.0 - Minor version update:
       - Added Batching support for 2000+ files on Windows
       - Removed Autocrop due to reported errors
