@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.1.0
+Version: 1.2.0
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -24,6 +24,8 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+1.2.0 - Minor version update:
+      - Refactored code to use Qt6 instead of Tkinter for the GUI
 1.1.0 - Minor version update:
       - Added Batching support for 2000+ files on Windows
       - Removed Autocrop due to reported errors
@@ -56,7 +58,7 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -279,11 +281,7 @@ class PreprocessingInterface(QMainWindow):
                     continue
 
         self.create_widgets()
-        
-        # Add keyboard shortcuts
         self.setup_shortcuts()
-        
-        # Mark initialization as successful
         self.initialization_successful = True
 
     # Dirname: lights, darks, biases, flats
