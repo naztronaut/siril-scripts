@@ -38,23 +38,21 @@ import math
 import shutil
 import sirilpy as s
 
-s.ensure_installed("ttkthemes", "numpy", "astropy")
+s.ensure_installed("PySide6", "numpy", "astropy")
 from datetime import datetime
-import time
 import os
 import sys
-import tkinter as tk
-from tkinter import ttk
-from sirilpy import LogColor, NoImageError, tksiril
-from ttkthemes import ThemedTk
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QGridLayout, QLabel, QPushButton, QCheckBox, 
+    QDoubleSpinBox, QComboBox, QGroupBox, QMessageBox,
+    QFileDialog
+)
+from PySide6.QtCore import Slot
+from PySide6.QtGui import QFont
+from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
-
-# Beta 3 
-if sys.platform.startswith("linux"):
-   import sirilpy.tkfilebrowser as filedialog
-else:
-   from tkinter import filedialog
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
@@ -119,42 +117,31 @@ class MacOSFriendlyDialog:
         self.parent = parent
 
     def askdirectory(self, **kwargs):
-        """Dialogue de sélection de dossier optimisé pour macOS"""
-        if sys.platform == "darwin":
-            if self.parent:
-                original_state = self.parent.state()
-
-                self.parent.lift()
-                self.parent.focus_force()
-                self.parent.update_idletasks()
-
-                kwargs_copy = kwargs.copy()
-                if "parent" in kwargs_copy:
-                    del kwargs_copy["parent"]
-
-                result = filedialog.askdirectory(**kwargs_copy)
-
-                if original_state == "normal":
-                    self.parent.deiconify()
-                self.parent.lift()
-
-                return result
-
-        return filedialog.askdirectory(**kwargs)
-
-
-class PreprocessingInterface:
-
-    def __init__(self, root):
-        self.root = root
-        self.root.title(f"{APP_NAME} - v{VERSION}")
-
-        self.root.geometry(
-            f"575x710+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
+        """Directory selection dialog optimized for macOS"""
+        # Extract common parameters
+        initial_dir = kwargs.get('initialdir', '')
+        title = kwargs.get('title', 'Select Directory')
+        
+        # Use Qt's native file dialog
+        directory = QFileDialog.getExistingDirectory(
+            self.parent,
+            title,
+            initial_dir,
+            QFileDialog.ShowDirsOnly
         )
-        self.root.resizable(True, True)
+        
+        return directory if directory else None
 
-        self.style = tksiril.standard_style()
+
+class PreprocessingInterface(QMainWindow):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{APP_NAME} - v{VERSION}")
+
+        # Set window size and make it resizable
+        self.resize(575, 580)
+        self.setMinimumSize(575, 500)
 
         self.siril = s.SirilInterface()
 
@@ -163,26 +150,23 @@ class PreprocessingInterface:
         self.drizzle_status = False
         self.drizzle_factor = 0
 
-        self.spcc_section = ttk.LabelFrame()
-        self.spcc_checkbox_variable = None
+        self.spcc_section = None
+        self.spcc_checkbox = None
         self.chosen_telescope = "ZWO Seestar S30"
         self.telescope_options = TELESCOPES
         self.target_coords = None
-        self.telescope_variable = tk.StringVar(value="ZWO Seestar S50")
-        self.filter_variable = tk.StringVar(value="broadband")
+        self.telescope_combo = None
+        self.filter_combo = None
 
         self.filter_options_map = FILTER_OPTIONS_MAP
-        self.current_filter_options = self.filter_options_map[
-            self.telescope_variable.get()
-        ]
-        self.filter_menu = None
+        self.current_filter_options = self.filter_options_map["ZWO Seestar S50"]
+        
         try:
             self.siril.connect()
             self.siril.log("Connected to Siril", LogColor.GREEN)
         except s.SirilConnectionError:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
-        tksiril.match_theme_to_siril(self.root, self.siril)
         try:
             self.siril.cmd("requires", "1.3.6")
         except s.CommandError:
@@ -204,9 +188,8 @@ class PreprocessingInterface:
         except s.CommandError:
             pass
         self.current_working_directory = self.siril.get_siril_wd()
-        self.cwd_label = tk.StringVar()
+        self.cwd_label_text = ""
 
-        # self.root.withdraw()  # Hide the main window
         changed_cwd = False  # a way not to run the prompting loop
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
@@ -215,29 +198,23 @@ class PreprocessingInterface:
                 LogColor.GREEN,
             )
             self.siril.cmd("cd", f'"{self.current_working_directory}"')
-            self.cwd_label.set(
-                f"Current working directory: {self.current_working_directory}"
-            )
+            self.cwd_label_text = f"Current working directory: {self.current_working_directory}"
             changed_cwd = True
-            # self.root.deiconify()
         elif os.path.basename(self.current_working_directory.lower()) == "lights":
             msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
-            answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
-            if answer:
+            answer = QMessageBox.question(self, "Already in Lights Dir", msg)
+            if answer == QMessageBox.Yes:
                 self.siril.cmd("cd", "../")
                 os.chdir(os.path.dirname(self.current_working_directory))
                 self.current_working_directory = os.path.dirname(
                     self.current_working_directory
                 )
-                self.cwd_label.set(
-                    f"Current working directory: {self.current_working_directory}"
-                )
+                self.cwd_label_text = f"Current working directory: {self.current_working_directory}"
                 self.siril.log(
                     f"Updated current working directory to: {self.current_working_directory}",
                     LogColor.GREEN,
                 )
                 changed_cwd = True
-                # self.root.deiconify()
             else:
                 self.siril.log(
                     f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
@@ -246,18 +223,12 @@ class PreprocessingInterface:
                 changed_cwd = False
 
         if not changed_cwd:
-            dialog_helper = MacOSFriendlyDialog(self.root)
+            dialog_helper = MacOSFriendlyDialog(self)
 
             while True:
                 prompt_title = (
                     "Select the parent directory containing the 'lights' directory"
                 )
-
-                if sys.platform == "darwin":
-                    self.root.lift()
-                    self.root.attributes("-topmost", True)
-                    self.root.update()
-                    self.root.attributes("-topmost", False)
 
                 selected_dir = dialog_helper.askdirectory(
                     initialdir=self.current_working_directory,
@@ -270,8 +241,7 @@ class PreprocessingInterface:
                         LogColor.SALMON,
                     )
                     self.siril.disconnect()
-                    self.root.quit()
-                    self.root.destroy()
+                    self.close()
                     break
 
                 lights_directory = os.path.join(selected_dir, "lights")
@@ -279,7 +249,7 @@ class PreprocessingInterface:
                     self.siril.cmd("cd", f'"{selected_dir}"')
                     os.chdir(selected_dir)
                     self.current_working_directory = selected_dir
-                    self.cwd_label.set(f"Current working directory: {selected_dir}")
+                    self.cwd_label_text = f"Current working directory: {selected_dir}"
                     self.siril.log(
                         f"Updated current working directory to: {selected_dir}",
                         LogColor.GREEN,
@@ -288,13 +258,13 @@ class PreprocessingInterface:
 
                 elif os.path.basename(selected_dir.lower()) == "lights":
                     msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
-                    answer = tk.messagebox.askyesno("Already in Lights Dir", msg)
-                    if answer:
+                    answer = QMessageBox.question(self, "Already in Lights Dir", msg)
+                    if answer == QMessageBox.Yes:
                         parent_dir = os.path.dirname(selected_dir)
                         self.siril.cmd("cd", f'"{parent_dir}"')
                         os.chdir(parent_dir)
                         self.current_working_directory = parent_dir
-                        self.cwd_label.set(f"Current working directory: {parent_dir}")
+                        self.cwd_label_text = f"Current working directory: {parent_dir}"
                         self.siril.log(
                             f"Updated current working directory to: {parent_dir}",
                             LogColor.GREEN,
@@ -303,7 +273,7 @@ class PreprocessingInterface:
                 else:
                     msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please try again."
                     self.siril.log(msg, LogColor.SALMON)
-                    tk.messagebox.showerror("Invalid Directory", msg)
+                    QMessageBox.critical(self, "Invalid Directory", msg)
                     continue
 
         self.create_widgets()
@@ -737,28 +707,23 @@ class PreprocessingInterface:
                     os.remove(file_path)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
 
-    # Function to update filter options
-    def update_filter_options(self, *args):
-        selected_scope = self.telescope_variable.get()
+    @Slot(str)
+    def update_filter_options(self, selected_scope):
+        """Update filter options when telescope selection changes"""
         new_options = self.filter_options_map.get(selected_scope, [])
-        # self.siril.log(selected_scope, LogColor.BLUE)
         self.chosen_telescope = selected_scope
         self.siril.log(f"Chosen Telescope: {selected_scope}", LogColor.BLUE)
-        # Clear current menu
-        menu = self.filter_menu["menu"]
-        menu.delete(0, "end")
-
-        # Add new options
-        for option in new_options:
-            menu.add_command(
-                label=option,
-                command=lambda value=option: self.filter_variable.set(value),
-            )
-
-        # Set default and enable menu
-        self.filter_variable.set(new_options[0])
-        state = tk.NORMAL if self.spcc_checkbox_variable.get() else tk.DISABLED
-        self.filter_menu["state"] = state
+        
+        # Clear and update filter combo
+        self.filter_combo.clear()
+        self.filter_combo.addItems(new_options)
+        
+        # Set default selection
+        if new_options:
+            self.filter_combo.setCurrentText(new_options[0])
+            
+        # Update enabled state based on SPCC checkbox
+        self.filter_combo.setEnabled(self.spcc_checkbox.isChecked())
 
     def show_help(self):
         help_text = (
@@ -775,271 +740,247 @@ class PreprocessingInterface:
             "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
             "7. When asking for help, please have the logs handy."
         )
-        self.siril.info_messagebox(help_text, True)
+        
+        # Show help in Qt message box
+        QMessageBox.information(self, "Help", help_text)
         self.siril.log(help_text, LogColor.BLUE)
-
-        tksiril.elevate(self.root)
 
     def create_widgets(self):
         """Creates the UI widgets."""
-        main_frame = ttk.Frame(self.root, padding=15)
-        main_frame.pack(fill=tk.BOTH, expand=True, anchor=tk.NW)
-
-        # Define styles
-        bold_label = ttk.Style()
-        bold_label.configure("Bold.TLabel", font=("TkDefaultFont", 10, "bold"))
+        # Create main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(15, 10, 15, 15)
+        main_layout.setSpacing(8)
 
         # Title and version
-        ttk.Label(
-            main_frame,
-            text=f"{APP_NAME}",
-            style="Bold.TLabel",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(pady=(10, 10))
+        title_label = QLabel(f"{APP_NAME}")
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(10)
+        title_label.setFont(title_font)
+        main_layout.addWidget(title_label)
 
-        ttk.Label(
-            main_frame,
-            textvariable=self.cwd_label,
-        ).pack(anchor="w", pady=(0, 10))
+        # Current working directory label
+        self.cwd_label = QLabel(self.cwd_label_text)
+        main_layout.addWidget(self.cwd_label)
 
         # Telescope section
-        telescope_section = ttk.LabelFrame(main_frame, text="Telescope", padding=10)
-        telescope_section.pack(fill=tk.X, pady=5)
-        ttk.Label(telescope_section, text="Telescope:", style="Bold.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
+        telescope_section = QGroupBox("Telescope")
+        telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
+        main_layout.addWidget(telescope_section)
+        telescope_layout = QGridLayout(telescope_section)
+        telescope_layout.setSpacing(3)
+        telescope_layout.setContentsMargins(10, 15, 10, 10)
 
-        ttk.OptionMenu(
-            telescope_section,
-            self.telescope_variable,
-            "ZWO Seestar S30",
-            *self.telescope_options,
-        ).grid(row=0, column=1, columnspan=3, sticky="w", padx=5, pady=5)
+        telescope_label = QLabel("Telescope:")
+        telescope_label.setFont(title_font)  # Bold font
+        telescope_layout.addWidget(telescope_label, 0, 0)
 
-        self.telescope_variable.trace_add("write", self.update_filter_options)
+        self.telescope_combo = QComboBox()
+        self.telescope_combo.addItems(self.telescope_options)
+        self.telescope_combo.setCurrentText("ZWO Seestar S50")
+        telescope_layout.addWidget(self.telescope_combo, 0, 1, 1, 3)
+
+        self.telescope_combo.currentTextChanged.connect(self.update_filter_options)
 
         # Optional Calibration Frames
-        ttk.Label(
-            telescope_section, text="Calibration Frames:", style="Bold.TLabel"
-        ).grid(row=1, column=0, sticky="w")
+        calib_frames_label = QLabel("Calibration Frames:")
+        calib_frames_label.setFont(title_font)
+        telescope_layout.addWidget(calib_frames_label, 1, 0)
 
-        darks_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            telescope_section, text="Darks", variable=darks_checkbox_variable
-        ).grid(row=1, column=1, sticky="w", padx=5, pady=10)
+        self.darks_checkbox = QCheckBox("Darks")
+        telescope_layout.addWidget(self.darks_checkbox, 1, 1)
 
-        flats_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            telescope_section, text="Flats", variable=flats_checkbox_variable
-        ).grid(row=1, column=2, sticky="w", padx=5)
+        self.flats_checkbox = QCheckBox("Flats")
+        telescope_layout.addWidget(self.flats_checkbox, 1, 2)
 
-        biases_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            telescope_section, text="Biases", variable=biases_checkbox_variable
-        ).grid(row=1, column=3, sticky="w", padx=5)
+        self.biases_checkbox = QCheckBox("Biases")
+        telescope_layout.addWidget(self.biases_checkbox, 1, 3)
 
-        ttk.Label(telescope_section, text="Clean Up Files:", style="Bold.TLabel").grid(
-            row=2, column=0, sticky="w"
-        )
+        # Add some vertical spacing between calibration and cleanup
+        telescope_layout.setRowMinimumHeight(1, 35)
+        
+        cleanup_files_label = QLabel("Clean Up Files:")
+        cleanup_files_label.setFont(title_font)
+        telescope_layout.addWidget(cleanup_files_label, 2, 0)
 
-        cleanup_files_checkbox_variable = tk.BooleanVar()
-        cleanup_checkbox = ttk.Checkbutton(
-            telescope_section, text="", variable=cleanup_files_checkbox_variable
-        )
-        cleanup_checkbox.grid(row=2, column=1, sticky="w", padx=5)
-        tksiril.create_tooltip(
-            cleanup_checkbox,
+        self.cleanup_files_checkbox = QCheckBox("")
+        telescope_layout.addWidget(self.cleanup_files_checkbox, 2, 1)
+        self.cleanup_files_checkbox.setToolTip(
             "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
-            "Note: If your session is batched, this option is automatically enabled even if it's unchecked!",
+            "Note: If your session is batched, this option is automatically enabled even if it's unchecked!"
         )
 
         # Optional Preprocessing Steps
-        calib_section = ttk.LabelFrame(
-            main_frame, text="Optional Preprocessing Steps", padding=10
-        )
+        preprocessing_section = QGroupBox("Optional Preprocessing Steps")
+        preprocessing_section.setStyleSheet("QGroupBox { font-weight: bold; }")
+        main_layout.addWidget(preprocessing_section)
+        preprocessing_layout = QGridLayout(preprocessing_section)
+        preprocessing_layout.setSpacing(5)
+        preprocessing_layout.setContentsMargins(10, 15, 10, 10)
 
-        calib_section.pack(fill=tk.X, pady=5)
-        ttk.Label(
-            calib_section, text="Background Extraction:", style="Bold.TLabel"
-        ).grid(row=2, column=0, sticky="w")
+        bg_extract_label = QLabel("Background Extraction:")
+        bg_extract_label.setFont(title_font)
+        preprocessing_layout.addWidget(bg_extract_label, 0, 0)
 
-        bg_extract_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            calib_section,
-            text="",
-            variable=bg_extract_checkbox_variable,
-        ).grid(row=2, column=1, sticky="w")
+        self.bg_extract_checkbox = QCheckBox("")
+        preprocessing_layout.addWidget(self.bg_extract_checkbox, 0, 1)
 
-        ttk.Label(calib_section, text="Registration:", style="Bold.TLabel").grid(
-            row=3, column=0, sticky="w"
-        )
+        registration_label = QLabel("Registration:")
+        registration_label.setFont(title_font)
+        preprocessing_layout.addWidget(registration_label, 1, 0)
 
-        drizzle_checkbox_variable = tk.BooleanVar()
-        ttk.Checkbutton(
-            calib_section, text="Drizzle?", variable=drizzle_checkbox_variable
-        ).grid(row=3, column=1, sticky="w")
+        self.drizzle_checkbox = QCheckBox("Drizzle?")
+        preprocessing_layout.addWidget(self.drizzle_checkbox, 1, 1)
 
-        drizzle_amount_label = ttk.Label(calib_section, text="Drizzle amount:")
-        drizzle_amount_label.grid(row=3, column=2, sticky="w")
-        drizzle_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["drizzle_amount"])
-        drizzle_amount_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=drizzle_amount_variable,
-            from_=0.1,
-            to=3.0,
-            increment=0.1,
-            state=tk.DISABLED,
-        )
-        drizzle_amount_spinbox.grid(row=3, column=3, sticky="w")
-        drizzle_checkbox_variable.trace_add(
-            "write",
-            lambda *args: drizzle_amount_spinbox.config(
-                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
-                textvariable=drizzle_amount_variable,
-            ),
-        )
-        ttk.Label(calib_section, text="Pixel Fraction:").grid(
-            row=4, column=2, sticky="w"
-        )
-        pixel_fraction_variable = tk.DoubleVar(value=UI_DEFAULTS["pixel_fraction"])
-        pixel_fraction_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=pixel_fraction_variable,
-            from_=0.1,
-            to=10.0,
-            increment=0.01,
-            state=tk.DISABLED,
-        )
-        pixel_fraction_spinbox.grid(row=4, column=3, sticky="w")
-        drizzle_checkbox_variable.trace_add(
-            "write",
-            lambda *args: pixel_fraction_spinbox.config(
-                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
-                textvariable=pixel_fraction_variable,
-            ),
-        )
+        drizzle_amount_label = QLabel("Drizzle amount:")
+        preprocessing_layout.addWidget(drizzle_amount_label, 1, 2)
+        
+        self.drizzle_amount_spinbox = QDoubleSpinBox()
+        self.drizzle_amount_spinbox.setRange(0.1, 3.0)
+        self.drizzle_amount_spinbox.setSingleStep(0.1)
+        self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
+        self.drizzle_amount_spinbox.setMinimumWidth(80)
+        self.drizzle_amount_spinbox.setEnabled(False)
+        preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 1, 3)
 
-        ttk.Label(calib_section, text="Stacking:", style="Bold.TLabel").grid(
-            row=5, column=0, sticky="w"
-        )
+        self.drizzle_checkbox.toggled.connect(self.drizzle_amount_spinbox.setEnabled)
+        
+        pixel_fraction_label = QLabel("Pixel Fraction:")
+        preprocessing_layout.addWidget(pixel_fraction_label, 2, 2)
+        
+        self.pixel_fraction_spinbox = QDoubleSpinBox()
+        self.pixel_fraction_spinbox.setRange(0.1, 10.0)
+        self.pixel_fraction_spinbox.setSingleStep(0.01)
+        self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
+        self.pixel_fraction_spinbox.setMinimumWidth(80)
+        self.pixel_fraction_spinbox.setEnabled(False)
+        preprocessing_layout.addWidget(self.pixel_fraction_spinbox, 2, 3)
 
-        feather_checkbox_variable = tk.BooleanVar()
-        feather_checkbox = ttk.Checkbutton(
-            calib_section, text="Feather?", variable=feather_checkbox_variable
-        )
-        feather_checkbox.grid(row=5, column=1, sticky="w")
+        self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
 
-        feather_amount_label = ttk.Label(calib_section, text="Feather amount:")
-        feather_amount_label.grid(row=5, column=2, sticky="w")
-        feather_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["feather_amount"])
-        feather_amount_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=feather_amount_variable,
-            from_=5,
-            to=2000,
-            increment=5,
-            state=tk.DISABLED,
-        )
-        feather_amount_spinbox.grid(row=5, column=3, sticky="w")
-        feather_checkbox_variable.trace_add(
-            "write",
-            lambda *args: feather_amount_spinbox.config(
-                state=tk.NORMAL if feather_checkbox_variable.get() else tk.DISABLED,
-                textvariable=feather_amount_variable,
-            ),
-        )
+        stacking_label = QLabel("Stacking:")
+        stacking_label.setFont(title_font)
+        preprocessing_layout.addWidget(stacking_label, 3, 0)
+
+        self.feather_checkbox = QCheckBox("Feather?")
+        preprocessing_layout.addWidget(self.feather_checkbox, 3, 1)
+
+        feather_amount_label = QLabel("Feather amount:")
+        preprocessing_layout.addWidget(feather_amount_label, 3, 2)
+        
+        self.feather_amount_spinbox = QDoubleSpinBox()
+        self.feather_amount_spinbox.setRange(5, 2000)
+        self.feather_amount_spinbox.setSingleStep(5)
+        self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
+        self.feather_amount_spinbox.setMinimumWidth(80)
+        self.feather_amount_spinbox.setEnabled(False)
+        preprocessing_layout.addWidget(self.feather_amount_spinbox, 3, 3)
+
+        self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
 
         # SPCC Section
-        self.spcc_section = ttk.LabelFrame(main_frame, text="Post-Stacking", padding=10)
-        self.spcc_section.pack(fill=tk.X, pady=5)
+        self.spcc_section = QGroupBox("Post-Stacking")
+        self.spcc_section.setStyleSheet("QGroupBox { font-weight: bold; }")
+        main_layout.addWidget(self.spcc_section)
+        spcc_layout = QGridLayout(self.spcc_section)
+        spcc_layout.setSpacing(5)
+        spcc_layout.setContentsMargins(10, 15, 10, 10)
 
-        self.spcc_checkbox_variable = tk.BooleanVar()
+        self.spcc_checkbox = QCheckBox("Enable Spectrophotometric Color Calibration (SPCC)")
+        spcc_layout.addWidget(self.spcc_checkbox, 0, 0, 1, 2)
 
-        def toggle_filter_and_gaia():
-            state = tk.NORMAL if self.spcc_checkbox_variable.get() else tk.DISABLED
-            self.filter_menu["state"] = state
-            catalog_menu["state"] = state
+        osc_filter_label = QLabel("OSC Filter:")
+        osc_filter_label.setFont(title_font)
+        spcc_layout.addWidget(osc_filter_label, 1, 0)
 
-        ttk.Checkbutton(
-            self.spcc_section,
-            text="Enable Spectrophotometric Color Calibration (SPCC)",
-            variable=self.spcc_checkbox_variable,
-            command=toggle_filter_and_gaia,
-        ).grid(row=1, column=0, columnspan=2, sticky="w")
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(self.current_filter_options)
+        self.filter_combo.setCurrentText("No Filter (Broadband)")
+        self.filter_combo.setEnabled(False)
+        spcc_layout.addWidget(self.filter_combo, 1, 1)
 
-        ttk.Label(self.spcc_section, text="OSC Filter:", style="Bold.TLabel").grid(
-            row=2, column=0, sticky="w"
-        )
-
-        # filter_options = ["broadband", "narrowband"]
-        self.filter_menu = ttk.OptionMenu(
-            self.spcc_section,
-            self.filter_variable,
-            "No Filter (Broadband)",
-            *self.current_filter_options,
-        )
-        self.filter_menu.grid(row=2, column=1, sticky="w")
-        self.filter_menu["state"] = tk.DISABLED
-
-        ttk.Label(self.spcc_section, text="Catalog:", style="Bold.TLabel").grid(
-            row=3, column=0, sticky="w"
-        )
-        catalog_variable = tk.StringVar(value="localgaia")
+        catalog_label = QLabel("Catalog:")
+        catalog_label.setFont(title_font)
+        spcc_layout.addWidget(catalog_label, 2, 0)
+        
+        self.catalog_combo = QComboBox()
         catalog_options = ["localgaia", "gaia"]
-        catalog_menu = ttk.OptionMenu(
-            self.spcc_section, catalog_variable, "localgaia", *catalog_options
-        )
-        catalog_menu.grid(row=3, column=1, sticky="w")
-        catalog_menu["state"] = tk.DISABLED
+        self.catalog_combo.addItems(catalog_options)
+        self.catalog_combo.setCurrentText("localgaia")
+        self.catalog_combo.setEnabled(False)
+        spcc_layout.addWidget(self.catalog_combo, 2, 1)
+
+        # Connect SPCC checkbox to enable/disable filter and catalog combos
+        self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
+        self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
         if self.gaia_catalogue_available:
-            ttk.Label(
-                self.spcc_section,
-                text="✓ Local Gaia Available",
-                foreground="green",
-                style="Success.TLabel",
-            ).grid(row=3, column=2, sticky="w")
+            gaia_status_label = QLabel("✓ Local Gaia Available")
+            gaia_status_label.setStyleSheet("color: green;")
+            spcc_layout.addWidget(gaia_status_label, 2, 2)
         else:
-            ttk.Label(
-                self.spcc_section, text="✗ Local Gaia Not available", foreground="red"
-            ).grid(row=3, column=2, sticky="w")
+            gaia_status_label = QLabel("✗ Local Gaia Not available")
+            gaia_status_label.setStyleSheet("color: red;")
+            spcc_layout.addWidget(gaia_status_label, 2, 2)
 
-        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
-            pady=(15, 0), side=tk.LEFT
-        )
+        # Buttons section
+        button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 15, 0, 0)  # Add top margin to separate from content
+        main_layout.addLayout(button_layout)
+        
+        help_button = QPushButton("Help")
+        help_button.setMinimumWidth(100)
+        help_button.setMinimumHeight(35)
+        help_button.clicked.connect(self.show_help)
+        button_layout.addWidget(help_button)
+        
+        button_layout.addStretch()  # Add space between buttons
 
-        # Run button
-        ttk.Button(
-            main_frame,
-            text="Run",
-            width=10,
-            command=lambda: self.run_script(
-                do_spcc=self.spcc_checkbox_variable.get(),
-                filter=self.filter_variable.get(),
-                telescope=self.telescope_variable.get(),
-                catalog=catalog_variable.get(),
-                use_darks=darks_checkbox_variable.get(),
-                use_flats=flats_checkbox_variable.get(),
-                use_biases=biases_checkbox_variable.get(),
-                bg_extract=bg_extract_checkbox_variable.get(),
-                drizzle=drizzle_checkbox_variable.get(),
-                drizzle_amount=drizzle_amount_spinbox.get(),
-                pixel_fraction=pixel_fraction_spinbox.get(),
-                feather=feather_checkbox_variable.get(),
-                feather_amount=feather_amount_spinbox.get(),
-                clean_up_files=cleanup_files_checkbox_variable.get(),
-            ),
-        ).pack(pady=(15, 0), side=tk.RIGHT)
+        close_button = QPushButton("Close")
+        close_button.setMinimumWidth(100)
+        close_button.setMinimumHeight(35)
+        close_button.clicked.connect(self.close_dialog)
+        button_layout.addWidget(close_button)
+        
+        # Add small spacing between close and run buttons
+        button_layout.addSpacing(10)
 
-        # Close button
-        ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(
-            pady=(15, 0), side=tk.RIGHT
+        run_button = QPushButton("Run")
+        run_button.setMinimumWidth(100)
+        run_button.setMinimumHeight(35)
+        run_button.setStyleSheet("QPushButton { font-weight: bold; }")
+        run_button.clicked.connect(self.on_run_clicked)
+        button_layout.addWidget(run_button)
+        
+        # Add stretch to push everything to the top
+        main_layout.addStretch()
+
+    def on_run_clicked(self):
+        """Handle the Run button click"""
+        self.run_script(
+            do_spcc=self.spcc_checkbox.isChecked(),
+            filter=self.filter_combo.currentText(),
+            telescope=self.telescope_combo.currentText(),
+            catalog=self.catalog_combo.currentText(),
+            use_darks=self.darks_checkbox.isChecked(),
+            use_flats=self.flats_checkbox.isChecked(),
+            use_biases=self.biases_checkbox.isChecked(),
+            bg_extract=self.bg_extract_checkbox.isChecked(),
+            drizzle=self.drizzle_checkbox.isChecked(),
+            drizzle_amount=self.drizzle_amount_spinbox.value(),
+            pixel_fraction=self.pixel_fraction_spinbox.value(),
+            feather=self.feather_checkbox.isChecked(),
+            feather_amount=self.feather_amount_spinbox.value(),
+            clean_up_files=self.cleanup_files_checkbox.isChecked(),
         )
 
     def close_dialog(self):
         self.siril.disconnect()
-        self.root.quit()
-        self.root.destroy()
+        self.close()
 
     def extract_coords_from_fits(self, prefix: str):
         # Only process for specific D2 and Origin
@@ -1313,7 +1254,6 @@ class PreprocessingInterface:
             self.load_image(image_name=file_name)
         else:
             num_batches = math.ceil(num_files / UI_DEFAULTS["max_files_per_batch"])
-            batch_size = math.ceil(num_files / num_batches)
 
             self.siril.log(
                 f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
@@ -1456,9 +1396,10 @@ class PreprocessingInterface:
 
 def main():
     try:
-        root = ThemedTk()
-        app = PreprocessingInterface(root)
-        root.mainloop()
+        app = QApplication(sys.argv)
+        window = PreprocessingInterface()
+        window.show()
+        sys.exit(app.exec())
     except Exception as e:
         print(f"Error initializing application: {str(e)}")
         sys.exit(1)
