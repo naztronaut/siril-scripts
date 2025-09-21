@@ -149,6 +149,7 @@ class PreprocessingInterface(QMainWindow):
         # if drizzle is off, images will be debayered on convert
         self.drizzle_status = False
         self.drizzle_factor = 0
+        self.initialization_successful = False
 
         self.spcc_section = None
         self.spcc_checkbox = None
@@ -167,6 +168,7 @@ class PreprocessingInterface(QMainWindow):
         except s.SirilConnectionError:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
+            return
         try:
             self.siril.cmd("requires", "1.3.6")
         except s.CommandError:
@@ -242,7 +244,7 @@ class PreprocessingInterface(QMainWindow):
                     )
                     self.siril.disconnect()
                     self.close()
-                    break
+                    return  # Stop initialization completely
 
                 lights_directory = os.path.join(selected_dir, "lights")
                 if os.path.isdir(lights_directory):
@@ -280,6 +282,9 @@ class PreprocessingInterface(QMainWindow):
         
         # Add keyboard shortcuts
         self.setup_shortcuts()
+        
+        # Mark initialization as successful
+        self.initialization_successful = True
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -1419,8 +1424,14 @@ def main():
     try:
         app = QApplication(sys.argv)
         window = PreprocessingInterface()
-        window.show()
-        sys.exit(app.exec())
+        
+        # Only show window if initialization was successful
+        if window.initialization_successful:
+            window.show()
+            sys.exit(app.exec())
+        else:
+            # User canceled during initialization - exit gracefully
+            sys.exit(0)
     except Exception as e:
         print(f"Error initializing application: {str(e)}")
         sys.exit(1)
