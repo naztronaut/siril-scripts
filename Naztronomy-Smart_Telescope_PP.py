@@ -1225,7 +1225,6 @@ class PreprocessingInterface(QMainWindow):
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
-        self.start_time = datetime.now()
 
         # TODO: Stack calibration frames and copy to the various batch dirs
         if use_biases:
@@ -1401,9 +1400,7 @@ class PreprocessingInterface(QMainWindow):
 
         # self.clean_up()
         import datetime
-        end_time = datetime.now()
-        elapsed_time = end_time - self.start_time
-        self.siril.log(f"Elapsed time: {elapsed_time}", LogColor.BLUE)
+
         self.siril.log(
             f"Finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             LogColor.GREEN,
