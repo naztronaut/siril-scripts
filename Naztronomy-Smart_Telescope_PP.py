@@ -48,8 +48,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QComboBox, QGroupBox, QMessageBox,
     QFileDialog
 )
-from PySide6.QtCore import Slot
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Slot, Qt
+from PySide6.QtGui import QFont, QShortcut, QKeySequence
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
@@ -277,6 +277,9 @@ class PreprocessingInterface(QMainWindow):
                     continue
 
         self.create_widgets()
+        
+        # Add keyboard shortcuts
+        self.setup_shortcuts()
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -958,6 +961,24 @@ class PreprocessingInterface(QMainWindow):
         
         # Add stretch to push everything to the top
         main_layout.addStretch()
+
+    def setup_shortcuts(self):
+        """Setup keyboard shortcuts"""
+        # Cmd+W on macOS, Ctrl+W on other platforms
+        close_shortcut = QShortcut(QKeySequence.StandardKey.Close, self)
+        close_shortcut.activated.connect(self.close_dialog)
+        
+        # Escape key as alternative to close
+        escape_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self)
+        escape_shortcut.activated.connect(self.close_dialog)
+        
+        # Enter/Return key to run
+        run_shortcut = QShortcut(QKeySequence(Qt.Key_Return), self)
+        run_shortcut.activated.connect(self.on_run_clicked)
+        
+        # Cmd+R on macOS, Ctrl+R on other platforms for run
+        run_shortcut2 = QShortcut(QKeySequence("Ctrl+R"), self)
+        run_shortcut2.activated.connect(self.on_run_clicked)
 
     def on_run_clicked(self):
         """Handle the Run button click"""
