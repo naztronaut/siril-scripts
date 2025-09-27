@@ -147,10 +147,6 @@ class PreprocessingInterface(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(f"{APP_NAME} - v{VERSION}")
 
-        # Set window size and make it resizable
-        self.resize(575, 580)
-        self.setMinimumSize(575, 500)
-
         self.siril = s.SirilInterface()
 
         # Flags for mosaic mode and drizzle status
@@ -862,9 +858,11 @@ class PreprocessingInterface(QMainWindow):
         main_layout.addWidget(preprocessing_section)
         preprocessing_layout = QGridLayout(preprocessing_section)
         preprocessing_layout.setSpacing(5)
-        preprocessing_layout.setContentsMargins(10, 15, 10, 10)
-        preprocessing_layout.setRowMinimumHeight(0, 25)
-        preprocessing_layout.setRowStretch(0, 25)
+        # preprocessing_layout.setContentsMargins(10, 15, 10, 10)
+        preprocessing_layout.setHorizontalSpacing(15)   # space between label ↔ widget
+        preprocessing_layout.setVerticalSpacing(10)     # space between rows
+        preprocessing_layout.setContentsMargins(12, 18, 12, 12)  # outer padding
+
 
         # Batch size spinbox
         batch_size_label = QLabel("Max Files per Batch:")
@@ -880,8 +878,8 @@ class PreprocessingInterface(QMainWindow):
         self.batch_size_spinbox = QSpinBox()
         self.batch_size_spinbox.setRange(100, 2000)  # clamps input to 100–2000
         self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
-        self.batch_size_spinbox.setSingleStep(1)     # allow picking any integer
-        self.batch_size_spinbox.setMinimumWidth(80)
+        self.batch_size_spinbox.setSingleStep(50)     # allow picking any integer
+        self.batch_size_spinbox.setMinimumWidth(120)
 
         self.batch_size_spinbox.setToolTip(batch_size_tooltip)
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
@@ -917,6 +915,7 @@ class PreprocessingInterface(QMainWindow):
         self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
         self.drizzle_amount_spinbox.setDecimals(1) 
         self.drizzle_amount_spinbox.setMinimumWidth(80)
+        self.drizzle_amount_spinbox.setSuffix(" x")
         self.drizzle_amount_spinbox.setEnabled(False)
         self.drizzle_amount_spinbox.setToolTip(drizzle_amount_label_tooltip)
         preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 2, 3)
@@ -933,6 +932,7 @@ class PreprocessingInterface(QMainWindow):
         self.pixel_fraction_spinbox.setSingleStep(0.01)
         self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
         self.pixel_fraction_spinbox.setMinimumWidth(80)
+        self.pixel_fraction_spinbox.setSuffix(" px")
         self.pixel_fraction_spinbox.setEnabled(False)
         self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
         preprocessing_layout.addWidget(self.pixel_fraction_spinbox, 3, 3)
@@ -958,6 +958,7 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox.setDecimals(1) 
         self.roundness_spinbox.setValue(3.0)
         self.roundness_spinbox.setMinimumWidth(80)
+        self.roundness_spinbox.setSuffix(" σ")
         self.roundness_spinbox.setEnabled(False)
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
         preprocessing_layout.addWidget(self.roundness_spinbox, 4, 3)
@@ -975,6 +976,7 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_spinbox.setDecimals(1)
         self.fwhm_spinbox.setValue(3.0)
         self.fwhm_spinbox.setMinimumWidth(80)
+        self.fwhm_spinbox.setSuffix(" σ")
         self.fwhm_spinbox.setEnabled(False)
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
         preprocessing_layout.addWidget(self.fwhm_spinbox, 5, 3)
@@ -1002,6 +1004,7 @@ class PreprocessingInterface(QMainWindow):
         self.feather_amount_spinbox.setSingleStep(5)
         self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
         self.feather_amount_spinbox.setMinimumWidth(80)
+        self.feather_amount_spinbox.setSuffix(" px")
         self.feather_amount_spinbox.setEnabled(False)
         self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
         preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
