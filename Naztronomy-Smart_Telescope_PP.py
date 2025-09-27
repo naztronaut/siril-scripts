@@ -10,6 +10,7 @@ The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 Support me on Patreon: https://www.patreon.com/c/naztronomy
+Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
 The following directory is required inside the working directory:
     lights/
@@ -26,6 +27,9 @@ CHANGELOG:
 
 1.2.0 - Minor version update:
       - Refactored code to use Qt6 instead of Tkinter for the GUI
+      - Exposed extra filter options
+      - Allow changing batch size
+      - Accepts master calibration frames (also creates master calibration frames)
 1.1.1 - Bug fixes: 
       - Fixed Celestron Origin focal length to 335mm
       - Fixed clean up for pre-pp files
@@ -38,23 +42,22 @@ CHANGELOG:
 1.0.0 - initial release
 """
 
-
+import os
+import sys
 import math
 import shutil
 import sirilpy as s
-
-s.ensure_installed("PySide6", "numpy", "astropy")
 from datetime import datetime
-import os
-import sys
-from PySide6.QtWidgets import (
+
+s.ensure_installed("PyQt6", "numpy", "astropy")
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QGridLayout, QLabel, QPushButton, QCheckBox, 
     QDoubleSpinBox, QComboBox, QGroupBox, QMessageBox,
-    QFileDialog
+    QFileDialog, QSpinBox
 )
-from PySide6.QtCore import Slot, Qt
-from PySide6.QtGui import QFont, QShortcut, QKeySequence
+from PyQt6.QtCore import pyqtSlot as Slot, Qt
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
@@ -110,7 +113,7 @@ FILTER_COMMANDS_MAP = {
 
 
 UI_DEFAULTS = {
-    "feather_amount": 20.0,
+    "feather_amount": 20,
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
@@ -132,7 +135,7 @@ class MacOSFriendlyDialog:
             self.parent,
             title,
             initial_dir,
-            QFileDialog.ShowDirsOnly
+            QFileDialog.Option.ShowDirsOnly
         )
         
         return directory if directory else None
@@ -154,6 +157,7 @@ class PreprocessingInterface(QMainWindow):
         # if drizzle is off, images will be debayered on convert
         self.drizzle_status = False
         self.drizzle_factor = 0
+        self.filters_status = False
         self.initialization_successful = False
 
         self.spcc_section = None
@@ -299,17 +303,22 @@ class PreprocessingInterface(QMainWindow):
                     if os.path.isfile(os.path.join(directory, name))
                 ]
             )
-
+            if file_count == 1:
+                self.siril.log(
+                    f"Only one file found in {dir_name} directory. Treating it like a master {dir_name} frame.",
+                    LogColor.BLUE,
+                )
+                src = os.path.join(directory, os.listdir(directory)[0])
+                
+                dst = os.path.join(self.current_working_directory, "process", f"{dir_name}_stacked{self.fits_extension}")
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                self.siril.log(f"Copied master {dir_name} to process as {dir_name}_stacked.", LogColor.BLUE)
+                self.siril.cmd("cd", "..")
+                # return false because there's no conversion
+                return False
             try:
                 args = ["convert", dir_name, "-out=../process"]
-                if "lights" in dir_name.lower():
-                    if not self.drizzle_status:
-                        args.append("-debayer")
-                else:
-                    if not self.drizzle_status:
-                        # flats, darks, bias: only debayer if drizzle is not set
-                        args.append("-debayer")
-
                 self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
                 self.siril.cmd(*args)
             except (s.DataError, s.CommandError, s.SirilError) as e:
@@ -321,6 +330,7 @@ class PreprocessingInterface(QMainWindow):
                 f"Converted {file_count} {dir_name} files for processing!",
                 LogColor.GREEN,
             )
+            return True
         else:
             self.siril.error_messagebox(f"Directory {directory} does not exist", True)
             raise NoImageError(
@@ -369,13 +379,13 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
-    def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction):
+    def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction, filter_roundness, filter_fwhm):
         """Apply Existing Registration to the sequence."""
         cmd_args = [
             "seqapplyreg",
             seq_name,
-            "-filter-round=2.5k",
-            # "-filter-fwhm=2k",
+            f"-filter-round={filter_roundness}k",
+            f"-filter-wfwhm={filter_fwhm}k",
             "-kernel=square",
             "-framing=max",
         ]
@@ -471,20 +481,21 @@ class PreprocessingInterface(QMainWindow):
 
     def calibration_stack(self, seq_name):
         # not in /process dir here
+        file_name_end = "_stacked"
         if seq_name == "flats":
             if os.path.exists(
                 os.path.join(
                     self.current_working_directory,
-                    f"process/biases_stacked{self.fits_extension}",
+                    f"process/biases{file_name_end}{self.fits_extension}",
                 )
             ):
                 # Saves as pp_flats
-                self.siril.cmd("calibrate", "flats", "-bias=biases_stacked")
+                self.siril.cmd("calibrate", "flats", f"-bias=biases{file_name_end}")
                 self.siril.cmd(
                     "stack", "pp_flats rej 3 3", "-norm=mul", f"-out={seq_name}_stacked"
                 )
-                self.siril.cmd("cd", "..")
-                return
+                # self.siril.cmd("cd", "..")
+                
             else:
                 self.siril.cmd(
                     "stack",
@@ -492,15 +503,14 @@ class PreprocessingInterface(QMainWindow):
                     "-norm=mul",
                     f"-out={seq_name}_stacked",
                 )
-                self.siril.cmd("cd", "..")
-                return
+  
         else:
             # Don't run code below for flats
             # biases and darks
             cmd_args = [
                 "stack",
                 f"{seq_name} rej 3 3 -nonorm",
-                f"-out={seq_name}_stacked",
+                f"-out={seq_name}{file_name_end}",
             ]
             self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
 
@@ -511,6 +521,15 @@ class PreprocessingInterface(QMainWindow):
                 self.close_dialog()
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
+
+        # Copy the stacked calibration files to ../masters directory
+        masters_dir = os.path.join(self.current_working_directory, "masters")
+        os.makedirs(masters_dir, exist_ok=True)
+        src = os.path.join(self.current_working_directory, f"process/{seq_name}{file_name_end}{self.fits_extension}")
+        dst = os.path.join(masters_dir, f"{seq_name}{file_name_end}{self.fits_extension}")
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+            self.siril.log(f"Copied {seq_name}{file_name_end} to masters directory.", LogColor.BLUE)
         self.siril.cmd("cd", "..")
 
     def calibrate_lights(self, seq_name, use_darks=False, use_flats=False):
@@ -521,6 +540,12 @@ class PreprocessingInterface(QMainWindow):
             "-flat=flats_stacked" if use_flats else "",
             "-cfa -equalize_cfa",
         ]
+
+        # Calibrate with -debayer if drizle is not set
+        if not self.drizzle_status:
+            cmd_args.append("-debayer")
+
+        self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
 
         try:
             self.siril.cmd(*cmd_args)
@@ -739,15 +764,17 @@ class PreprocessingInterface(QMainWindow):
             f"Author: {AUTHOR} ({WEBSITE})\n"
             f"Youtube: {YOUTUBE}\n"
             "Discord: https://discord.gg/yXKqrawpjr\n"
-            "Patreon: https://www.patreon.com/c/naztronomy\n\n"
+            "Patreon: https://www.patreon.com/c/naztronomy\n"
+            "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
             "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
-            f"3. If on Windows and you have more than {UI_DEFAULTS['max_files_per_batch']} files, this script will automatically split them into batches.\n"
-            "4. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
-            "5. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
-            "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "7. When asking for help, please have the logs handy."
+            "3. If only one calibration frame is present, it will be treated as a master frame.\n"
+            f"4. If on Windows and you have more than the default {UI_DEFAULTS['max_files_per_batch']} files, this script will automatically split them into batches. You can change the batching count from 100 to 2000.\n"
+            "5. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
+            "6. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
+            "7. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
+            "8. When asking for help, please have the logs handy."
         )
         
         # Show help in Qt message box
@@ -786,11 +813,13 @@ class PreprocessingInterface(QMainWindow):
 
         telescope_label = QLabel("Telescope:")
         telescope_label.setFont(title_font)  # Bold font
+        telescope_label.setToolTip("Select your telescope model to ensure proper color calibration and processing settings.")
         telescope_layout.addWidget(telescope_label, 0, 0)
 
         self.telescope_combo = QComboBox()
         self.telescope_combo.addItems(self.telescope_options)
         self.telescope_combo.setCurrentText("ZWO Seestar S50")
+        self.telescope_combo.setToolTip("Select your telescope model to ensure proper color calibration and processing settings.")
         telescope_layout.addWidget(self.telescope_combo, 0, 1, 1, 3)
 
         self.telescope_combo.currentTextChanged.connect(self.update_filter_options)
@@ -798,15 +827,20 @@ class PreprocessingInterface(QMainWindow):
         # Optional Calibration Frames
         calib_frames_label = QLabel("Calibration Frames:")
         calib_frames_label.setFont(title_font)
+        calib_frames_tooltip = "Select which calibration frames to use in preprocessing. Calibration frames help reduce noise and correct optical imperfections."
+        calib_frames_label.setToolTip(calib_frames_tooltip)
         telescope_layout.addWidget(calib_frames_label, 1, 0)
 
         self.darks_checkbox = QCheckBox("Darks")
+        self.darks_checkbox.setToolTip("Dark frames help remove thermal noise and hot pixels. Use if you have matching exposure dark frames.")
         telescope_layout.addWidget(self.darks_checkbox, 1, 1)
 
         self.flats_checkbox = QCheckBox("Flats")
+        self.flats_checkbox.setToolTip("Flat frames correct for vignetting and dust spots.")
         telescope_layout.addWidget(self.flats_checkbox, 1, 2)
 
         self.biases_checkbox = QCheckBox("Biases")
+        self.biases_checkbox.setToolTip("Bias frames correct for read noise. Only used with flats.")
         telescope_layout.addWidget(self.biases_checkbox, 1, 3)
 
         # Add some vertical spacing between calibration and cleanup
@@ -814,14 +848,13 @@ class PreprocessingInterface(QMainWindow):
         
         cleanup_files_label = QLabel("Clean Up Files:")
         cleanup_files_label.setFont(title_font)
+        cleanup_tooltip = "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\nNote: If your session is batched, this option is automatically enabled even if it's unchecked!"
+        cleanup_files_label.setToolTip(cleanup_tooltip)
         telescope_layout.addWidget(cleanup_files_label, 2, 0)
 
         self.cleanup_files_checkbox = QCheckBox("")
+        self.cleanup_files_checkbox.setToolTip(cleanup_tooltip)
         telescope_layout.addWidget(self.cleanup_files_checkbox, 2, 1)
-        self.cleanup_files_checkbox.setToolTip(
-            "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\n"
-            "Note: If your session is batched, this option is automatically enabled even if it's unchecked!"
-        )
 
         # Optional Preprocessing Steps
         preprocessing_section = QGroupBox("Optional Preprocessing Steps")
@@ -830,36 +863,70 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout = QGridLayout(preprocessing_section)
         preprocessing_layout.setSpacing(5)
         preprocessing_layout.setContentsMargins(10, 15, 10, 10)
+        preprocessing_layout.setRowMinimumHeight(0, 25)
+        preprocessing_layout.setRowStretch(0, 25)
+
+        # Batch size spinbox
+        batch_size_label = QLabel("Max Files per Batch:")
+        batch_size_label.setFont(title_font)
+        batch_size_tooltip = (
+            "Maximum number of files to process in each batch. Windows only. This is ignored on Mac/Linux."
+            "This is an advanced option. Only change if you are comfortable with it.\n"
+            "Valid range: 100–2000."
+        )
+        batch_size_label.setToolTip(batch_size_tooltip)
+        preprocessing_layout.addWidget(batch_size_label, 0, 0)
+
+        self.batch_size_spinbox = QSpinBox()
+        self.batch_size_spinbox.setRange(100, 2000)  # clamps input to 100–2000
+        self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
+        self.batch_size_spinbox.setSingleStep(1)     # allow picking any integer
+        self.batch_size_spinbox.setMinimumWidth(80)
+
+        self.batch_size_spinbox.setToolTip(batch_size_tooltip)
+        preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
 
         bg_extract_label = QLabel("Background Extraction:")
         bg_extract_label.setFont(title_font)
-        preprocessing_layout.addWidget(bg_extract_label, 0, 0)
+        bg_extract_tooltip = "Removes background gradients from your images before stacking. Uses Polynomial value 1 and 10 samples."
+        bg_extract_label.setToolTip(bg_extract_tooltip)
+        preprocessing_layout.addWidget(bg_extract_label, 1, 0)
 
         self.bg_extract_checkbox = QCheckBox("")
-        preprocessing_layout.addWidget(self.bg_extract_checkbox, 0, 1)
+        self.bg_extract_checkbox.setToolTip(bg_extract_tooltip)
+        preprocessing_layout.addWidget(self.bg_extract_checkbox, 1, 1)
 
         registration_label = QLabel("Registration:")
         registration_label.setFont(title_font)
-        preprocessing_layout.addWidget(registration_label, 1, 0)
+        registration_label.setToolTip("Options for aligning images before stacking.")
+        preprocessing_layout.addWidget(registration_label, 2, 0)
 
+        drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
         self.drizzle_checkbox = QCheckBox("Drizzle?")
-        preprocessing_layout.addWidget(self.drizzle_checkbox, 1, 1)
+        self.drizzle_checkbox.setToolTip(drizzle_tooltip)
+        preprocessing_layout.addWidget(self.drizzle_checkbox, 2, 1)
 
+        drizzle_amount_label_tooltip = "Scale factor for drizzle integration. Values between 1.0 and 3.0 are typical. \nNote: Higher values increase processing time and file size."
         drizzle_amount_label = QLabel("Drizzle amount:")
-        preprocessing_layout.addWidget(drizzle_amount_label, 1, 2)
+        drizzle_amount_label.setToolTip(drizzle_amount_label_tooltip)
+        preprocessing_layout.addWidget(drizzle_amount_label, 2, 2)
         
         self.drizzle_amount_spinbox = QDoubleSpinBox()
         self.drizzle_amount_spinbox.setRange(0.1, 3.0)
         self.drizzle_amount_spinbox.setSingleStep(0.1)
         self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
+        self.drizzle_amount_spinbox.setDecimals(1) 
         self.drizzle_amount_spinbox.setMinimumWidth(80)
         self.drizzle_amount_spinbox.setEnabled(False)
-        preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 1, 3)
+        self.drizzle_amount_spinbox.setToolTip(drizzle_amount_label_tooltip)
+        preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 2, 3)
 
         self.drizzle_checkbox.toggled.connect(self.drizzle_amount_spinbox.setEnabled)
         
+        pixel_fraction_label_tooltip = "Controls how much pixels overlap in drizzle integration. Lower values can reduce artifacts but may increase noise."
         pixel_fraction_label = QLabel("Pixel Fraction:")
-        preprocessing_layout.addWidget(pixel_fraction_label, 2, 2)
+        pixel_fraction_label.setToolTip(pixel_fraction_label_tooltip)
+        preprocessing_layout.addWidget(pixel_fraction_label, 3, 2)
         
         self.pixel_fraction_spinbox = QDoubleSpinBox()
         self.pixel_fraction_spinbox.setRange(0.1, 10.0)
@@ -867,27 +934,77 @@ class PreprocessingInterface(QMainWindow):
         self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
         self.pixel_fraction_spinbox.setMinimumWidth(80)
         self.pixel_fraction_spinbox.setEnabled(False)
-        preprocessing_layout.addWidget(self.pixel_fraction_spinbox, 2, 3)
+        self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
+        preprocessing_layout.addWidget(self.pixel_fraction_spinbox, 3, 3)
 
         self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
 
+        # Add spinboxes for roundness and FWHM filters
+
+        filters_checkbox_tooltip = "Options for filtering images based on various criteria."
+        self.filters_checkbox = QCheckBox("Filters")
+        self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
+        preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
+
+
+        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. A lower roundness value applies a stricter filter, keeping only frames with well-defined, circular stars. Higher roundness values allow more variation in star shapes."
+        roundness_label = QLabel("Roundness:")
+        roundness_label.setToolTip(roundness_label_tooltip)
+        preprocessing_layout.addWidget(roundness_label, 4, 2)
+
+        self.roundness_spinbox = QDoubleSpinBox()
+        self.roundness_spinbox.setRange(0.1, 5.0)
+        self.roundness_spinbox.setSingleStep(0.1)
+        self.roundness_spinbox.setDecimals(1) 
+        self.roundness_spinbox.setValue(3.0)
+        self.roundness_spinbox.setMinimumWidth(80)
+        self.roundness_spinbox.setEnabled(False)
+        self.roundness_spinbox.setToolTip(roundness_label_tooltip)
+        preprocessing_layout.addWidget(self.roundness_spinbox, 4, 3)
+
+        self.filters_checkbox.toggled.connect(self.roundness_spinbox.setEnabled)
+
+        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. A lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
+        fwhm_label = QLabel("Weighted FWHM:")
+        fwhm_label.setToolTip(fwhm_label_tooltip)
+        preprocessing_layout.addWidget(fwhm_label, 5, 2)
+
+        self.fwhm_spinbox = QDoubleSpinBox()
+        self.fwhm_spinbox.setRange(0.1, 5.0)
+        self.fwhm_spinbox.setSingleStep(0.1)
+        self.fwhm_spinbox.setDecimals(1)
+        self.fwhm_spinbox.setValue(3.0)
+        self.fwhm_spinbox.setMinimumWidth(80)
+        self.fwhm_spinbox.setEnabled(False)
+        self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
+        preprocessing_layout.addWidget(self.fwhm_spinbox, 5, 3)
+
+        self.filters_checkbox.toggled.connect(self.fwhm_spinbox.setEnabled)
+
+        # Stacking options
         stacking_label = QLabel("Stacking:")
         stacking_label.setFont(title_font)
-        preprocessing_layout.addWidget(stacking_label, 3, 0)
+        stacking_label.setToolTip("Options for combining aligned images into a final stack.")
+        preprocessing_layout.addWidget(stacking_label, 6, 0)
 
+        feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
         self.feather_checkbox = QCheckBox("Feather?")
-        preprocessing_layout.addWidget(self.feather_checkbox, 3, 1)
+        self.feather_checkbox.setToolTip(feather_tooltip)
+        preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
 
+        feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
         feather_amount_label = QLabel("Feather amount:")
-        preprocessing_layout.addWidget(feather_amount_label, 3, 2)
+        feather_amount_label.setToolTip(feather_amount_label_tooltip)
+        preprocessing_layout.addWidget(feather_amount_label, 6, 2)
         
-        self.feather_amount_spinbox = QDoubleSpinBox()
+        self.feather_amount_spinbox = QSpinBox()
         self.feather_amount_spinbox.setRange(5, 2000)
         self.feather_amount_spinbox.setSingleStep(5)
         self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
         self.feather_amount_spinbox.setMinimumWidth(80)
         self.feather_amount_spinbox.setEnabled(False)
-        preprocessing_layout.addWidget(self.feather_amount_spinbox, 3, 3)
+        self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
+        preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
 
         self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
 
@@ -899,21 +1016,27 @@ class PreprocessingInterface(QMainWindow):
         spcc_layout.setSpacing(5)
         spcc_layout.setContentsMargins(10, 15, 10, 10)
 
+        spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
         self.spcc_checkbox = QCheckBox("Enable Spectrophotometric Color Calibration (SPCC)")
+        self.spcc_checkbox.setToolTip(spcc_tooltip)
         spcc_layout.addWidget(self.spcc_checkbox, 0, 0, 1, 2)
 
         osc_filter_label = QLabel("OSC Filter:")
         osc_filter_label.setFont(title_font)
+        osc_filter_label.setToolTip("Select the filter used during image acquisition for proper color calibration.")
         spcc_layout.addWidget(osc_filter_label, 1, 0)
 
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(self.current_filter_options)
         self.filter_combo.setCurrentText("No Filter (Broadband)")
         self.filter_combo.setEnabled(False)
+        self.filter_combo.setToolTip("Select the filter used during image acquisition for proper color calibration.")
         spcc_layout.addWidget(self.filter_combo, 1, 1)
 
         catalog_label = QLabel("Catalog:")
         catalog_label.setFont(title_font)
+        catalog_tooltip = "Source of star color data. Local Gaia is faster but requires downloaded catalog. Online Gaia works without local catalog but is slower and often crashes."
+        catalog_label.setToolTip(catalog_tooltip)
         spcc_layout.addWidget(catalog_label, 2, 0)
         
         self.catalog_combo = QComboBox()
@@ -921,6 +1044,7 @@ class PreprocessingInterface(QMainWindow):
         self.catalog_combo.addItems(catalog_options)
         self.catalog_combo.setCurrentText("localgaia")
         self.catalog_combo.setEnabled(False)
+        self.catalog_combo.setToolTip(catalog_tooltip)
         spcc_layout.addWidget(self.catalog_combo, 2, 1)
 
         # Connect SPCC checkbox to enable/disable filter and catalog combos
@@ -979,7 +1103,7 @@ class PreprocessingInterface(QMainWindow):
         escape_shortcut.activated.connect(self.close_dialog)
         
         # Enter/Return key to run
-        run_shortcut = QShortcut(QKeySequence(Qt.Key_Return), self)
+        run_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
         run_shortcut.activated.connect(self.on_run_clicked)
         
         # Cmd+R on macOS, Ctrl+R on other platforms for run
@@ -996,10 +1120,13 @@ class PreprocessingInterface(QMainWindow):
             use_darks=self.darks_checkbox.isChecked(),
             use_flats=self.flats_checkbox.isChecked(),
             use_biases=self.biases_checkbox.isChecked(),
+            max_files_per_batch=self.batch_size_spinbox.value(),
             bg_extract=self.bg_extract_checkbox.isChecked(),
             drizzle=self.drizzle_checkbox.isChecked(),
             drizzle_amount=self.drizzle_amount_spinbox.value(),
             pixel_fraction=self.pixel_fraction_spinbox.value(),
+            filter_roundness=self.roundness_spinbox.value(),
+            filter_fwhm=self.fwhm_spinbox.value(),
             feather=self.feather_checkbox.isChecked(),
             feather_amount=self.feather_amount_spinbox.value(),
             clean_up_files=self.cleanup_files_checkbox.isChecked(),
@@ -1060,6 +1187,8 @@ class PreprocessingInterface(QMainWindow):
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
+        filter_roundness: float = 3.0,
+        filter_fwhm: float = 3.0,
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
         clean_up_files: bool = False,
@@ -1108,6 +1237,8 @@ class PreprocessingInterface(QMainWindow):
             seq_name=seq_name,
             drizzle_amount=drizzle_amount,
             pixel_fraction=pixel_fraction,
+            filter_roundness=filter_roundness,
+            filter_fwhm=filter_fwhm
         )
         if clean_up_files:
             self.clean_up(
@@ -1200,10 +1331,13 @@ class PreprocessingInterface(QMainWindow):
         use_darks: bool = False,
         use_flats: bool = False,
         use_biases: bool = False,
+        max_files_per_batch: float = UI_DEFAULTS["max_files_per_batch"],
         bg_extract: bool = False,
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
+        filter_roundness: float = 3.0,
+        filter_fwhm: float = 3.0,
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
         clean_up_files: bool = False,
@@ -1217,13 +1351,16 @@ class PreprocessingInterface(QMainWindow):
             f"use_darks={use_darks}\n"
             f"use_flats={use_flats}\n"
             f"use_biases={use_biases}\n"
+            f"batch_size={max_files_per_batch}\n"
             f"bg_extract={bg_extract}\n"
             f"drizzle={drizzle}\n"
             f"drizzle_amount={drizzle_amount}\n"
+            f"filter_roundness={filter_roundness}\n"
+            f"filter_fwhm={filter_fwhm}\n"
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
-            f"clean_up_files={clean_up_files}",
+            f"clean_up_files={clean_up_files}\n",
             LogColor.BLUE,
         )
         self.siril.cmd("close")
@@ -1233,18 +1370,21 @@ class PreprocessingInterface(QMainWindow):
 
         # TODO: Stack calibration frames and copy to the various batch dirs
         if use_biases:
-            self.convert_files("biases")
-            self.calibration_stack("biases")
+            converted = self.convert_files("biases")
+            if converted:
+                self.calibration_stack("biases")
             if clean_up_files:
                 self.clean_up("biases")
         if use_flats:
-            self.convert_files("flats")
-            self.calibration_stack("flats")
+            converted = self.convert_files("flats")
+            if converted:
+                self.calibration_stack("flats")
             if clean_up_files:
                 self.clean_up("flats")
         if use_darks:
-            self.convert_files("darks")
-            self.calibration_stack("darks")
+            converted = self.convert_files("darks")
+            if converted:
+                self.calibration_stack("darks")
             if clean_up_files:
                 self.clean_up("darks")
 
@@ -1263,9 +1403,9 @@ class PreprocessingInterface(QMainWindow):
         is_windows = sys.platform.startswith("win")
 
         # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= UI_DEFAULTS["max_files_per_batch"] or not is_windows:
+        if num_files <= max_files_per_batch or not is_windows:
             self.siril.log(
-                f"{num_files} files found in the lights directory which is less than or equal to {UI_DEFAULTS['max_files_per_batch']} files allowed per batch - no batching needed.",
+                f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
             )
             file_name = self.batch(
@@ -1277,6 +1417,8 @@ class PreprocessingInterface(QMainWindow):
                 drizzle=drizzle,
                 drizzle_amount=drizzle_amount,
                 pixel_fraction=pixel_fraction,
+                filter_roundness=filter_roundness,
+                filter_fwhm=filter_fwhm,
                 feather=feather,
                 feather_amount=feather_amount,
                 clean_up_files=clean_up_files,
@@ -1284,7 +1426,7 @@ class PreprocessingInterface(QMainWindow):
 
             self.load_image(image_name=file_name)
         else:
-            num_batches = math.ceil(num_files / UI_DEFAULTS["max_files_per_batch"])
+            num_batches = math.ceil(num_files / max_files_per_batch)
 
             self.siril.log(
                 f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
@@ -1301,7 +1443,7 @@ class PreprocessingInterface(QMainWindow):
 
             # Split and copy files into batches
             for i, filename in enumerate(all_files):
-                batch_index = i // UI_DEFAULTS["max_files_per_batch"]
+                batch_index = i // max_files_per_batch
                 batch_dir = f"batch_lights{batch_index + 1}"
                 src_path = os.path.join(lights_directory, filename)
                 dest_path = os.path.join(batch_dir, filename)
@@ -1320,6 +1462,8 @@ class PreprocessingInterface(QMainWindow):
                     drizzle=drizzle,
                     drizzle_amount=drizzle_amount,
                     pixel_fraction=pixel_fraction,
+                    filter_roundness=filter_roundness,
+                    filter_fwhm=filter_fwhm,
                     feather=feather,
                     feather_amount=feather_amount,
                     clean_up_files=clean_up_files,
@@ -1358,10 +1502,13 @@ class PreprocessingInterface(QMainWindow):
             self.seq_plate_solve(seq_name=final_stack_seq_name)
             # turn off drizzle for this
             self.drizzle_status = False
+            # Force filters to 3 sigma
             self.seq_apply_reg(
                 seq_name=final_stack_seq_name,
                 drizzle_amount=drizzle_amount,
                 pixel_fraction=pixel_fraction,
+                filter_roundness=3.0,
+                filter_fwhm=3.0,
             )
             self.clean_up(prefix=final_stack_seq_name)
             registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
@@ -1377,7 +1524,7 @@ class PreprocessingInterface(QMainWindow):
             self.load_image(image_name="final_result")
 
             # cleanup final_stack directory
-            shutil.rmtree(final_stack_seq_name, ignore_errors=True)
+            # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
             self.clean_up(prefix=registered_final_stack_seq_name)
 
             # Go back to working dir
@@ -1385,6 +1532,7 @@ class PreprocessingInterface(QMainWindow):
 
             # Save og image in WD - might have drizzle factor in name
             file_name = self.save_image("_batched")
+            self.load_image(image_name=file_name)
 
         # Spcc as a last step
         if do_spcc:
@@ -1419,6 +1567,7 @@ class PreprocessingInterface(QMainWindow):
         YouTube: https://www.YouTube.com/Naztronomy 
         Discord: https://discord.gg/yXKqrawpjr
         Patreon: https://www.patreon.com/c/naztronomy
+        Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
         """,
             LogColor.BLUE,
         )
