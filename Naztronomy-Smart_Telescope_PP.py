@@ -48,6 +48,8 @@ import math
 import shutil
 import sirilpy as s
 from datetime import datetime
+import json
+
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
 from PyQt6.QtWidgets import (
@@ -781,6 +783,7 @@ class PreprocessingInterface(QMainWindow):
         """Creates the UI widgets."""
         # Create main widget and layout
         main_widget = QWidget()
+        self.setMinimumSize(700,600)
         self.setCentralWidget(main_widget)
         
         main_layout = QVBoxLayout(main_widget)
@@ -1069,10 +1072,22 @@ class PreprocessingInterface(QMainWindow):
         main_layout.addLayout(button_layout)
         
         help_button = QPushButton("Help")
-        help_button.setMinimumWidth(100)
+        help_button.setMinimumWidth(50)
         help_button.setMinimumHeight(35)
         help_button.clicked.connect(self.show_help)
         button_layout.addWidget(help_button)
+
+        save_presets_button = QPushButton("Save Presets") 
+        save_presets_button.setMinimumWidth(80)
+        save_presets_button.setMinimumHeight(35)
+        save_presets_button.clicked.connect(self.save_presets)
+        button_layout.addWidget(save_presets_button)
+
+        load_presets_button = QPushButton("Load Presets") 
+        load_presets_button.setMinimumWidth(80)
+        load_presets_button.setMinimumHeight(35)
+        load_presets_button.clicked.connect(self.load_presets)
+        button_layout.addWidget(load_presets_button)
         
         button_layout.addStretch()  # Add space between buttons
 
@@ -1325,6 +1340,90 @@ class PreprocessingInterface(QMainWindow):
         else:
             self.siril.log("No bad FITS files found.", LogColor.GREEN)
 
+    # Save and Load Presets code
+    def save_presets(self):
+        """Save current UI settings to a JSON file in the working directory."""
+        presets = {
+            'telescope': self.telescope_combo.currentText(),
+            'filter': self.filter_combo.currentText(),
+            'catalog': self.catalog_combo.currentText(),
+            'darks': self.darks_checkbox.isChecked(),
+            'flats': self.flats_checkbox.isChecked(), 
+            'biases': self.biases_checkbox.isChecked(),
+            'cleanup': self.cleanup_files_checkbox.isChecked(),
+            'batch_size': self.batch_size_spinbox.value(),
+            'bg_extract': self.bg_extract_checkbox.isChecked(),
+            'drizzle': self.drizzle_checkbox.isChecked(),
+            'drizzle_amount': self.drizzle_amount_spinbox.value(),
+            'pixel_fraction': self.pixel_fraction_spinbox.value(),
+            'filters': self.filters_checkbox.isChecked(),
+            'roundness': self.roundness_spinbox.value(),
+            'fwhm': self.fwhm_spinbox.value(),
+            'feather': self.feather_checkbox.isChecked(),
+            'feather_amount': self.feather_amount_spinbox.value(),
+            'spcc': self.spcc_checkbox.isChecked()
+        }
+        
+        presets_dir = os.path.join(self.current_working_directory, "presets")
+        os.makedirs(presets_dir, exist_ok=True)
+        presets_file = os.path.join(presets_dir, "naztronomy_smart_scope_presets.json")
+        
+        try:
+            with open(presets_file, 'w') as f:
+                json.dump(presets, f, indent=4)
+            self.siril.log(f"Saved presets to {presets_file}", LogColor.GREEN)
+        except Exception as e:
+            self.siril.log(f"Failed to save presets: {e}", LogColor.RED)
+
+    def load_presets(self):
+        """Load UI settings from JSON file using file dialog."""
+        try:
+            # Open file dialog to select presets file
+            # First check for default presets file
+            default_presets_file = os.path.join(self.current_working_directory, "presets", "naztronomy_smart_scope_presets.json")
+            
+            if os.path.exists(default_presets_file):
+                presets_file = default_presets_file
+            else:
+                # If default presets don't exist, show file dialog
+                presets_file, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Load Presets", 
+                    os.path.join(self.current_working_directory, "presets"),
+                    "JSON Files (*.json);;All Files (*.*)"
+                )
+                
+                if not presets_file:  # User canceled
+                    self.siril.log("Preset loading canceled", LogColor.BLUE) 
+                    return
+                
+            with open(presets_file) as f:
+                presets = json.load(f)
+                
+            # Set UI elements based on loaded presets
+            self.telescope_combo.setCurrentText(presets.get('telescope', 'ZWO Seestar S50'))
+            self.filter_combo.setCurrentText(presets.get('filter', 'No Filter (Broadband)'))
+            self.catalog_combo.setCurrentText(presets.get('catalog', 'localgaia'))
+            self.darks_checkbox.setChecked(presets.get('darks', False))
+            self.flats_checkbox.setChecked(presets.get('flats', False))
+            self.biases_checkbox.setChecked(presets.get('biases', False))
+            self.cleanup_files_checkbox.setChecked(presets.get('cleanup', False))
+            self.batch_size_spinbox.setValue(presets.get('batch_size', UI_DEFAULTS['max_files_per_batch']))
+            self.bg_extract_checkbox.setChecked(presets.get('bg_extract', False))
+            self.drizzle_checkbox.setChecked(presets.get('drizzle', False))
+            self.drizzle_amount_spinbox.setValue(presets.get('drizzle_amount', UI_DEFAULTS['drizzle_amount']))
+            self.pixel_fraction_spinbox.setValue(presets.get('pixel_fraction', UI_DEFAULTS['pixel_fraction']))
+            self.filters_checkbox.setChecked(presets.get('filters', False))
+            self.roundness_spinbox.setValue(presets.get('roundness', 3.0))
+            self.fwhm_spinbox.setValue(presets.get('fwhm', 3.0))
+            self.feather_checkbox.setChecked(presets.get('feather', False))
+            self.feather_amount_spinbox.setValue(presets.get('feather_amount', UI_DEFAULTS['feather_amount']))
+            self.spcc_checkbox.setChecked(presets.get('spcc', False))
+            
+            self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
+        except Exception as e:
+            self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
+
     def run_script(
         self,
         do_spcc: bool = False,
@@ -1556,7 +1655,6 @@ class PreprocessingInterface(QMainWindow):
             )  # Load either og or spcc image
 
         # self.clean_up()
-        import datetime
 
         self.siril.log(
             f"Finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
