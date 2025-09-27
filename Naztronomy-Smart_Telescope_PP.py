@@ -121,28 +121,6 @@ UI_DEFAULTS = {
     "max_files_per_batch": 2000,
 }
 
-
-class MacOSFriendlyDialog:
-    def __init__(self, parent):
-        self.parent = parent
-
-    def askdirectory(self, **kwargs):
-        """Directory selection dialog optimized for macOS"""
-        # Extract common parameters
-        initial_dir = kwargs.get('initialdir', '')
-        title = kwargs.get('title', 'Select Directory')
-        
-        # Use Qt's native file dialog
-        directory = QFileDialog.getExistingDirectory(
-            self.parent,
-            title,
-            initial_dir,
-            QFileDialog.Option.ShowDirsOnly
-        )
-        
-        return directory if directory else None
-
-
 class PreprocessingInterface(QMainWindow):
 
     def __init__(self, parent=None):
@@ -232,22 +210,22 @@ class PreprocessingInterface(QMainWindow):
                 changed_cwd = False
 
         if not changed_cwd:
-            dialog_helper = MacOSFriendlyDialog(self)
-
             while True:
                 prompt_title = (
                     "Select the parent directory containing the 'lights' directory"
                 )
 
-                selected_dir = dialog_helper.askdirectory(
-                    initialdir=self.current_working_directory,
-                    title=prompt_title,
+                selected_dir = QFileDialog.getExistingDirectory(
+                    self,
+                    prompt_title,
+                    self.current_working_directory,
+                    QFileDialog.Option.ShowDirsOnly
                 )
 
                 if not selected_dir:
                     self.siril.log(
-                        "Canceled selecting directory. Restart the script to try again.",
-                        LogColor.SALMON,
+                    "Canceled selecting directory. Restart the script to try again.",
+                    LogColor.SALMON,
                     )
                     self.siril.disconnect()
                     self.close()
@@ -260,15 +238,20 @@ class PreprocessingInterface(QMainWindow):
                     self.current_working_directory = selected_dir
                     self.cwd_label_text = f"Current working directory: {selected_dir}"
                     self.siril.log(
-                        f"Updated current working directory to: {selected_dir}",
-                        LogColor.GREEN,
+                    f"Updated current working directory to: {selected_dir}",
+                    LogColor.GREEN,
                     )
                     break
 
                 elif os.path.basename(selected_dir.lower()) == "lights":
                     msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
-                    answer = QMessageBox.question(self, "Already in Lights Dir", msg)
-                    if answer == QMessageBox.Yes:
+                    answer = QMessageBox.question(
+                    self, 
+                    "Already in Lights Dir", 
+                    msg,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if answer == QMessageBox.StandardButton.Yes:
                         parent_dir = os.path.dirname(selected_dir)
                         self.siril.cmd("cd", f'"{parent_dir}"')
                         os.chdir(parent_dir)
@@ -278,11 +261,16 @@ class PreprocessingInterface(QMainWindow):
                             f"Updated current working directory to: {parent_dir}",
                             LogColor.GREEN,
                         )
-                        break
+                    break
                 else:
                     msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please try again."
                     self.siril.log(msg, LogColor.SALMON)
-                    QMessageBox.critical(self, "Invalid Directory", msg)
+                    QMessageBox.critical(
+                    self, 
+                    "Invalid Directory", 
+                    msg,
+                    QMessageBox.StandardButton.Ok
+                    )
                     continue
 
         self.create_widgets()
