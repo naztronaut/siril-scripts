@@ -53,16 +53,28 @@ import json
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QGridLayout, QLabel, QPushButton, QCheckBox, 
-    QDoubleSpinBox, QComboBox, QGroupBox, QMessageBox,
-    QFileDialog, QSpinBox
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
+    QLabel,
+    QPushButton,
+    QCheckBox,
+    QDoubleSpinBox,
+    QComboBox,
+    QGroupBox,
+    QMessageBox,
+    QFileDialog,
+    QSpinBox,
 )
 from PyQt6.QtCore import pyqtSlot as Slot, Qt
 from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
+
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
@@ -121,6 +133,7 @@ UI_DEFAULTS = {
     "max_files_per_batch": 2000,
 }
 
+
 class PreprocessingInterface(QMainWindow):
 
     def __init__(self, parent=None):
@@ -146,7 +159,7 @@ class PreprocessingInterface(QMainWindow):
 
         self.filter_options_map = FILTER_OPTIONS_MAP
         self.current_filter_options = self.filter_options_map["ZWO Seestar S50"]
-        
+
         try:
             self.siril.connect()
             self.siril.log("Connected to Siril", LogColor.GREEN)
@@ -185,7 +198,9 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
             self.siril.cmd("cd", f'"{self.current_working_directory}"')
-            self.cwd_label_text = f"Current working directory: {self.current_working_directory}"
+            self.cwd_label_text = (
+                f"Current working directory: {self.current_working_directory}"
+            )
             changed_cwd = True
         elif os.path.basename(self.current_working_directory.lower()) == "lights":
             msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
@@ -196,7 +211,9 @@ class PreprocessingInterface(QMainWindow):
                 self.current_working_directory = os.path.dirname(
                     self.current_working_directory
                 )
-                self.cwd_label_text = f"Current working directory: {self.current_working_directory}"
+                self.cwd_label_text = (
+                    f"Current working directory: {self.current_working_directory}"
+                )
                 self.siril.log(
                     f"Updated current working directory to: {self.current_working_directory}",
                     LogColor.GREEN,
@@ -219,13 +236,13 @@ class PreprocessingInterface(QMainWindow):
                     self,
                     prompt_title,
                     self.current_working_directory,
-                    QFileDialog.Option.ShowDirsOnly
+                    QFileDialog.Option.ShowDirsOnly,
                 )
 
                 if not selected_dir:
                     self.siril.log(
-                    "Canceled selecting directory. Restart the script to try again.",
-                    LogColor.SALMON,
+                        "Canceled selecting directory. Restart the script to try again.",
+                        LogColor.SALMON,
                     )
                     self.siril.disconnect()
                     self.close()
@@ -238,18 +255,18 @@ class PreprocessingInterface(QMainWindow):
                     self.current_working_directory = selected_dir
                     self.cwd_label_text = f"Current working directory: {selected_dir}"
                     self.siril.log(
-                    f"Updated current working directory to: {selected_dir}",
-                    LogColor.GREEN,
+                        f"Updated current working directory to: {selected_dir}",
+                        LogColor.GREEN,
                     )
                     break
 
                 elif os.path.basename(selected_dir.lower()) == "lights":
                     msg = "The selected directory is the 'lights' directory, do you want to select the parent directory?"
                     answer = QMessageBox.question(
-                    self, 
-                    "Already in Lights Dir", 
-                    msg,
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                        self,
+                        "Already in Lights Dir",
+                        msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     )
                     if answer == QMessageBox.StandardButton.Yes:
                         parent_dir = os.path.dirname(selected_dir)
@@ -266,10 +283,7 @@ class PreprocessingInterface(QMainWindow):
                     msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please try again."
                     self.siril.log(msg, LogColor.SALMON)
                     QMessageBox.critical(
-                    self, 
-                    "Invalid Directory", 
-                    msg,
-                    QMessageBox.StandardButton.Ok
+                        self, "Invalid Directory", msg, QMessageBox.StandardButton.Ok
                     )
                     continue
 
@@ -295,11 +309,18 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
                 src = os.path.join(directory, os.listdir(directory)[0])
-                
-                dst = os.path.join(self.current_working_directory, "process", f"{dir_name}_stacked{self.fits_extension}")
+
+                dst = os.path.join(
+                    self.current_working_directory,
+                    "process",
+                    f"{dir_name}_stacked{self.fits_extension}",
+                )
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
-                self.siril.log(f"Copied master {dir_name} to process as {dir_name}_stacked.", LogColor.BLUE)
+                self.siril.log(
+                    f"Copied master {dir_name} to process as {dir_name}_stacked.",
+                    LogColor.BLUE,
+                )
                 self.siril.cmd("cd", "..")
                 # return false because there's no conversion
                 return False
@@ -365,7 +386,9 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
-    def seq_apply_reg(self, seq_name, drizzle_amount, pixel_fraction, filter_roundness, filter_fwhm):
+    def seq_apply_reg(
+        self, seq_name, drizzle_amount, pixel_fraction, filter_roundness, filter_fwhm
+    ):
         """Apply Existing Registration to the sequence."""
         cmd_args = [
             "seqapplyreg",
@@ -481,7 +504,7 @@ class PreprocessingInterface(QMainWindow):
                     "stack", "pp_flats rej 3 3", "-norm=mul", f"-out={seq_name}_stacked"
                 )
                 # self.siril.cmd("cd", "..")
-                
+
             else:
                 self.siril.cmd(
                     "stack",
@@ -489,7 +512,7 @@ class PreprocessingInterface(QMainWindow):
                     "-norm=mul",
                     f"-out={seq_name}_stacked",
                 )
-  
+
         else:
             # Don't run code below for flats
             # biases and darks
@@ -511,11 +534,18 @@ class PreprocessingInterface(QMainWindow):
         # Copy the stacked calibration files to ../masters directory
         masters_dir = os.path.join(self.current_working_directory, "masters")
         os.makedirs(masters_dir, exist_ok=True)
-        src = os.path.join(self.current_working_directory, f"process/{seq_name}{file_name_end}{self.fits_extension}")
-        dst = os.path.join(masters_dir, f"{seq_name}{file_name_end}{self.fits_extension}")
+        src = os.path.join(
+            self.current_working_directory,
+            f"process/{seq_name}{file_name_end}{self.fits_extension}",
+        )
+        dst = os.path.join(
+            masters_dir, f"{seq_name}{file_name_end}{self.fits_extension}"
+        )
         if os.path.exists(src):
             shutil.copy2(src, dst)
-            self.siril.log(f"Copied {seq_name}{file_name_end} to masters directory.", LogColor.BLUE)
+            self.siril.log(
+                f"Copied {seq_name}{file_name_end} to masters directory.", LogColor.BLUE
+            )
         self.siril.cmd("cd", "..")
 
     def calibrate_lights(self, seq_name, use_darks=False, use_flats=False):
@@ -733,15 +763,15 @@ class PreprocessingInterface(QMainWindow):
         new_options = self.filter_options_map.get(selected_scope, [])
         self.chosen_telescope = selected_scope
         self.siril.log(f"Chosen Telescope: {selected_scope}", LogColor.BLUE)
-        
+
         # Clear and update filter combo
         self.filter_combo.clear()
         self.filter_combo.addItems(new_options)
-        
+
         # Set default selection
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
-            
+
         # Update enabled state based on SPCC checkbox
         self.filter_combo.setEnabled(self.spcc_checkbox.isChecked())
 
@@ -762,7 +792,7 @@ class PreprocessingInterface(QMainWindow):
             "7. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
             "8. When asking for help, please have the logs handy."
         )
-        
+
         # Show help in Qt message box
         QMessageBox.information(self, "Help", help_text)
         self.siril.log(help_text, LogColor.BLUE)
@@ -771,9 +801,9 @@ class PreprocessingInterface(QMainWindow):
         """Creates the UI widgets."""
         # Create main widget and layout
         main_widget = QWidget()
-        self.setMinimumSize(700,600)
+        self.setMinimumSize(700, 600)
         self.setCentralWidget(main_widget)
-        
+
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(15, 10, 15, 15)
         main_layout.setSpacing(8)
@@ -800,13 +830,17 @@ class PreprocessingInterface(QMainWindow):
 
         telescope_label = QLabel("Telescope:")
         telescope_label.setFont(title_font)  # Bold font
-        telescope_label.setToolTip("Select your telescope model to ensure proper color calibration and processing settings.")
+        telescope_label.setToolTip(
+            "Select your telescope model to ensure proper color calibration and processing settings."
+        )
         telescope_layout.addWidget(telescope_label, 0, 0)
 
         self.telescope_combo = QComboBox()
         self.telescope_combo.addItems(self.telescope_options)
         self.telescope_combo.setCurrentText("ZWO Seestar S50")
-        self.telescope_combo.setToolTip("Select your telescope model to ensure proper color calibration and processing settings.")
+        self.telescope_combo.setToolTip(
+            "Select your telescope model to ensure proper color calibration and processing settings."
+        )
         telescope_layout.addWidget(self.telescope_combo, 0, 1, 1, 3)
 
         self.telescope_combo.currentTextChanged.connect(self.update_filter_options)
@@ -819,20 +853,26 @@ class PreprocessingInterface(QMainWindow):
         telescope_layout.addWidget(calib_frames_label, 1, 0)
 
         self.darks_checkbox = QCheckBox("Darks")
-        self.darks_checkbox.setToolTip("Dark frames help remove thermal noise and hot pixels. Use if you have matching exposure dark frames.")
+        self.darks_checkbox.setToolTip(
+            "Dark frames help remove thermal noise and hot pixels. Use if you have matching exposure dark frames."
+        )
         telescope_layout.addWidget(self.darks_checkbox, 1, 1)
 
         self.flats_checkbox = QCheckBox("Flats")
-        self.flats_checkbox.setToolTip("Flat frames correct for vignetting and dust spots.")
+        self.flats_checkbox.setToolTip(
+            "Flat frames correct for vignetting and dust spots."
+        )
         telescope_layout.addWidget(self.flats_checkbox, 1, 2)
 
         self.biases_checkbox = QCheckBox("Biases")
-        self.biases_checkbox.setToolTip("Bias frames correct for read noise. Only used with flats.")
+        self.biases_checkbox.setToolTip(
+            "Bias frames correct for read noise. Only used with flats."
+        )
         telescope_layout.addWidget(self.biases_checkbox, 1, 3)
 
         # Add some vertical spacing between calibration and cleanup
         telescope_layout.setRowMinimumHeight(1, 35)
-        
+
         cleanup_files_label = QLabel("Clean Up Files:")
         cleanup_files_label.setFont(title_font)
         cleanup_tooltip = "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\nNote: If your session is batched, this option is automatically enabled even if it's unchecked!"
@@ -850,10 +890,9 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout = QGridLayout(preprocessing_section)
         preprocessing_layout.setSpacing(5)
         # preprocessing_layout.setContentsMargins(10, 15, 10, 10)
-        preprocessing_layout.setHorizontalSpacing(15)   # space between label ↔ widget
-        preprocessing_layout.setVerticalSpacing(10)     # space between rows
+        preprocessing_layout.setHorizontalSpacing(15)  # space between label ↔ widget
+        preprocessing_layout.setVerticalSpacing(10)  # space between rows
         preprocessing_layout.setContentsMargins(12, 18, 12, 12)  # outer padding
-
 
         # Batch size spinbox
         batch_size_label = QLabel("Max Files per Batch:")
@@ -869,7 +908,7 @@ class PreprocessingInterface(QMainWindow):
         self.batch_size_spinbox = QSpinBox()
         self.batch_size_spinbox.setRange(100, 2000)  # clamps input to 100–2000
         self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
-        self.batch_size_spinbox.setSingleStep(50)     # allow picking any integer
+        self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
         self.batch_size_spinbox.setMinimumWidth(120)
 
         self.batch_size_spinbox.setToolTip(batch_size_tooltip)
@@ -899,12 +938,12 @@ class PreprocessingInterface(QMainWindow):
         drizzle_amount_label = QLabel("Drizzle amount:")
         drizzle_amount_label.setToolTip(drizzle_amount_label_tooltip)
         preprocessing_layout.addWidget(drizzle_amount_label, 2, 2)
-        
+
         self.drizzle_amount_spinbox = QDoubleSpinBox()
         self.drizzle_amount_spinbox.setRange(0.1, 3.0)
         self.drizzle_amount_spinbox.setSingleStep(0.1)
         self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
-        self.drizzle_amount_spinbox.setDecimals(1) 
+        self.drizzle_amount_spinbox.setDecimals(1)
         self.drizzle_amount_spinbox.setMinimumWidth(80)
         self.drizzle_amount_spinbox.setSuffix(" x")
         self.drizzle_amount_spinbox.setEnabled(False)
@@ -912,12 +951,12 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 2, 3)
 
         self.drizzle_checkbox.toggled.connect(self.drizzle_amount_spinbox.setEnabled)
-        
+
         pixel_fraction_label_tooltip = "Controls how much pixels overlap in drizzle integration. Lower values can reduce artifacts but may increase noise."
         pixel_fraction_label = QLabel("Pixel Fraction:")
         pixel_fraction_label.setToolTip(pixel_fraction_label_tooltip)
         preprocessing_layout.addWidget(pixel_fraction_label, 3, 2)
-        
+
         self.pixel_fraction_spinbox = QDoubleSpinBox()
         self.pixel_fraction_spinbox.setRange(0.1, 10.0)
         self.pixel_fraction_spinbox.setSingleStep(0.01)
@@ -932,11 +971,12 @@ class PreprocessingInterface(QMainWindow):
 
         # Add spinboxes for roundness and FWHM filters
 
-        filters_checkbox_tooltip = "Options for filtering images based on various criteria."
+        filters_checkbox_tooltip = (
+            "Options for filtering images based on various criteria."
+        )
         self.filters_checkbox = QCheckBox("Filters")
         self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
         preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
-
 
         roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. A lower roundness value applies a stricter filter, keeping only frames with well-defined, circular stars. Higher roundness values allow more variation in star shapes."
         roundness_label = QLabel("Roundness:")
@@ -946,7 +986,7 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox = QDoubleSpinBox()
         self.roundness_spinbox.setRange(0.1, 5.0)
         self.roundness_spinbox.setSingleStep(0.1)
-        self.roundness_spinbox.setDecimals(1) 
+        self.roundness_spinbox.setDecimals(1)
         self.roundness_spinbox.setValue(3.0)
         self.roundness_spinbox.setMinimumWidth(80)
         self.roundness_spinbox.setSuffix(" σ")
@@ -977,7 +1017,9 @@ class PreprocessingInterface(QMainWindow):
         # Stacking options
         stacking_label = QLabel("Stacking:")
         stacking_label.setFont(title_font)
-        stacking_label.setToolTip("Options for combining aligned images into a final stack.")
+        stacking_label.setToolTip(
+            "Options for combining aligned images into a final stack."
+        )
         preprocessing_layout.addWidget(stacking_label, 6, 0)
 
         feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
@@ -989,7 +1031,7 @@ class PreprocessingInterface(QMainWindow):
         feather_amount_label = QLabel("Feather amount:")
         feather_amount_label.setToolTip(feather_amount_label_tooltip)
         preprocessing_layout.addWidget(feather_amount_label, 6, 2)
-        
+
         self.feather_amount_spinbox = QSpinBox()
         self.feather_amount_spinbox.setRange(5, 2000)
         self.feather_amount_spinbox.setSingleStep(5)
@@ -1011,20 +1053,26 @@ class PreprocessingInterface(QMainWindow):
         spcc_layout.setContentsMargins(10, 15, 10, 10)
 
         spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
-        self.spcc_checkbox = QCheckBox("Enable Spectrophotometric Color Calibration (SPCC)")
+        self.spcc_checkbox = QCheckBox(
+            "Enable Spectrophotometric Color Calibration (SPCC)"
+        )
         self.spcc_checkbox.setToolTip(spcc_tooltip)
         spcc_layout.addWidget(self.spcc_checkbox, 0, 0, 1, 2)
 
         osc_filter_label = QLabel("OSC Filter:")
         osc_filter_label.setFont(title_font)
-        osc_filter_label.setToolTip("Select the filter used during image acquisition for proper color calibration.")
+        osc_filter_label.setToolTip(
+            "Select the filter used during image acquisition for proper color calibration."
+        )
         spcc_layout.addWidget(osc_filter_label, 1, 0)
 
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(self.current_filter_options)
         self.filter_combo.setCurrentText("No Filter (Broadband)")
         self.filter_combo.setEnabled(False)
-        self.filter_combo.setToolTip("Select the filter used during image acquisition for proper color calibration.")
+        self.filter_combo.setToolTip(
+            "Select the filter used during image acquisition for proper color calibration."
+        )
         spcc_layout.addWidget(self.filter_combo, 1, 1)
 
         catalog_label = QLabel("Catalog:")
@@ -1032,7 +1080,7 @@ class PreprocessingInterface(QMainWindow):
         catalog_tooltip = "Source of star color data. Local Gaia is faster but requires downloaded catalog. Online Gaia works without local catalog but is slower and often crashes."
         catalog_label.setToolTip(catalog_tooltip)
         spcc_layout.addWidget(catalog_label, 2, 0)
-        
+
         self.catalog_combo = QComboBox()
         catalog_options = ["localgaia", "gaia"]
         self.catalog_combo.addItems(catalog_options)
@@ -1056,27 +1104,29 @@ class PreprocessingInterface(QMainWindow):
 
         # Buttons section
         button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(0, 15, 0, 0)  # Add top margin to separate from content
+        button_layout.setContentsMargins(
+            0, 15, 0, 0
+        )  # Add top margin to separate from content
         main_layout.addLayout(button_layout)
-        
+
         help_button = QPushButton("Help")
         help_button.setMinimumWidth(50)
         help_button.setMinimumHeight(35)
         help_button.clicked.connect(self.show_help)
         button_layout.addWidget(help_button)
 
-        save_presets_button = QPushButton("Save Presets") 
+        save_presets_button = QPushButton("Save Presets")
         save_presets_button.setMinimumWidth(80)
         save_presets_button.setMinimumHeight(35)
         save_presets_button.clicked.connect(self.save_presets)
         button_layout.addWidget(save_presets_button)
 
-        load_presets_button = QPushButton("Load Presets") 
+        load_presets_button = QPushButton("Load Presets")
         load_presets_button.setMinimumWidth(80)
         load_presets_button.setMinimumHeight(35)
         load_presets_button.clicked.connect(self.load_presets)
         button_layout.addWidget(load_presets_button)
-        
+
         button_layout.addStretch()  # Add space between buttons
 
         close_button = QPushButton("Close")
@@ -1084,7 +1134,7 @@ class PreprocessingInterface(QMainWindow):
         close_button.setMinimumHeight(35)
         close_button.clicked.connect(self.close_dialog)
         button_layout.addWidget(close_button)
-        
+
         # Add small spacing between close and run buttons
         button_layout.addSpacing(10)
 
@@ -1094,7 +1144,7 @@ class PreprocessingInterface(QMainWindow):
         run_button.setStyleSheet("QPushButton { font-weight: bold; }")
         run_button.clicked.connect(self.on_run_clicked)
         button_layout.addWidget(run_button)
-        
+
         # Add stretch to push everything to the top
         main_layout.addStretch()
 
@@ -1103,15 +1153,15 @@ class PreprocessingInterface(QMainWindow):
         # Cmd+W on macOS, Ctrl+W on other platforms
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, self)
         close_shortcut.activated.connect(self.close_dialog)
-        
+
         # Escape key as alternative to close
         escape_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self)
         escape_shortcut.activated.connect(self.close_dialog)
-        
+
         # Enter/Return key to run
         run_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
         run_shortcut.activated.connect(self.on_run_clicked)
-        
+
         # Cmd+R on macOS, Ctrl+R on other platforms for run
         run_shortcut2 = QShortcut(QKeySequence("Ctrl+R"), self)
         run_shortcut2.activated.connect(self.on_run_clicked)
@@ -1244,7 +1294,7 @@ class PreprocessingInterface(QMainWindow):
             drizzle_amount=drizzle_amount,
             pixel_fraction=pixel_fraction,
             filter_roundness=filter_roundness,
-            filter_fwhm=filter_fwhm
+            filter_fwhm=filter_fwhm,
         )
         if clean_up_files:
             self.clean_up(
@@ -1332,32 +1382,32 @@ class PreprocessingInterface(QMainWindow):
     def save_presets(self):
         """Save current UI settings to a JSON file in the working directory."""
         presets = {
-            'telescope': self.telescope_combo.currentText(),
-            'filter': self.filter_combo.currentText(),
-            'catalog': self.catalog_combo.currentText(),
-            'darks': self.darks_checkbox.isChecked(),
-            'flats': self.flats_checkbox.isChecked(), 
-            'biases': self.biases_checkbox.isChecked(),
-            'cleanup': self.cleanup_files_checkbox.isChecked(),
-            'batch_size': self.batch_size_spinbox.value(),
-            'bg_extract': self.bg_extract_checkbox.isChecked(),
-            'drizzle': self.drizzle_checkbox.isChecked(),
-            'drizzle_amount': self.drizzle_amount_spinbox.value(),
-            'pixel_fraction': self.pixel_fraction_spinbox.value(),
-            'filters': self.filters_checkbox.isChecked(),
-            'roundness': self.roundness_spinbox.value(),
-            'fwhm': self.fwhm_spinbox.value(),
-            'feather': self.feather_checkbox.isChecked(),
-            'feather_amount': self.feather_amount_spinbox.value(),
-            'spcc': self.spcc_checkbox.isChecked()
+            "telescope": self.telescope_combo.currentText(),
+            "filter": self.filter_combo.currentText(),
+            "catalog": self.catalog_combo.currentText(),
+            "darks": self.darks_checkbox.isChecked(),
+            "flats": self.flats_checkbox.isChecked(),
+            "biases": self.biases_checkbox.isChecked(),
+            "cleanup": self.cleanup_files_checkbox.isChecked(),
+            "batch_size": self.batch_size_spinbox.value(),
+            "bg_extract": self.bg_extract_checkbox.isChecked(),
+            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle_amount": self.drizzle_amount_spinbox.value(),
+            "pixel_fraction": self.pixel_fraction_spinbox.value(),
+            "filters": self.filters_checkbox.isChecked(),
+            "roundness": self.roundness_spinbox.value(),
+            "fwhm": self.fwhm_spinbox.value(),
+            "feather": self.feather_checkbox.isChecked(),
+            "feather_amount": self.feather_amount_spinbox.value(),
+            "spcc": self.spcc_checkbox.isChecked(),
         }
-        
+
         presets_dir = os.path.join(self.current_working_directory, "presets")
         os.makedirs(presets_dir, exist_ok=True)
         presets_file = os.path.join(presets_dir, "naztronomy_smart_scope_presets.json")
-        
+
         try:
-            with open(presets_file, 'w') as f:
+            with open(presets_file, "w") as f:
                 json.dump(presets, f, indent=4)
             self.siril.log(f"Saved presets to {presets_file}", LogColor.GREEN)
         except Exception as e:
@@ -1368,46 +1418,62 @@ class PreprocessingInterface(QMainWindow):
         try:
             # Open file dialog to select presets file
             # First check for default presets file
-            default_presets_file = os.path.join(self.current_working_directory, "presets", "naztronomy_smart_scope_presets.json")
-            
+            default_presets_file = os.path.join(
+                self.current_working_directory,
+                "presets",
+                "naztronomy_smart_scope_presets.json",
+            )
+
             if os.path.exists(default_presets_file):
                 presets_file = default_presets_file
             else:
                 # If default presets don't exist, show file dialog
                 presets_file, _ = QFileDialog.getOpenFileName(
                     self,
-                    "Load Presets", 
+                    "Load Presets",
                     os.path.join(self.current_working_directory, "presets"),
-                    "JSON Files (*.json);;All Files (*.*)"
+                    "JSON Files (*.json);;All Files (*.*)",
                 )
-                
+
                 if not presets_file:  # User canceled
-                    self.siril.log("Preset loading canceled", LogColor.BLUE) 
+                    self.siril.log("Preset loading canceled", LogColor.BLUE)
                     return
-                
+
             with open(presets_file) as f:
                 presets = json.load(f)
-                
+
             # Set UI elements based on loaded presets
-            self.telescope_combo.setCurrentText(presets.get('telescope', 'ZWO Seestar S50'))
-            self.filter_combo.setCurrentText(presets.get('filter', 'No Filter (Broadband)'))
-            self.catalog_combo.setCurrentText(presets.get('catalog', 'localgaia'))
-            self.darks_checkbox.setChecked(presets.get('darks', False))
-            self.flats_checkbox.setChecked(presets.get('flats', False))
-            self.biases_checkbox.setChecked(presets.get('biases', False))
-            self.cleanup_files_checkbox.setChecked(presets.get('cleanup', False))
-            self.batch_size_spinbox.setValue(presets.get('batch_size', UI_DEFAULTS['max_files_per_batch']))
-            self.bg_extract_checkbox.setChecked(presets.get('bg_extract', False))
-            self.drizzle_checkbox.setChecked(presets.get('drizzle', False))
-            self.drizzle_amount_spinbox.setValue(presets.get('drizzle_amount', UI_DEFAULTS['drizzle_amount']))
-            self.pixel_fraction_spinbox.setValue(presets.get('pixel_fraction', UI_DEFAULTS['pixel_fraction']))
-            self.filters_checkbox.setChecked(presets.get('filters', False))
-            self.roundness_spinbox.setValue(presets.get('roundness', 3.0))
-            self.fwhm_spinbox.setValue(presets.get('fwhm', 3.0))
-            self.feather_checkbox.setChecked(presets.get('feather', False))
-            self.feather_amount_spinbox.setValue(presets.get('feather_amount', UI_DEFAULTS['feather_amount']))
-            self.spcc_checkbox.setChecked(presets.get('spcc', False))
-            
+            self.telescope_combo.setCurrentText(
+                presets.get("telescope", "ZWO Seestar S50")
+            )
+            self.filter_combo.setCurrentText(
+                presets.get("filter", "No Filter (Broadband)")
+            )
+            self.catalog_combo.setCurrentText(presets.get("catalog", "localgaia"))
+            self.darks_checkbox.setChecked(presets.get("darks", False))
+            self.flats_checkbox.setChecked(presets.get("flats", False))
+            self.biases_checkbox.setChecked(presets.get("biases", False))
+            self.cleanup_files_checkbox.setChecked(presets.get("cleanup", False))
+            self.batch_size_spinbox.setValue(
+                presets.get("batch_size", UI_DEFAULTS["max_files_per_batch"])
+            )
+            self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
+            self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+            self.drizzle_amount_spinbox.setValue(
+                presets.get("drizzle_amount", UI_DEFAULTS["drizzle_amount"])
+            )
+            self.pixel_fraction_spinbox.setValue(
+                presets.get("pixel_fraction", UI_DEFAULTS["pixel_fraction"])
+            )
+            self.filters_checkbox.setChecked(presets.get("filters", False))
+            self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
+            self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
+            self.feather_checkbox.setChecked(presets.get("feather", False))
+            self.feather_amount_spinbox.setValue(
+                presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
+            )
+            self.spcc_checkbox.setChecked(presets.get("spcc", False))
+
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
@@ -1668,7 +1734,7 @@ def main():
     try:
         app = QApplication(sys.argv)
         window = PreprocessingInterface()
-        
+
         # Only show window if initialization was successful
         if window.initialization_successful:
             window.show()
