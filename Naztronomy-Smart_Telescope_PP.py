@@ -288,7 +288,7 @@ class PreprocessingInterface(QMainWindow):
                     continue
 
         self.create_widgets()
-        self.setup_shortcuts()
+        #self.setup_shortcuts()
         self.initialization_successful = True
 
     # Dirname: lights, darks, biases, flats
@@ -1148,23 +1148,23 @@ class PreprocessingInterface(QMainWindow):
         # Add stretch to push everything to the top
         main_layout.addStretch()
 
-    def setup_shortcuts(self):
-        """Setup keyboard shortcuts"""
-        # Cmd+W on macOS, Ctrl+W on other platforms
-        close_shortcut = QShortcut(QKeySequence.StandardKey.Close, self)
-        close_shortcut.activated.connect(self.close_dialog)
+    # def setup_shortcuts(self):
+    #     """Setup keyboard shortcuts"""
+    #     # Cmd+W on macOS, Ctrl+W on other platforms
+    #     close_shortcut = QShortcut(QKeySequence.StandardKey.Close, self)
+    #     close_shortcut.activated.connect(self.close_dialog)
 
-        # Escape key as alternative to close
-        escape_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self)
-        escape_shortcut.activated.connect(self.close_dialog)
+    #     # Escape key as alternative to close
+    #     escape_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self)
+    #     escape_shortcut.activated.connect(self.close_dialog)
 
-        # Enter/Return key to run
-        run_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
-        run_shortcut.activated.connect(self.on_run_clicked)
+    #     # Enter/Return key to run
+    #     run_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
+    #     run_shortcut.activated.connect(self.on_run_clicked)
 
-        # Cmd+R on macOS, Ctrl+R on other platforms for run
-        run_shortcut2 = QShortcut(QKeySequence("Ctrl+R"), self)
-        run_shortcut2.activated.connect(self.on_run_clicked)
+    #     # Cmd+R on macOS, Ctrl+R on other platforms for run
+    #     run_shortcut2 = QShortcut(QKeySequence("Ctrl+R"), self)
+    #     run_shortcut2.activated.connect(self.on_run_clicked)
 
     def on_run_clicked(self):
         """Handle the Run button click"""
