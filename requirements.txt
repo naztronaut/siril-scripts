@@ -1,0 +1,4 @@
+PyQt6
+numpy
+astropy
+sirilpy

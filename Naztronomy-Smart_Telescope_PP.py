@@ -288,7 +288,7 @@ class PreprocessingInterface(QMainWindow):
                     continue
 
         self.create_widgets()
-        #self.setup_shortcuts()
+        # self.setup_shortcuts()
         self.initialization_successful = True
 
     # Dirname: lights, darks, biases, flats
@@ -978,7 +978,7 @@ class PreprocessingInterface(QMainWindow):
         self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
         preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
 
-        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. A lower roundness value applies a stricter filter, keeping only frames with well-defined, circular stars. Higher roundness values allow more variation in star shapes."
+        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower roundness value applies a stricter filter, keeping only frames with well-defined, circular stars. Higher roundness values allow more variation in star shapes."
         roundness_label = QLabel("Roundness:")
         roundness_label.setToolTip(roundness_label_tooltip)
         preprocessing_layout.addWidget(roundness_label, 4, 2)
@@ -996,7 +996,7 @@ class PreprocessingInterface(QMainWindow):
 
         self.filters_checkbox.toggled.connect(self.roundness_spinbox.setEnabled)
 
-        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. A lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
+        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
         fwhm_label = QLabel("Weighted FWHM:")
         fwhm_label.setToolTip(fwhm_label_tooltip)
         preprocessing_layout.addWidget(fwhm_label, 5, 2)
