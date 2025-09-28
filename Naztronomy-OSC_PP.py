@@ -13,21 +13,23 @@ Support me on Patreon: https://www.patreon.com/c/naztronomy
 Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
 This script is designed to process OSC images only at this time. Although mono images will process, they will be
-incorrectly debayered and be saved as an RGB image. 
+incorrectly debayered and be saved as an RGB image.
 
-If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically 
+If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically
 plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
 
-This script can be run from any directory but recommended to create a blank directory. 
+This script can be run from any directory but recommended to create a blank directory.
 
-All images are currently copied before processed so it can take up some disk space. This is to mitigate systems that don't allow symlinks. This also 
-allows you to choose files from any folder and drive and they will all be consolidated into a single location. 
+All images are currently copied before processed so it can take up some disk space. This is to mitigate systems that don't allow symlinks. This also
+allows you to choose files from any folder and drive and they will all be consolidated into a single location.
 
 """
 
 """
 CHANGELOG:
 
+1.1.0 - pyqt6 support
+      - Save/Load presets
 1.0.0 - initial release
       - Supports both Mosaics and star alignment for imags without proper headers
       - Cleans up all intermediate files BUT keeps all preprocessed lights so they can be combined later
@@ -41,10 +43,26 @@ import sirilpy as s
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                                   QPushButton, QLabel, QComboBox, QFrame, 
-                                   QListWidget, QSpinBox, QDoubleSpinBox, 
-                                   QCheckBox, QTabWidget, QGroupBox, QFileDialog, QMessageBox, QAbstractItemView)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QComboBox,
+    QFrame,
+    QListWidget,
+    QSpinBox,
+    QDoubleSpinBox,
+    QCheckBox,
+    QTabWidget,
+    QGroupBox,
+    QFileDialog,
+    QMessageBox,
+    QAbstractItemView,
+)
 from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from datetime import datetime
 import time
@@ -56,7 +74,6 @@ from astropy.io import fits
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict
-
 
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
@@ -80,7 +97,7 @@ FRAME_TYPES = ("lights", "darks", "flats", "biases")
 @dataclass
 class Session:
     lights: List[Path] = field(default_factory=list)
-    darks: List[Path] = field(default_factory=list) 
+    darks: List[Path] = field(default_factory=list)
     flats: List[Path] = field(default_factory=list)
     biases: List[Path] = field(default_factory=list)
 
@@ -92,7 +109,7 @@ class Session:
     def get_file_lists(self) -> Dict[str, List[Path]]:
         return {
             "lights": self.lights,
-            "darks": self.darks, 
+            "darks": self.darks,
             "flats": self.flats,
             "biases": self.biases,
         }
@@ -159,7 +176,6 @@ class PreprocessingInterface(QMainWindow):
         self.collected_lights_dir = os.path.join(
             self.current_working_directory, "collected_lights"
         )
-
 
         # Sessions
         self.sessions = self.create_sessions(1)  # Start with one session
@@ -311,7 +327,6 @@ class PreprocessingInterface(QMainWindow):
             self.current_session = f"Session {index+1}"
             self.refresh_file_list()
 
-
     def add_dropdown_session(self):
         self.add_session(Session())
         self.update_dropdown()
@@ -320,7 +335,6 @@ class PreprocessingInterface(QMainWindow):
         self.chosen_session = self.sessions[new_index]
         self.current_session = f"Session {new_index+1}"
         self.refresh_file_list()
-
 
     def remove_session(self):
         if len(self.sessions) <= 1:
@@ -337,7 +351,6 @@ class PreprocessingInterface(QMainWindow):
         self.current_session = "Session 1"
         self.refresh_file_list()
 
-
     def update_dropdown(self):
         session_names = [f"Session {i+1}" for i in range(len(self.sessions))]
         self.session_dropdown.clear()  # remove old items
@@ -347,10 +360,10 @@ class PreprocessingInterface(QMainWindow):
         file_dialog = QFileDialog()
         file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
         file_dialog.setWindowTitle(f"Select {filetype} Files")
-        
+
         if sys.platform.startswith("linux"):
             file_dialog.setDirectory(self.siril.get_siril_wd())
-        
+
         if file_dialog.exec() == QFileDialog.DialogCode.Accepted:
             file_paths = file_dialog.selectedFiles()
             if not file_paths:
@@ -384,7 +397,7 @@ class PreprocessingInterface(QMainWindow):
         session_dir = destination / session_name
         if not session_dir.exists():
             os.mkdir(session_dir)
-        
+
         file_counts = session.get_file_count()
         for image_type in FRAME_TYPES:
             if file_counts.get(image_type, 0) > 0:
@@ -394,16 +407,18 @@ class PreprocessingInterface(QMainWindow):
                 files = session.get_files_by_type(image_type)
                 for file in files:
                     dest_path = session_dir / image_type / file.name
-                    
+
                     try:
                         # Convert to absolute paths for reliable symlinks
                         src_abs = Path(file).resolve()
                         dest_abs = dest_path.resolve()
-                        
+
                         # Attempt to create symlink
                         os.symlink(src_abs, dest_abs)
-                        self.siril.log(f"Symlinked {file} to {dest_path}", LogColor.BLUE)
-                        
+                        self.siril.log(
+                            f"Symlinked {file} to {dest_path}", LogColor.BLUE
+                        )
+
                     except (OSError, NotImplementedError):
                         # Fall back to copying if symlink fails
                         # OSError covers permission issues and unsupported filesystems
@@ -414,7 +429,6 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(
                     f"Skipping {image_type}: no files found", LogColor.SALMON
                 )
-
 
     def refresh_file_list(self):
         self.file_listbox.clear()  # clear QListWidget instead of delete()
@@ -441,7 +455,6 @@ class PreprocessingInterface(QMainWindow):
                             f"{index + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}"
                         )
 
-
     def remove_selected_files(self):
         selected_items = self.file_listbox.selectedItems()
         if not selected_items:
@@ -452,7 +465,7 @@ class PreprocessingInterface(QMainWindow):
             self,
             "Delete Selected Files?",
             msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -471,14 +484,13 @@ class PreprocessingInterface(QMainWindow):
 
             self.refresh_file_list()
 
-
     def reset_everything(self):
         msg = "Are you sure you want to reset all sessions? This will delete all file lists and reset the session count to 1."
         reply = QMessageBox.question(
             self,
             "Reset all sessions?",
             msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -490,7 +502,6 @@ class PreprocessingInterface(QMainWindow):
             self.chosen_session = self.sessions[0]
             self.current_session = "Session 1"
             self.refresh_file_list()
-
 
     # end session methods
 
@@ -832,7 +843,7 @@ class PreprocessingInterface(QMainWindow):
         livetime = int(current_fits_headers.get("LIVETIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
 
-        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_" #{date_obs_str}"
+        file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{livetime}s_"  # {date_obs_str}"
         if self.drizzle_status:
             file_name += f"_drizzle-{drizzle_str}x_"
 
@@ -896,7 +907,7 @@ class PreprocessingInterface(QMainWindow):
             f"Author: {AUTHOR} ({WEBSITE})\n"
             f"Youtube: {YOUTUBE}\n"
             "Discord: https://discord.gg/yXKqrawpjr\n"
-            "Patreon: https://www.patreon.com/c/naztronomy\n" 
+            "Patreon: https://www.patreon.com/c/naztronomy\n"
             "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
             "Info:\n"
             "1. Recommended to use a blank working directory to have a clean setup.\n"
@@ -909,7 +920,6 @@ class PreprocessingInterface(QMainWindow):
         )
         QMessageBox.information(self, "Help", help_text)
         self.siril.log(help_text, LogColor.BLUE)
-
 
     def create_widgets(self):
         """Creates the UI widgets using PyQt6."""
@@ -935,7 +945,7 @@ class PreprocessingInterface(QMainWindow):
 
         # Tab widget
         tab_widget = QTabWidget()
-        
+
         # Files tab
         files_tab = QWidget()
         files_layout = QVBoxLayout(files_tab)
@@ -949,7 +959,7 @@ class PreprocessingInterface(QMainWindow):
         # Now populate the dropdown here
         self.update_dropdown()  # Add this line
         self.session_dropdown.setCurrentIndex(0)  # Set initial selection
-        
+
         add_session_btn = QPushButton("+ Add Session")
         add_session_btn.clicked.connect(self.add_dropdown_session)
         remove_session_btn = QPushButton("– Remove Session")
@@ -981,7 +991,9 @@ class PreprocessingInterface(QMainWindow):
         list_group = QGroupBox("Files in Current Session")
         list_layout = QVBoxLayout()
         self.file_listbox = QListWidget()
-        self.file_listbox.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.file_listbox.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         list_layout.addWidget(self.file_listbox)
 
         file_buttons = QHBoxLayout()
@@ -990,19 +1002,18 @@ class PreprocessingInterface(QMainWindow):
         reset_btn = QPushButton("Reset Everything")
         reset_btn.clicked.connect(self.reset_everything)
         reset_btn.setToolTip("Warning: This will remove all sessions and files!")
-        
+
         file_buttons.addWidget(remove_btn)
         file_buttons.addWidget(reset_btn)
         list_layout.addLayout(file_buttons)
-        
+
         list_group.setLayout(list_layout)
         files_layout.addWidget(list_group)
 
         # Processing tab
         processing_tab = QWidget()
         processing_layout = QVBoxLayout(processing_tab)
-        
-        
+
         # Drizzle settings
         drizzle_group = QGroupBox("Optional Preprocessing Steps")
         drizzle_layout = QVBoxLayout()
@@ -1013,17 +1024,16 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_check.setToolTip(bg_extract_tooltip)
         drizzle_layout.addWidget(self.bg_extract_check)
 
-
         drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
         self.drizzle_checkbox = QCheckBox("Enable Drizzle")
         self.drizzle_checkbox.setToolTip(drizzle_tooltip)
         drizzle_layout.addWidget(self.drizzle_checkbox)
-        
+
         drizzle_amount_tooltip = "Scale factor for drizzle integration. Values between 1.0 and 3.0 are typical. \nNote: Higher values increase processing time and file size."
         drizzle_amount_layout = QHBoxLayout()
         drizzle_amount_label = QLabel("Drizzle Amount:")
         drizzle_amount_label.setToolTip(drizzle_amount_tooltip)
-        
+
         self.drizzle_amount_spinbox = QDoubleSpinBox()
         self.drizzle_amount_spinbox.setRange(0.1, 3.0)
         self.drizzle_amount_spinbox.setSingleStep(0.1)
@@ -1101,7 +1111,6 @@ class PreprocessingInterface(QMainWindow):
         fwhm_layout.addWidget(self.fwhm_spinbox)
         reg_layout.addLayout(fwhm_layout)
 
-
         # Stacking settings
         stack_group = QGroupBox("Stacking Settings")
         stack_layout = QVBoxLayout()
@@ -1139,20 +1148,20 @@ class PreprocessingInterface(QMainWindow):
 
         # Process button
         process_btn = QPushButton("Process Files")
-        process_btn.clicked.connect(lambda: self.run_script(
-            bg_extract=self.bg_extract_check.isChecked(),
-            drizzle=self.drizzle_checkbox.isChecked(),
-            drizzle_amount=self.drizzle_amount_spinbox.value(),
-            pixel_fraction=self.pixel_fraction_spinbox.value(),
-            feather=self.feather_checkbox.isChecked(),
-            feather_amount=self.feather_amount_spinbox.value(),
-            filter_round=self.roundness_spinbox.value(),
-            filter_wfwhm=self.fwhm_spinbox.value(),
-            clean_up_files=self.cleanup_check.isChecked()
-        ))
+        process_btn.clicked.connect(
+            lambda: self.run_script(
+                bg_extract=self.bg_extract_check.isChecked(),
+                drizzle=self.drizzle_checkbox.isChecked(),
+                drizzle_amount=self.drizzle_amount_spinbox.value(),
+                pixel_fraction=self.pixel_fraction_spinbox.value(),
+                feather=self.feather_checkbox.isChecked(),
+                feather_amount=self.feather_amount_spinbox.value(),
+                filter_round=self.roundness_spinbox.value(),
+                filter_wfwhm=self.fwhm_spinbox.value(),
+                clean_up_files=self.cleanup_check.isChecked(),
+            )
+        )
         processing_layout.addWidget(process_btn)
-
-        
 
         # Add tabs
         tab_widget.addTab(files_tab, "1. Files")
@@ -1171,7 +1180,6 @@ class PreprocessingInterface(QMainWindow):
         help_button.setMinimumHeight(35)
         help_button.clicked.connect(self.show_help)
         button_layout.addWidget(help_button)
-        
 
         save_presets_button = QPushButton("Save Presets")
         save_presets_button.setMinimumWidth(80)
@@ -1192,7 +1200,7 @@ class PreprocessingInterface(QMainWindow):
         close_button.setMinimumHeight(35)
         close_button.clicked.connect(self.close_dialog)
         button_layout.addWidget(close_button)
-        
+
         # button_layout.addWidget(help_button)
         button_layout.addStretch()
         button_layout.addWidget(close_button)
@@ -1208,8 +1216,8 @@ class PreprocessingInterface(QMainWindow):
 
     def print_footer(self):
         self.siril.log(
-        f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        LogColor.GREEN,
+            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            LogColor.GREEN,
         )
         self.siril.log(
             """
@@ -1220,37 +1228,37 @@ class PreprocessingInterface(QMainWindow):
         Discord: https://discord.gg/yXKqrawpjr
         Patreon: https://www.patreon.com/c/naztronomy
         Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
-        """, LogColor.BLUE)
-        
+        """,
+            LogColor.BLUE,
+        )
 
     def save_presets(self):
         """Save current UI settings and session data to a preset file"""
         # Collect settings
         presets = {
-            'bg_extract': self.bg_extract_check.isChecked(),
-            'drizzle': self.drizzle_checkbox.isChecked(),
-            'drizzle_amount': round(self.drizzle_amount_spinbox.value(), 1),
-            'pixel_fraction': round(self.pixel_fraction_spinbox.value(), 2),
-            'feather': self.feather_checkbox.isChecked(),
-            'feather_amount': round(self.feather_amount_spinbox.value(), 2),
-            'filter_round': round(self.roundness_spinbox.value(), 1),
-            'filter_wfwhm': round(self.fwhm_spinbox.value(), 1),
-            'cleanup': self.cleanup_check.isChecked(),
-            
+            "bg_extract": self.bg_extract_check.isChecked(),
+            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
+            "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
+            "feather": self.feather_checkbox.isChecked(),
+            "feather_amount": round(self.feather_amount_spinbox.value(), 2),
+            "filter_round": round(self.roundness_spinbox.value(), 1),
+            "filter_wfwhm": round(self.fwhm_spinbox.value(), 1),
+            "cleanup": self.cleanup_check.isChecked(),
             # Add session information
-            'sessions': []
+            "sessions": [],
         }
 
         # Collect data from all sessions
         for idx, session in enumerate(self.sessions):
             session_data = {
-                'name': f'Session {idx + 1}',
-                'lights': [str(path) for path in session.lights],
-                'darks': [str(path) for path in session.darks],
-                'flats': [str(path) for path in session.flats],
-                'biases': [str(path) for path in session.biases]
+                "name": f"Session {idx + 1}",
+                "lights": [str(path) for path in session.lights],
+                "darks": [str(path) for path in session.darks],
+                "flats": [str(path) for path in session.flats],
+                "biases": [str(path) for path in session.biases],
             }
-            presets['sessions'].append(session_data)
+            presets["sessions"].append(session_data)
 
         # Create presets directory if it doesn't exist
         presets_dir = os.path.join(self.current_working_directory, "presets")
@@ -1260,7 +1268,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             with open(presets_file, "w") as f:
                 json.dump(presets, f, indent=4)
-            self.siril.log(f"Saved presets and session data to {presets_file}", LogColor.GREEN)
+            self.siril.log(
+                f"Saved presets and session data to {presets_file}", LogColor.GREEN
+            )
         except Exception as e:
             self.siril.log(f"Failed to save presets: {e}", LogColor.RED)
 
@@ -1294,29 +1304,37 @@ class PreprocessingInterface(QMainWindow):
                 presets = json.load(f)
 
                 # Load UI settings
-                self.bg_extract_check.setChecked(presets.get('bg_extract', False))
-                self.drizzle_checkbox.setChecked(presets.get('drizzle', False))
-                self.drizzle_amount_spinbox.setValue(presets.get('drizzle_amount', 1.0))
-                self.pixel_fraction_spinbox.setValue(presets.get('pixel_fraction', 1.0))
-                self.feather_checkbox.setChecked(presets.get('feather', False))
-                self.feather_amount_spinbox.setValue(presets.get('feather_amount', 20))
-                self.roundness_spinbox.setValue(presets.get('filter_round', 3.0))
-                self.fwhm_spinbox.setValue(presets.get('filter_wfwhm', 3.0))
-                self.cleanup_check.setChecked(presets.get('cleanup', False))
+                self.bg_extract_check.setChecked(presets.get("bg_extract", False))
+                self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+                self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
+                self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
+                self.feather_checkbox.setChecked(presets.get("feather", False))
+                self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
+                self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
+                self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
+                self.cleanup_check.setChecked(presets.get("cleanup", False))
 
                 # Load session data
-                sessions_data = presets.get('sessions', [])
+                sessions_data = presets.get("sessions", [])
                 if sessions_data:
                     # Clear existing sessions
                     self.sessions.clear()
-                    
+
                     # Create new sessions from loaded data
                     for session_data in sessions_data:
                         new_session = Session()
-                        new_session.lights = [Path(path) for path in session_data.get('lights', [])]
-                        new_session.darks = [Path(path) for path in session_data.get('darks', [])]
-                        new_session.flats = [Path(path) for path in session_data.get('flats', [])]
-                        new_session.biases = [Path(path) for path in session_data.get('biases', [])]
+                        new_session.lights = [
+                            Path(path) for path in session_data.get("lights", [])
+                        ]
+                        new_session.darks = [
+                            Path(path) for path in session_data.get("darks", [])
+                        ]
+                        new_session.flats = [
+                            Path(path) for path in session_data.get("flats", [])
+                        ]
+                        new_session.biases = [
+                            Path(path) for path in session_data.get("biases", [])
+                        ]
                         self.sessions.append(new_session)
 
                     # Update UI
@@ -1325,9 +1343,13 @@ class PreprocessingInterface(QMainWindow):
                     self.chosen_session = self.sessions[0]
                     self.refresh_file_list()
 
-                self.siril.log(f"Loaded presets and {len(sessions_data)} sessions from {presets_file}", LogColor.GREEN)
+                self.siril.log(
+                    f"Loaded presets and {len(sessions_data)} sessions from {presets_file}",
+                    LogColor.GREEN,
+                )
         except Exception as e:
             self.siril.log(f"Error loading presets: {str(e)}", LogColor.RED)
+
     def run_script(
         self,
         bg_extract: bool = False,
@@ -1397,7 +1419,10 @@ class PreprocessingInterface(QMainWindow):
                 total_lights += file_counts.get("lights", 0)
 
             if total_lights == 0:
-                self.siril.log("No light frames found. Only master calibration frames were created. Stopping script.", LogColor.BLUE)
+                self.siril.log(
+                    "No light frames found. Only master calibration frames were created. Stopping script.",
+                    LogColor.BLUE,
+                )
                 self.print_footer()
                 self.siril.cmd("cd", "../..")
                 return
@@ -1515,11 +1540,15 @@ class PreprocessingInterface(QMainWindow):
         if clean_up_files:
             shutil.rmtree(os.path.join(self.current_working_directory, "sessions"))
             extension = self.fits_extension.lstrip(".")
-            collected_lights_dir = os.path.join(self.current_working_directory, "collected_lights")
+            collected_lights_dir = os.path.join(
+                self.current_working_directory, "collected_lights"
+            )
             for filename in os.listdir(collected_lights_dir):
                 file_path = os.path.join(collected_lights_dir, filename)
 
-                if os.path.isfile(file_path) and not (filename.startswith("session") and filename.endswith(extension)):
+                if os.path.isfile(file_path) and not (
+                    filename.startswith("session") and filename.endswith(extension)
+                ):
                     os.remove(file_path)
             shutil.rmtree(os.path.join(collected_lights_dir, "cache"))
 
