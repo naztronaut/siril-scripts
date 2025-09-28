@@ -10,6 +10,7 @@ The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
 https://www.Naztronomy.com or https://www.YouTube.com/Naztronomy
 Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 Support me on Patreon: https://www.patreon.com/c/naztronomy
+Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
 This script is designed to process OSC images only at this time. Although mono images will process, they will be
 incorrectly debayered and be saved as an RGB image. 
@@ -33,40 +34,40 @@ CHANGELOG:
 """
 
 
+from operator import index
 from pathlib import Path
 import shutil
 import sirilpy as s
 
-s.ensure_installed("ttkthemes", "numpy", "astropy")
+s.ensure_installed("PyQt6", "numpy", "astropy")
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                                   QPushButton, QLabel, QComboBox, QFrame, 
+                                   QListWidget, QSpinBox, QDoubleSpinBox, 
+                                   QCheckBox, QTabWidget, QGroupBox, QFileDialog, QMessageBox, QAbstractItemView)
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from datetime import datetime
 import time
 import os
 import sys
-import tkinter as tk
-from tkinter import ttk
-from sirilpy import LogColor, NoImageError, tksiril
-from ttkthemes import ThemedTk
+import json
+from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict
 
-# Beta 3
-if sys.platform.startswith("linux"):
-    import sirilpy.tkfilebrowser as filedialog
-else:
-    from tkinter import filedialog
 
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
 
 
 UI_DEFAULTS = {
-    "feather_amount": 20.0,
+    "feather_amount": 20,
     "filter_round": 3.0,
     "filter_wfwhm": 3.0,
     "drizzle_amount": 1.0,
@@ -79,7 +80,7 @@ FRAME_TYPES = ("lights", "darks", "flats", "biases")
 @dataclass
 class Session:
     lights: List[Path] = field(default_factory=list)
-    darks: List[Path] = field(default_factory=list)
+    darks: List[Path] = field(default_factory=list) 
     flats: List[Path] = field(default_factory=list)
     biases: List[Path] = field(default_factory=list)
 
@@ -91,7 +92,7 @@ class Session:
     def get_file_lists(self) -> Dict[str, List[Path]]:
         return {
             "lights": self.lights,
-            "darks": self.darks,
+            "darks": self.darks, 
             "flats": self.flats,
             "biases": self.biases,
         }
@@ -120,18 +121,12 @@ class Session:
         self.biases.clear()
 
 
-class PreprocessingInterface:
+class PreprocessingInterface(QMainWindow):
 
-    def __init__(self, root):
-        self.root = root
-        self.root.title(f"{APP_NAME} - v{VERSION}")
-
-        self.root.geometry(
-            f"900x700+{int(self.root.winfo_screenwidth()/5)}+{int(self.root.winfo_screenheight()/5)}"
-        )
-        self.root.resizable(True, True)
-
-        self.style = tksiril.standard_style()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{APP_NAME} - v{VERSION}")
+        self.initialization_successful = False
 
         self.siril = s.SirilInterface()
 
@@ -147,7 +142,7 @@ class PreprocessingInterface:
         except s.SirilConnectionError:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
-        tksiril.match_theme_to_siril(self.root, self.siril)
+            return
 
         try:
             self.siril.cmd("requires", "1.3.6")
@@ -169,10 +164,18 @@ class PreprocessingInterface:
         # Sessions
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
-        self.current_session = tk.StringVar(value=f"Session {len(self.sessions)}")
+
+        self.session_dropdown = QComboBox()
+        self.update_dropdown()  # Fill it with sessions
+        self.session_dropdown.setCurrentIndex(0)
+        self.session_dropdown.currentIndexChanged.connect(self.on_session_selected)
+
+        # self.current_session = "Session 1"  # optional, just for logging/debug
+        # self.current_session = tk.StringVar(value=f"Session {len(self.sessions)}")
 
         # End Session
         self.create_widgets()
+        self.initialization_successful = True  # Flag to track successful initialization
 
     # Start session methods
     def create_sessions(self, n_sessions: int) -> list[Session]:
@@ -299,63 +302,78 @@ class PreprocessingInterface:
         session.add_files(file_type, file_paths)
 
     # Session UI methods
-    def on_session_selected(self, event):
-        selected_index = int(self.current_session.get().split()[-1]) - 1
-        self.chosen_session = self.get_session_by_index(selected_index)
-        self.refresh_file_list()
+    def on_session_selected(self, index: int):
+        if index < 0 or index >= len(self.sessions):
+            return
+        # Only update if actually changing sessions
+        if self.chosen_session != self.sessions[index]:
+            self.chosen_session = self.get_session_by_index(index)
+            self.current_session = f"Session {index+1}"
+            self.refresh_file_list()
+
 
     def add_dropdown_session(self):
         self.add_session(Session())
         self.update_dropdown()
-        self.current_session.set(f"Session {len(self.sessions)}")
-        self.chosen_session = self.sessions[
-            len(self.sessions) - 1
-        ]  # Set to the newly added session
+        new_index = len(self.sessions) - 1
+        self.session_dropdown.setCurrentIndex(new_index)  # selects new session
+        self.chosen_session = self.sessions[new_index]
+        self.current_session = f"Session {new_index+1}"
         self.refresh_file_list()
+
 
     def remove_session(self):
         if len(self.sessions) <= 1:
             self.siril.log("Cannot remove the last session.", LogColor.BLUE)
-            return  # don't allow removing the last session
+            return
 
-        current = self.current_session.get()
-        current_session_index = int(current.split()[-1]) - 1
-        sess = self.get_session_by_index(current_session_index)  # Validate index
-        self.sessions.remove(sess)
+        current_index = self.session_dropdown.currentIndex()
+        if 0 <= current_index < len(self.sessions):
+            self.sessions.pop(current_index)
+
         self.update_dropdown()
-        self.current_session.set("Session 1")  # fallback to first session
-        self.chosen_session = self.sessions[0]  # Reset chosen_session
+        self.session_dropdown.setCurrentIndex(0)
+        self.chosen_session = self.sessions[0]
+        self.current_session = "Session 1"
         self.refresh_file_list()
+
 
     def update_dropdown(self):
         session_names = [f"Session {i+1}" for i in range(len(self.sessions))]
-        self.session_dropdown["values"] = session_names
+        self.session_dropdown.clear()  # remove old items
+        self.session_dropdown.addItems(session_names)  # add new items
 
     def load_files(self, filetype: str):
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        file_dialog.setWindowTitle(f"Select {filetype} Files")
+        
         if sys.platform.startswith("linux"):
-            file_paths = filedialog.askopenfilenames(title=f"Select {filetype} Files", initialdir = self.siril.get_siril_wd())
-        else: 
-            file_paths = filedialog.askopenfilenames(title=f"Select {filetype} Files")
-        if not file_paths:
-            return
+            file_dialog.setDirectory(self.siril.get_siril_wd())
+        
+        if file_dialog.exec() == QFileDialog.DialogCode.Accepted:
+            file_paths = file_dialog.selectedFiles()
+            if not file_paths:
+                return
 
-        paths = list(map(Path, file_paths))
+            paths = list(map(Path, file_paths))
 
-        match filetype.lower():
-            case "lights":
-                self.chosen_session.lights.extend(paths)
-            case "darks":
-                self.chosen_session.darks.extend(paths)
-            case "flats":
-                self.chosen_session.flats.extend(paths)
-            case "biases":
-                self.chosen_session.biases.extend(paths)
+            match filetype.lower():
+                case "lights":
+                    self.chosen_session.lights.extend(paths)
+                case "darks":
+                    self.chosen_session.darks.extend(paths)
+                case "flats":
+                    self.chosen_session.flats.extend(paths)
+                case "biases":
+                    self.chosen_session.biases.extend(paths)
 
-        self.siril.log(
-            f"> Added {len(paths)} {filetype} files to {self.current_session.get()}",
-            LogColor.BLUE,
-        )
-        self.refresh_file_list()
+            self.siril.log(
+                f"> Added {len(paths)} {filetype} files to {self.session_dropdown.currentText()}",
+                LogColor.BLUE,
+            )
+
+            self.refresh_file_list()
 
     def copy_session_files(self, session: Session, session_name: str):
         """Copies all files from the session to the specified destination directory.
@@ -399,18 +417,16 @@ class PreprocessingInterface:
 
 
     def refresh_file_list(self):
-        self.file_listbox.delete(0, tk.END)
+        self.file_listbox.clear()  # clear QListWidget instead of delete()
         self.siril.log(f"Switched to session {self.chosen_session}", LogColor.BLUE)
+
         if self.chosen_session:
             for file_type in FRAME_TYPES:
-                # file_list = chosen_session.get_file_lists().get(file_type, [])
                 files = self.chosen_session.get_files_by_type(file_type)
                 if files:
-                    # file_listbox.insert(tk.END, f"--- {file_type.upper()} ---")
                     for index, file in enumerate(files):
-                        self.file_listbox.insert(
-                            tk.END,
-                            f"{index + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}",
+                        self.file_listbox.addItem(
+                            f"{index + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}"
                         )
 
     # Debug code
@@ -427,13 +443,19 @@ class PreprocessingInterface:
 
 
     def remove_selected_files(self):
-        selected_indices = self.file_listbox.curselection()
-        if not selected_indices:
+        selected_items = self.file_listbox.selectedItems()
+        if not selected_items:
             return
 
-        msg = f"Are you sure you want to delete {len(selected_indices)} files? (Note: This will only remove them from the session, not delete them from disk.)"
-        answer = tk.messagebox.askyesno("Delete Selected Files?", msg)
-        if answer:
+        msg = f"Are you sure you want to delete {len(selected_items)} files? (Note: This will only remove them from the session, not delete them from disk.)"
+        reply = QMessageBox.question(
+            self,
+            "Delete Selected Files?",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
             # Build flat list of all files with type tracking
             all_files = (
                 [("lights", f) for f in self.chosen_session.lights]
@@ -442,24 +464,33 @@ class PreprocessingInterface:
                 + [("biases", f) for f in self.chosen_session.biases]
             )
 
-            for index in reversed(
-                selected_indices
-            ):  # Remove from end to avoid reindexing issues
-                filetype, path = all_files[index]
+            for item in selected_items:
+                row = self.file_listbox.row(item)  # Get the row index
+                filetype, path = all_files[row]
                 getattr(self.chosen_session, filetype).remove(path)
 
             self.refresh_file_list()
 
+
     def reset_everything(self):
         msg = "Are you sure you want to reset all sessions? This will delete all file lists and reset the session count to 1."
-        answer = tk.messagebox.askyesno("Reset all sessions?", msg)
-        if answer:
+        reply = QMessageBox.question(
+            self,
+            "Reset all sessions?",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
             for session in self.sessions:
                 session.reset()
-            self.sessions = self.sessions[:1]
+            self.sessions = [Session()]  # reset to one new session
             self.update_dropdown()
+            self.session_dropdown.setCurrentIndex(0)
+            self.chosen_session = self.sessions[0]
+            self.current_session = "Session 1"
             self.refresh_file_list()
-            self.current_session.set("Session 1")
+
 
     # end session methods
 
@@ -865,448 +896,315 @@ class PreprocessingInterface:
             f"Author: {AUTHOR} ({WEBSITE})\n"
             f"Youtube: {YOUTUBE}\n"
             "Discord: https://discord.gg/yXKqrawpjr\n"
-            "Patreon: https://www.patreon.com/c/naztronomy\n\n"
+            "Patreon: https://www.patreon.com/c/naztronomy\n" 
+            "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
             "Info:\n"
             "1. Recommended to use a blank working directory to have a clean setup.\n"
             "2. You can run this with or without calibration frames.\n"
             f"3. You can have as many sessions as you'd like. Each individual session currently has a limit of 2048 files on Windows machines.\n"
             "4. All preprocessed lights (pp_lights) are saved in the collected_lights directory and are not removed.\n"
-            "5. This script makes a copy of all of your images so that the originals are not modified.\n"
+            "5. This script uses symbolic links if available, otherwise it makes a copy of all of your images so that the originals are not modified.\n"
             "6. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
             "7. When asking for help, please have the logs handy."
         )
-        self.siril.info_messagebox(help_text, True)
+        QMessageBox.information(self, "Help", help_text)
         self.siril.log(help_text, LogColor.BLUE)
 
-        tksiril.elevate(self.root)
 
     def create_widgets(self):
-        """Creates the UI widgets."""
-        main_frame = ttk.Frame(self.root, padding=15)
-        main_frame.pack(fill=tk.BOTH, expand=True, anchor=tk.NW)
+        """Creates the UI widgets using PyQt6."""
 
-        if self.siril.get_siril_config("gui", "theme") == 0:
-            # Define styles
-            bold_label = ttk.Style()
-            bold_label.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"), foreground="white")
-            white_label = ttk.Style()
-            white_label.configure("White.TLabel", font=("Segoe UI", 10), foreground="white")
+        # Main layout
+        main_widget = QWidget()
+        self.setMinimumSize(700, 600)
+        self.setCentralWidget(main_widget)
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(15, 10, 15, 15)
+        main_layout.setSpacing(8)
 
-            style = ttk.Style()
-            style.configure("TButton", foreground="white")
-            # style.configure("TLabel", foreground="white")
-            style.configure("TCheckbutton", foreground="white")
-            style.configure("TRadiobutton", foreground="white")
-            style.configure("TMenubutton", foreground="white")
-            style.configure("TEntry", foreground="white")
-            style.configure("TCombobox", foreground="white")
-            style.configure("TNotebook.Tab", foreground="white", font=("Segoe UI", 9, "bold"))
-            style.configure("White.TSpinbox", foreground="white")
-        else:
-            bold_label = ttk.Style()
-            bold_label.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"))
+        # Title and working directory
+        title_label = QLabel(f"{APP_NAME}")
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(10)
+        title_label.setFont(title_font)
+        main_layout.addWidget(title_label)
 
-        # Title and version
-        ttk.Label(
-            main_frame,
-            text=f"{APP_NAME}",
-            style="Bold.TLabel",
-        ).pack(pady=(10, 10))
+        cwd_label = QLabel(f"Current working directory: {self.cwd_label}")
+        main_layout.addWidget(cwd_label)
 
-        ttk.Label(
-            main_frame,
-            text=f"Current working directory: {self.cwd_label}",
-        ).pack(anchor="w", pady=(0, 10))
-
-        # tab 1
-
-        tab = ttk.Notebook(main_frame)
-        frame1 = ttk.Frame(tab)
-        frame2 = ttk.Frame(tab)
-
-        tab.add(frame1, text="1. Files")
-        tab.add(frame2, text="2. Processing")
-        tab.pack(fill=tk.BOTH, expand=True)
-
-        # self.current_session = tk.StringVar(value=len(self.sessions))
-        # Frame 1 Start
+        # Tab widget
+        tab_widget = QTabWidget()
+        
+        # Files tab
+        files_tab = QWidget()
+        files_layout = QVBoxLayout(files_tab)
 
         # Session selection row
-        session_row = ttk.Frame(frame1)
-        session_row.pack(anchor="w", fill="x", pady=5)
-
-        ttk.Label(session_row, text="Session:", style="White.TLabel").pack(side="left", padx=(0, 5))
-
-        self.session_dropdown = ttk.Combobox(
-            session_row,
-            textvariable=self.current_session,
-            values=[f"Session {i+1}" for i in range(len(self.sessions))],
-            state="readonly",
-            width=30,
-        )
-        self.session_dropdown.pack(side="left")
-        self.session_dropdown.bind("<<ComboboxSelected>>", self.on_session_selected)
-
-        ttk.Button(
-            session_row, text="+ Add Session", command=self.add_dropdown_session
-        ).pack(side="left", padx=5)
-
-        ttk.Button(
-            session_row, text="– Remove Session", command=self.remove_session
-        ).pack(side="left", padx=5)
-
-        # Separator (optional)
-        ttk.Separator(frame1, orient="horizontal").pack(fill="x", pady=10)
-
-        # Frame addition row
-        frame_buttons = ttk.Frame(frame1)
-        frame_buttons.pack(anchor="center", pady=5)
-
-        ttk.Button(
-            frame_buttons, text="Add Lights", command=lambda: self.load_files("Lights")
-        ).pack(side="left", padx=10)
-
-        ttk.Button(
-            frame_buttons, text="Add Darks", command=lambda: self.load_files("Darks")
-        ).pack(side="left", padx=10)
-
-        ttk.Button(
-            frame_buttons, text="Add Flats", command=lambda: self.load_files("Flats")
-        ).pack(side="left", padx=10)
-
-        add_bias_button = ttk.Button(
-            frame_buttons, text="Add Biases", command=lambda: self.load_files("Biases")
-        )
-        add_bias_button.pack(side="left", padx=10)
-
-        tksiril.create_tooltip(
-            add_bias_button,
-            "Bias frames or Dark Flats can be used.")
+        session_row = QHBoxLayout()
+        session_label = QLabel("Session:")
+        # self.session_dropdown = QComboBox()
+        # self.session_dropdown.addItems([f"Session {i+1}" for i in range(len(self.sessions))])
+        # self.session_dropdown.currentIndexChanged.connect(self.on_session_selected)
+        # Now populate the dropdown here
+        self.update_dropdown()  # Add this line
+        self.session_dropdown.setCurrentIndex(0)  # Set initial selection
         
-        # LabelFrame container for the section
-        self.list_frame = ttk.LabelFrame(frame1, text="Files in Current Session", style="White.TLabel")
-        self.list_frame.pack(fill="both", expand=True, padx=5, pady=10)
+        add_session_btn = QPushButton("+ Add Session")
+        add_session_btn.clicked.connect(self.add_dropdown_session)
+        remove_session_btn = QPushButton("– Remove Session")
+        remove_session_btn.clicked.connect(self.remove_session)
 
-        # Label above listbox
-        # ttk.Label(self.list_frame, text="Files in Current Session:").pack(anchor="w", pady=(10, 0))
+        session_row.addWidget(session_label)
+        session_row.addWidget(self.session_dropdown)
+        session_row.addWidget(add_session_btn)
+        session_row.addWidget(remove_session_btn)
+        files_layout.addLayout(session_row)
 
-        # === Frame for Listbox and Scrollbar side-by-side ===
-        list_container = ttk.Frame(self.list_frame)
-        list_container.pack(fill="both", expand=True)
+        # Frame buttons
+        frame_buttons = QHBoxLayout()
+        lights_btn = QPushButton("Add Lights")
+        lights_btn.clicked.connect(lambda: self.load_files("Lights"))
+        darks_btn = QPushButton("Add Darks")
+        darks_btn.clicked.connect(lambda: self.load_files("Darks"))
+        flats_btn = QPushButton("Add Flats")
+        flats_btn.clicked.connect(lambda: self.load_files("Flats"))
+        biases_btn = QPushButton("Add Biases")
+        biases_btn.clicked.connect(lambda: self.load_files("Biases"))
+        biases_btn.setToolTip("Bias frames or Dark Flats can be used.")
 
-        # Listbox
-        self.file_listbox = tk.Listbox(
-            list_container,
-            selectmode=tk.EXTENDED,
-            yscrollcommand=lambda *args: scrollbar.set(*args),
-        )
-        self.file_listbox.pack(side="left", fill="both", expand=True)
+        for btn in [lights_btn, darks_btn, flats_btn, biases_btn]:
+            frame_buttons.addWidget(btn)
+        files_layout.addLayout(frame_buttons)
 
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(
-            list_container, orient="vertical", command=self.file_listbox.yview
-        )
-        scrollbar.pack(side="right", fill="y")
+        # Files list
+        list_group = QGroupBox("Files in Current Session")
+        list_layout = QVBoxLayout()
+        self.file_listbox = QListWidget()
+        self.file_listbox.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        list_layout.addWidget(self.file_listbox)
 
-        # === Frame for buttons under the listbox ===
-        file_button_row = ttk.Frame(self.list_frame)
-        file_button_row.pack(pady=(10, 0))
-
-        ttk.Button(
-            file_button_row,
-            text="Remove Selected File(s)",
-            command=self.remove_selected_files,
-        ).pack(side="left", padx=5)
-
-        reset_button = ttk.Button(
-            file_button_row, text="Reset Everything", command=self.reset_everything
-        )
-        reset_button.pack(side="left", padx=5)
-
-        tksiril.create_tooltip(
-            reset_button,
-            "Warning: This will remove all sessions and files!")
-        # Frame 1 End
-
-        # Frame 2 Start
-
-        # Stacking section
-        registration_section = ttk.LabelFrame(
-            frame2, text="Registration Settings", padding=10
-        )
-        registration_section.pack(fill=tk.X, pady=5)
-        # ttk.Label(registration_section, text="Telescope:", style="Bold.TLabel").grid(
-        #     row=0, column=0, sticky="w"
-        # )
-
-        roundness_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_round"])
-        roundness_label = ttk.Label(registration_section, text="Filter Roundness:", style="White.TLabel")
-        roundness_label.grid(row=1, column=0, sticky="w")
-        roundness_spinbox = ttk.Spinbox(
-            registration_section,
-            textvariable=roundness_variable,
-            from_=1,
-            to=4,
-            increment=0.1,
-            style="White.TSpinbox"
-        )
-        roundness_spinbox.grid(row=1, column=2, sticky="w")
-        ttk.Label(registration_section, text="σ", style="White.TLabel").grid(row=1, column=3, sticky="w")
-        roundess_tooltip_text = "Filter frames based on roundness. A value of 3 is recommended for most images. Decreasing the value will filter out more images based on their FWHM values. If you have a lot of bad frames, decrease this value to 2.5 or 2 (or lower)."
-        tksiril.create_tooltip(
-            roundness_spinbox,
-            roundess_tooltip_text
-        )
-
-        tksiril.create_tooltip(
-            roundness_label,
-            roundess_tooltip_text
-        )
-
-        wfwhm_variable = tk.DoubleVar(value=UI_DEFAULTS["filter_wfwhm"])
-        wfwhm_label = ttk.Label(registration_section, text="Filter Weighted FWHM:", style="White.TLabel")
-        wfwhm_label.grid(row=2, column=0, sticky="w")
-        wfwhm_spinbox = ttk.Spinbox(
-            registration_section,
-            textvariable=wfwhm_variable,
-            from_=1,
-            to=4,
-            increment=0.1,
-            style="White.TSpinbox"
-        )
-        wfwhm_spinbox.grid(row=2, column=2, sticky="w")
-        ttk.Label(registration_section, text="σ", style="White.TLabel").grid(row=2, column=3, sticky="w")
-        wfwhm_tooltip_text = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. A lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
-
-        tksiril.create_tooltip(
-            wfwhm_spinbox,
-            wfwhm_tooltip_text,
-        )
-        tksiril.create_tooltip(
-            wfwhm_label,
-            wfwhm_tooltip_text,
-        )
-
-        drizzle_label = ttk.Label(registration_section, text="Enable Drizzle:", style="White.TLabel")
-        drizzle_label.grid(row=3, column=0, sticky="w")
-
-        drizzle_checkbox_variable = tk.BooleanVar()
-        drizzle_checkbox = ttk.Checkbutton(registration_section, variable=drizzle_checkbox_variable)
-        drizzle_checkbox.grid(
-            row=3, column=1, sticky="w"
-        )
+        file_buttons = QHBoxLayout()
+        remove_btn = QPushButton("Remove Selected File(s)")
+        remove_btn.clicked.connect(self.remove_selected_files)
+        reset_btn = QPushButton("Reset Everything")
+        reset_btn.clicked.connect(self.reset_everything)
+        reset_btn.setToolTip("Warning: This will remove all sessions and files!")
         
-        drizzle_checkbox_tooltip_text = "Works best with well dithered data."
-        tksiril.create_tooltip(
-            drizzle_checkbox,
-            drizzle_checkbox_tooltip_text
-        )
+        file_buttons.addWidget(remove_btn)
+        file_buttons.addWidget(reset_btn)
+        list_layout.addLayout(file_buttons)
+        
+        list_group.setLayout(list_layout)
+        files_layout.addWidget(list_group)
 
-        tksiril.create_tooltip(
-            drizzle_label,
-            drizzle_checkbox_tooltip_text
-        )
+        # Processing tab
+        processing_tab = QWidget()
+        processing_layout = QVBoxLayout(processing_tab)
+        
+        
+        # Drizzle settings
+        drizzle_group = QGroupBox("Optional Preprocessing Steps")
+        drizzle_layout = QVBoxLayout()
 
-        drizzle_amount_label = ttk.Label(registration_section, text="Drizzle Factor:", style="White.TLabel")
-        drizzle_amount_label.grid(row=4, column=1, sticky="w")
-        drizzle_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["drizzle_amount"])
-        drizzle_amount_spinbox = ttk.Spinbox(
-            registration_section,
-            textvariable=drizzle_amount_variable,
-            from_=0.1,
-            to=3.0,
-            increment=0.1,
-            state=tk.DISABLED,
-            style="White.TSpinbox"
-        )
-        drizzle_amount_spinbox.grid(row=4, column=2, sticky="w")
-        ttk.Label(registration_section, text="x", style="White.TLabel").grid(row=4, column=3, sticky="w")
-        drizzle_checkbox_variable.trace_add(
-            "write",
-            lambda *args: drizzle_amount_spinbox.config(
-                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
-                textvariable=drizzle_amount_variable,
-            ),
-        )
+        bg_extract_tooltip = "Removes background gradients from your images before stacking. Uses Polynomial value 1 and 10 samples."
 
-        drizzle_spinbox_tooltip_text = "Higher the drizzle factor, the longer it will take the stack your session. Larger value will upscale the image."
-        tksiril.create_tooltip(
-            drizzle_amount_spinbox,
-            drizzle_spinbox_tooltip_text
-        )
-        tksiril.create_tooltip(
-            drizzle_amount_label,    
-            drizzle_spinbox_tooltip_text
-        )
+        self.bg_extract_check = QCheckBox("Background Extraction")
+        self.bg_extract_check.setToolTip(bg_extract_tooltip)
+        drizzle_layout.addWidget(self.bg_extract_check)
+
+
+        drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
+        self.drizzle_checkbox = QCheckBox("Enable Drizzle")
+        self.drizzle_checkbox.setToolTip(drizzle_tooltip)
+        drizzle_layout.addWidget(self.drizzle_checkbox)
+        
+        drizzle_amount_tooltip = "Scale factor for drizzle integration. Values between 1.0 and 3.0 are typical. \nNote: Higher values increase processing time and file size."
+        drizzle_amount_layout = QHBoxLayout()
+        drizzle_amount_label = QLabel("Drizzle Amount:")
+        drizzle_amount_label.setToolTip(drizzle_amount_tooltip)
+        
+        self.drizzle_amount_spinbox = QDoubleSpinBox()
+        self.drizzle_amount_spinbox.setRange(0.1, 3.0)
+        self.drizzle_amount_spinbox.setSingleStep(0.1)
+        self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
+        self.drizzle_amount_spinbox.setDecimals(1)
+        self.drizzle_amount_spinbox.setMinimumWidth(80)
+        self.drizzle_amount_spinbox.setSuffix(" x")
+        self.drizzle_amount_spinbox.setEnabled(False)
+        self.drizzle_amount_spinbox.setToolTip(drizzle_amount_tooltip)
+        drizzle_amount_layout.addWidget(drizzle_amount_label)
+        drizzle_amount_layout.addWidget(self.drizzle_amount_spinbox)
+        drizzle_layout.addLayout(drizzle_amount_layout)
+
+        self.drizzle_checkbox.toggled.connect(self.drizzle_amount_spinbox.setEnabled)
+
+        pixel_fraction_label_tooltip = "Controls how much pixels overlap in drizzle integration. Lower values can reduce artifacts but may increase noise."
+        pixel_fraction_layout = QHBoxLayout()
+        pixel_fraction_label = QLabel("Pixel Fraction:")
+        pixel_fraction_label.setToolTip(pixel_fraction_label_tooltip)
+        self.pixel_fraction_spinbox = QDoubleSpinBox()
+        self.pixel_fraction_spinbox.setRange(0.1, 10.0)
+        self.pixel_fraction_spinbox.setSingleStep(0.1)
+        self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
+        self.pixel_fraction_spinbox.setMinimumWidth(80)
+        self.pixel_fraction_spinbox.setSuffix(" px")
+        self.pixel_fraction_spinbox.setEnabled(False)
+        self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
+        pixel_fraction_layout.addWidget(pixel_fraction_label)
+        pixel_fraction_layout.addWidget(self.pixel_fraction_spinbox)
+        drizzle_layout.addLayout(pixel_fraction_layout)
+
+        self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
+
+        drizzle_group.setLayout(drizzle_layout)
+        processing_layout.addWidget(drizzle_group)
+
+        # Registration settings
+        reg_group = QGroupBox("Optional Filter Settings")
+        reg_layout = QVBoxLayout()
+
+        # Registration controls
+        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower roundness value applies a stricter filter, keeping only frames with well-defined, circular stars. Higher roundness values allow more variation in star shapes."
+        roundness_layout = QHBoxLayout()
+        roundness_label = QLabel("Filter Roundness:")
+        roundness_label.setToolTip(roundness_label_tooltip)
+        self.roundness_spinbox = QDoubleSpinBox()
+        self.roundness_spinbox.setRange(1, 4)
+        self.roundness_spinbox.setSingleStep(0.1)
+        self.roundness_spinbox.setValue(UI_DEFAULTS["filter_round"])
+        self.roundness_spinbox.setDecimals(1)
+        self.roundness_spinbox.setMinimumWidth(80)
+        self.roundness_spinbox.setSuffix(" σ")
+        self.roundness_spinbox.setToolTip(roundness_label_tooltip)
+        roundness_layout.addWidget(roundness_label)
+        roundness_layout.addWidget(self.roundness_spinbox)
+        reg_layout.addLayout(roundness_layout)
+
+        reg_group.setLayout(reg_layout)
+        processing_layout.addWidget(reg_group)
+
+        # FWHM filter
+        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
+        fwhm_layout = QHBoxLayout()
+        fwhm_label = QLabel("Filter FWHM:")
+        self.fwhm_spinbox = QDoubleSpinBox()
+        fwhm_label.setToolTip(fwhm_label_tooltip)
+        self.fwhm_spinbox.setRange(1, 4)
+        self.fwhm_spinbox.setSingleStep(0.1)
+        self.fwhm_spinbox.setValue(UI_DEFAULTS["filter_wfwhm"])
+        self.fwhm_spinbox.setDecimals(1)
+        self.fwhm_spinbox.setMinimumWidth(80)
+        self.fwhm_spinbox.setSuffix(" σ")
+        self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
+        fwhm_layout.addWidget(fwhm_label)
+        fwhm_layout.addWidget(self.fwhm_spinbox)
+        reg_layout.addLayout(fwhm_layout)
+
+
+        # Stacking settings
+        stack_group = QGroupBox("Stacking Settings")
+        stack_layout = QVBoxLayout()
+
+        self.feather_checkbox = QCheckBox("Enable Feather")
+        stack_layout.addWidget(self.feather_checkbox)
+
+        feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
+        feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
+        feather_amount_layout = QHBoxLayout()
+        feather_amount_label = QLabel("Feather Amount:")
+        feather_amount_label.setToolTip(feather_tooltip)
+        self.feather_amount_spinbox = QSpinBox()
+        self.feather_amount_spinbox.setRange(5, 2000)
+        self.feather_amount_spinbox.setSingleStep(5)
+        self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
+        self.feather_amount_spinbox.setMinimumWidth(80)
+        self.feather_amount_spinbox.setSuffix(" px")
+        self.feather_amount_spinbox.setEnabled(False)
+        self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
+        feather_amount_layout.addWidget(feather_amount_label)
+        feather_amount_layout.addWidget(self.feather_amount_spinbox)
+        stack_layout.addLayout(feather_amount_layout)
+
+        cleanup_tooltip = "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\nNote: If your session is batched, this option is automatically enabled even if it's unchecked!"
+
+        self.cleanup_check = QCheckBox("Clean up intermediate files")
+        self.cleanup_check.setToolTip(cleanup_tooltip)
+        stack_layout.addWidget(self.cleanup_check)
+
+        self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
+
+        stack_group.setLayout(stack_layout)
+        processing_layout.addWidget(stack_group)
+
+        # Process button
+        process_btn = QPushButton("Process Files")
+        process_btn.clicked.connect(lambda: self.run_script(
+            bg_extract=self.bg_extract_check.isChecked(),
+            drizzle=self.drizzle_checkbox.isChecked(),
+            drizzle_amount=self.drizzle_amount_spinbox.value(),
+            pixel_fraction=self.pixel_fraction_spinbox.value(),
+            feather=self.feather_checkbox.isChecked(),
+            feather_amount=self.feather_amount_spinbox.value(),
+            filter_round=self.roundness_spinbox.value(),
+            filter_wfwhm=self.fwhm_spinbox.value(),
+            clean_up_files=self.cleanup_check.isChecked()
+        ))
+        processing_layout.addWidget(process_btn)
+
         
 
+        # Add tabs
+        tab_widget.addTab(files_tab, "1. Files")
+        tab_widget.addTab(processing_tab, "2. Processing")
+        main_layout.addWidget(tab_widget)
 
-        pixel_fraction_label = ttk.Label(registration_section, text="Pixel Fraction:", style="White.TLabel")
-        pixel_fraction_label.grid(
-            row=5, column=1, sticky="w"
-        )
-        pixel_fraction_variable = tk.DoubleVar(value=UI_DEFAULTS["pixel_fraction"])
-        pixel_fraction_spinbox = ttk.Spinbox(
-            registration_section,
-            textvariable=pixel_fraction_variable,
-            from_=0.1,
-            to=10.0,
-            increment=0.01,
-            state=tk.DISABLED,
-            style="White.TSpinbox"
-        )
-        pixel_fraction_spinbox.grid(row=5, column=2, sticky="w")
-        ttk.Label(registration_section, text="px", style="White.TLabel").grid(row=5, column=3, sticky="w")
-        drizzle_checkbox_variable.trace_add(
-            "write",
-            lambda *args: pixel_fraction_spinbox.config(
-                state=tk.NORMAL if drizzle_checkbox_variable.get() else tk.DISABLED,
-                textvariable=pixel_fraction_variable,
-            ),
-        )
+        # Bottom buttons
+        button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(
+            0, 15, 0, 0
+        )  # Add top margin to separate from content
+        main_layout.addLayout(button_layout)
 
-        pixel_fraction_tooltip_text = "Pixel size controls the drizzle output. Lower value can increase sharpness but can also product artifacts."
-        tksiril.create_tooltip(
-            pixel_fraction_spinbox,
-            pixel_fraction_tooltip_text
-        )
-        tksiril.create_tooltip(
-            pixel_fraction_label,    
-            pixel_fraction_tooltip_text
-        )
+        help_button = QPushButton("Help")
+        help_button.setMinimumWidth(50)
+        help_button.setMinimumHeight(35)
+        help_button.clicked.connect(self.show_help)
+        button_layout.addWidget(help_button)
+        
 
-        # Optional Preprocessing Steps
-        calib_section = ttk.LabelFrame(frame2, text="Other Optional Steps", padding=10)
+        save_presets_button = QPushButton("Save Presets")
+        save_presets_button.setMinimumWidth(80)
+        save_presets_button.setMinimumHeight(35)
+        save_presets_button.clicked.connect(self.save_presets)
+        button_layout.addWidget(save_presets_button)
 
-        calib_section.pack(fill=tk.X, pady=5)
-        background_extraction_label = ttk.Label(
-            calib_section, text="Background Extraction:", style="White.TLabel"
-        )
-        background_extraction_label.grid(row=2, column=0, sticky="w")
+        load_presets_button = QPushButton("Load Presets")
+        load_presets_button.setMinimumWidth(80)
+        load_presets_button.setMinimumHeight(35)
+        load_presets_button.clicked.connect(self.load_presets)
+        button_layout.addWidget(load_presets_button)
 
-        bg_extract_checkbox_variable = tk.BooleanVar()
-        bg_extract_checkbox = ttk.Checkbutton(
-            calib_section,
-            text="",
-            variable=bg_extract_checkbox_variable,
-        )
-        bg_extract_checkbox.grid(row=2, column=1, sticky="w")
+        button_layout.addStretch()  # Add space between buttons
 
-        bg_extract_tooltip_text = "Enable this option to extract the background from each individual image. Uses polynomial factor 1 for extraction."
-        tksiril.create_tooltip(
-            bg_extract_checkbox,
-            bg_extract_tooltip_text
-        )
-        tksiril.create_tooltip(
-            background_extraction_label,
-            bg_extract_tooltip_text
-        )
-        # ttk.Label(calib_section, text="Registration:", style="Bold.TLabel").grid(
-        #     row=3, column=0, sticky="w"
-        # )
+        close_button = QPushButton("Close")
+        close_button.setMinimumWidth(100)
+        close_button.setMinimumHeight(35)
+        close_button.clicked.connect(self.close_dialog)
+        button_layout.addWidget(close_button)
+        
+        # button_layout.addWidget(help_button)
+        button_layout.addStretch()
+        button_layout.addWidget(close_button)
+        # main_layout.addLayout(button_layout)
 
-        feather_checkbox_label = ttk.Label(calib_section, text="Feather Frames:", style="White.TLabel")
-        feather_checkbox_label.grid(
-            row=5, column=0, sticky="w"
-        )
-
-        feather_checkbox_variable = tk.BooleanVar()
-        feather_checkbox = ttk.Checkbutton(
-            calib_section, variable=feather_checkbox_variable
-        )
-        feather_checkbox.grid(row=5, column=1, sticky="w")
-        feather_tooltip_text = "Only check this box if you're doing a multi panel mosaic! This will help remove artifacts between panels."
-        tksiril.create_tooltip(
-            feather_checkbox,
-            feather_tooltip_text
-        )
-        tksiril.create_tooltip(
-            feather_checkbox_label,
-            feather_tooltip_text
-        )
-        feather_amount_label = ttk.Label(calib_section, text="Feather amount:", style="White.TLabel")
-        feather_amount_label.grid(row=6, column=1, sticky="w")
-        feather_amount_variable = tk.DoubleVar(value=UI_DEFAULTS["feather_amount"])
-        feather_amount_spinbox = ttk.Spinbox(
-            calib_section,
-            textvariable=feather_amount_variable,
-            from_=5,
-            to=2000,
-            increment=5,
-            state=tk.DISABLED,
-            style="White.TSpinbox"
-        )
-        feather_amount_spinbox.grid(row=6, column=2, sticky="w")
-        ttk.Label(calib_section, text="px", style="White.TLabel").grid(row=6, column=3, sticky="w")
-        feather_checkbox_variable.trace_add(
-            "write",
-            lambda *args: feather_amount_spinbox.config(
-                state=tk.NORMAL if feather_checkbox_variable.get() else tk.DISABLED,
-                textvariable=feather_amount_variable,
-            ),
-        )
-
-        feather_amount_tooltip_text = "Feather amount in pixels. "
-        tksiril.create_tooltip(
-            feather_amount_spinbox,
-            feather_amount_tooltip_text
-        )
-        tksiril.create_tooltip(
-            feather_amount_label,
-            feather_amount_tooltip_text
-        )
-        cleanup_files_label =ttk.Label(calib_section, text="Clean Up Files:", style="White.TLabel")
-        cleanup_files_label.grid(
-            row=7, column=0, sticky="w"
-        )
-
-        cleanup_files_checkbox_variable = tk.BooleanVar()
-        cleanup_checkbox = ttk.Checkbutton(
-            calib_section, text="", variable=cleanup_files_checkbox_variable
-        )
-        cleanup_checkbox.grid(row=7, column=1, sticky="w")
-        cleanup_checkbox_tooltip_text = "Enable this option to delete all intermediary session files. This will NOT delete the gathered pp_lights files which can be found in the 'collected_lights' folder."
-        tksiril.create_tooltip(
-            cleanup_checkbox,
-            cleanup_checkbox_tooltip_text
-        )
-        tksiril.create_tooltip(
-            cleanup_files_label,
-            cleanup_checkbox_tooltip_text
-        )
-
-        # Run button
-        ttk.Button(
-            frame2,
-            text="Run",
-            width=10,
-            command=lambda: self.run_script(
-                bg_extract=bg_extract_checkbox_variable.get(),
-                drizzle=drizzle_checkbox_variable.get(),
-                drizzle_amount=drizzle_amount_spinbox.get(),
-                pixel_fraction=pixel_fraction_spinbox.get(),
-                feather=feather_checkbox_variable.get(),
-                feather_amount=feather_amount_spinbox.get(),
-                filter_round=roundness_variable.get(),
-                filter_wfwhm=wfwhm_variable.get(),
-                clean_up_files=cleanup_files_checkbox_variable.get(),
-            ),
-        ).pack(pady=(15, 0), side=tk.RIGHT)
-
-        # Frame 2 end
-        # Help button
-        ttk.Button(main_frame, text="Help", width=10, command=self.show_help).pack(
-            pady=(15, 0), side=tk.LEFT
-        )
-        # Close button
-        ttk.Button(main_frame, text="Close", width=10, command=self.close_dialog).pack(
-            pady=(15, 0), side=tk.RIGHT
-        )
+        # Convert the root window
+        # self.root.setWindowTitle(f"{APP_NAME} - v{VERSION}")
+        # self.root.resize(900, 700)
 
     def close_dialog(self):
         self.siril.disconnect()
-        self.root.quit()
-        self.root.destroy()
+        self.close()
 
     def print_footer(self):
         self.siril.log(
@@ -1321,8 +1219,115 @@ class PreprocessingInterface:
         YouTube: https://www.YouTube.com/Naztronomy 
         Discord: https://discord.gg/yXKqrawpjr
         Patreon: https://www.patreon.com/c/naztronomy
+        Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
         """, LogColor.BLUE)
+        
 
+    def save_presets(self):
+        """Save current UI settings and session data to a preset file"""
+        # Collect settings
+        presets = {
+            'bg_extract': self.bg_extract_check.isChecked(),
+            'drizzle': self.drizzle_checkbox.isChecked(),
+            'drizzle_amount': round(self.drizzle_amount_spinbox.value(), 1),
+            'pixel_fraction': round(self.pixel_fraction_spinbox.value(), 2),
+            'feather': self.feather_checkbox.isChecked(),
+            'feather_amount': round(self.feather_amount_spinbox.value(), 2),
+            'filter_round': round(self.roundness_spinbox.value(), 1),
+            'filter_wfwhm': round(self.fwhm_spinbox.value(), 1),
+            'cleanup': self.cleanup_check.isChecked(),
+            
+            # Add session information
+            'sessions': []
+        }
+
+        # Collect data from all sessions
+        for idx, session in enumerate(self.sessions):
+            session_data = {
+                'name': f'Session {idx + 1}',
+                'lights': [str(path) for path in session.lights],
+                'darks': [str(path) for path in session.darks],
+                'flats': [str(path) for path in session.flats],
+                'biases': [str(path) for path in session.biases]
+            }
+            presets['sessions'].append(session_data)
+
+        # Create presets directory if it doesn't exist
+        presets_dir = os.path.join(self.current_working_directory, "presets")
+        os.makedirs(presets_dir, exist_ok=True)
+        presets_file = os.path.join(presets_dir, "naztronomy_osc_pp_presets.json")
+
+        try:
+            with open(presets_file, "w") as f:
+                json.dump(presets, f, indent=4)
+            self.siril.log(f"Saved presets and session data to {presets_file}", LogColor.GREEN)
+        except Exception as e:
+            self.siril.log(f"Failed to save presets: {e}", LogColor.RED)
+
+    def load_presets(self):
+        """Load settings and session data from a preset file"""
+        try:
+            # Open file dialog to select presets file
+            # First check for default presets file
+            default_presets_file = os.path.join(
+                self.current_working_directory,
+                "presets",
+                "naztronomy_osc_pp_presets.json",
+            )
+
+            if os.path.exists(default_presets_file):
+                presets_file = default_presets_file
+            else:
+                # If default presets don't exist, show file dialog
+                presets_file, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Load Presets",
+                    os.path.join(self.current_working_directory, "presets"),
+                    "JSON Files (*.json);;All Files (*.*)",
+                )
+
+                if not presets_file:  # User canceled
+                    self.siril.log("Preset loading canceled", LogColor.BLUE)
+                    return
+
+            with open(presets_file) as f:
+                presets = json.load(f)
+
+                # Load UI settings
+                self.bg_extract_check.setChecked(presets.get('bg_extract', False))
+                self.drizzle_checkbox.setChecked(presets.get('drizzle', False))
+                self.drizzle_amount_spinbox.setValue(presets.get('drizzle_amount', 1.0))
+                self.pixel_fraction_spinbox.setValue(presets.get('pixel_fraction', 1.0))
+                self.feather_checkbox.setChecked(presets.get('feather', False))
+                self.feather_amount_spinbox.setValue(presets.get('feather_amount', 20))
+                self.roundness_spinbox.setValue(presets.get('filter_round', 3.0))
+                self.fwhm_spinbox.setValue(presets.get('filter_wfwhm', 3.0))
+                self.cleanup_check.setChecked(presets.get('cleanup', False))
+
+                # Load session data
+                sessions_data = presets.get('sessions', [])
+                if sessions_data:
+                    # Clear existing sessions
+                    self.sessions.clear()
+                    
+                    # Create new sessions from loaded data
+                    for session_data in sessions_data:
+                        new_session = Session()
+                        new_session.lights = [Path(path) for path in session_data.get('lights', [])]
+                        new_session.darks = [Path(path) for path in session_data.get('darks', [])]
+                        new_session.flats = [Path(path) for path in session_data.get('flats', [])]
+                        new_session.biases = [Path(path) for path in session_data.get('biases', [])]
+                        self.sessions.append(new_session)
+
+                    # Update UI
+                    self.update_dropdown()
+                    self.session_dropdown.setCurrentIndex(0)
+                    self.chosen_session = self.sessions[0]
+                    self.refresh_file_list()
+
+                self.siril.log(f"Loaded presets and {len(sessions_data)} sessions from {presets_file}", LogColor.GREEN)
+        except Exception as e:
+            self.siril.log(f"Error loading presets: {str(e)}", LogColor.RED)
     def run_script(
         self,
         bg_extract: bool = False,
@@ -1529,9 +1534,15 @@ class PreprocessingInterface:
 
 def main():
     try:
-        root = ThemedTk()
-        app = PreprocessingInterface(root)
-        root.mainloop()
+        app = QApplication(sys.argv)
+        window = PreprocessingInterface()
+        # Only show window if initialization was successful
+        if window.initialization_successful:
+            window.show()
+            sys.exit(app.exec())
+        else:
+            # User canceled during initialization - exit gracefully
+            sys.exit(0)
     except Exception as e:
         print(f"Error initializing application: {str(e)}")
         sys.exit(1)
@@ -1547,5 +1558,6 @@ if __name__ == "__main__":
 # YouTube: https://www.YouTube.com/Naztronomy
 # Discord: https://discord.gg/yXKqrawpjr
 # Patreon: https://www.patreon.com/c/naztronomy
+# Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
 ##############################################################################
