@@ -79,6 +79,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "1.2.0"
+BUILD = "b01"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -1315,9 +1316,14 @@ class PreprocessingInterface(QMainWindow):
 
         if clean_up_files:
             self.clean_up(prefix=seq_name)  # clean up r_ files
+            shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
+            shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "drizztmp"))
 
         # Load the result (e.g. batch_lights_001.fits)
         self.load_image(image_name=output_name)
+
+        # Remove Cache folder:
+        shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
         # Go back to working dir
         self.siril.cmd("cd", "../")
 
@@ -1516,10 +1522,34 @@ class PreprocessingInterface(QMainWindow):
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
-            f"clean_up_files={clean_up_files}\n",
+            f"clean_up_files={clean_up_files}\n"
+            f"build={VERSION}-{BUILD}",
             LogColor.BLUE,
         )
         self.siril.cmd("close")
+
+        # Check if old processing directories exist
+        if os.path.exists("sessions") or os.path.exists("process") or os.path.exists("final_stack"):
+            msg = "Old processing directories found. Do you want to delete them and start fresh?"
+            answer = QMessageBox.question(
+                self,
+                "Old Processing Files Found",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                if os.path.exists("sessions"):
+                    shutil.rmtree("sessions")
+                    self.siril.log("Cleaned up old sessions directories", LogColor.BLUE)
+                if os.path.exists("process"):
+                    shutil.rmtree("process")
+                    self.siril.log("Cleaned up old process directory", LogColor.BLUE)
+                if os.path.exists("final_stack"):
+                    shutil.rmtree("final_stack")
+                    self.siril.log("Cleaned up old final_stack directory", LogColor.BLUE)
+            else:
+                self.siril.log("User chose to preserve old processing files. Stopping script.", LogColor.BLUE)
+                return
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
@@ -1597,13 +1627,19 @@ class PreprocessingInterface(QMainWindow):
                 for f in os.listdir(batch_dir):
                     os.remove(os.path.join(batch_dir, f))
 
-            # Split and copy files into batches
+            # Split and create symlinks/copies of files into batches
             for i, filename in enumerate(all_files):
                 batch_index = i // max_files_per_batch
                 batch_dir = f"batch_lights{batch_index + 1}"
                 src_path = os.path.join(lights_directory, filename)
                 dest_path = os.path.join(batch_dir, filename)
-                shutil.copy2(src_path, dest_path)
+                
+                try:
+                    # Try creating symlink first
+                    os.symlink(src_path, dest_path)
+                except (OSError, NotImplementedError):
+                    # Fall back to copying if symlink fails
+                    shutil.copy2(src_path, dest_path)
 
             # Send each of the new lights dir into batch directory
             for i in range(num_batches):
@@ -1711,7 +1747,7 @@ class PreprocessingInterface(QMainWindow):
         # self.clean_up()
 
         self.siril.log(
-            f"Finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             LogColor.GREEN,
         )
         self.siril.log(
