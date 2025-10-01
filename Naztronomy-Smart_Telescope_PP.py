@@ -1309,10 +1309,13 @@ class PreprocessingInterface(QMainWindow):
             self.calibrate_lights(
                 seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
             )
-            if clean_up_files:
-                self.clean_up(
-                    prefix=seq_name
-                )  # Remove "batch_lights_" or just "lights_" if not flat calibrated
+            try: 
+                if clean_up_files:
+                    self.clean_up(
+                        prefix=seq_name
+                    )  # Remove "batch_lights_" or just "lights_" if not flat calibrated
+            except Exception as e:
+                self.siril.log(f"Error during cleanup after calibration: {e}", LogColor.SALMON)
             seq_name = "pp_" + seq_name
 
         if bg_extract:
@@ -1354,14 +1357,15 @@ class PreprocessingInterface(QMainWindow):
 
         if clean_up_files:
             self.clean_up(prefix=seq_name)  # clean up r_ files
-            shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
-            shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "drizztmp"))
+            try:
+                shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
+                shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "drizztmp"))
+            except Exception as e:
+                self.siril.log(f"Error cleaning up temporary files, continuing with the script: {e}", LogColor.SALMON)
 
         # Load the result (e.g. batch_lights_001.fits)
         self.load_image(image_name=output_name)
 
-        # Remove Cache folder:
-        shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
         # Go back to working dir
         self.siril.cmd("cd", "../")
 
@@ -1672,12 +1676,12 @@ class PreprocessingInterface(QMainWindow):
                 src_path = os.path.join(lights_directory, filename)
                 dest_path = os.path.join(batch_dir, filename)
                 
-                try:
-                    # Try creating symlink first
-                    os.symlink(src_path, dest_path)
-                except (OSError, NotImplementedError):
-                    # Fall back to copying if symlink fails
-                    shutil.copy2(src_path, dest_path)
+                # try:
+                #     # Try creating symlink first
+                #     os.symlink(src_path, dest_path)
+                # except (OSError, NotImplementedError):
+                #     # Fall back to copying if symlink fails
+                shutil.copy2(src_path, dest_path)
 
             # Send each of the new lights dir into batch directory
             for i in range(num_batches):
