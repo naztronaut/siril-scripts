@@ -1825,7 +1825,9 @@ class PreprocessingInterface(QMainWindow):
 
         # TODO: Remove in RC1
         # if bg extraction AND drizzle are checked, we swap the channels to mitigate a siril bug that's only exists for Seestars
-        if self.bg_extract_checkbox.isChecked() and self.drizzle_status and telescope in ["Seestar S50", "Seestar S30"]:
+        self.siril.log("Checking if color channel swap is needed...", LogColor.BLUE)
+        self.siril.log(f"Telescope: {telescope}, Drizzle: {self.drizzle_status}, BG Extract: {self.bg_extract_checkbox.isChecked()}", LogColor.BLUE)
+        if self.bg_extract_checkbox.isChecked() and self.drizzle_status and telescope in ["ZWO Seestar S50", "ZWO Seestar S30"]:
             img_path = file_name + self.fits_extension
             self.swap_red_blue_channels(image_path=img_path)
             self.siril.log("If the colors look off, please load the RBswapped image.", LogColor.SALMON)
