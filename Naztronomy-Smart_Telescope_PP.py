@@ -546,16 +546,16 @@ class PreprocessingInterface(QMainWindow):
         )
         # Read FITS headers if file exists
         filename_parts = [seq_name, "stacked"]
-        
+
         if os.path.exists(src):
             try:
                 with fits.open(src) as hdul:
                     headers = hdul[0].header
                     # Add temperature if exists
-                    if 'CCD-TEMP' in headers:
+                    if "CCD-TEMP" in headers:
                         temp = f"{headers['CCD-TEMP']:.1f}C"
                         filename_parts.insert(1, temp)
-                        
+
                     # Add date if exists
                     if "DATE-OBS" in headers:
                         try:
@@ -564,28 +564,28 @@ class PreprocessingInterface(QMainWindow):
                         except ValueError:
                             # fallback if DATE-OBS is not strict ISO format
                             date = headers["DATE-OBS"].split("T")[0]
-                        
+
                         filename_parts.insert(1, date)
-                    
-                    # Add exposure time if exists  
-                    if 'EXPTIME' in headers:
+
+                    # Add exposure time if exists
+                    if "EXPTIME" in headers:
                         exp = f"{headers['EXPTIME']:.0f}s"
                         filename_parts.insert(1, exp)
             except Exception as e:
                 self.siril.log(f"Error reading FITS headers: {e}", LogColor.SALMON)
-        
+
         dst = os.path.join(
             masters_dir, f"{'_'.join(filename_parts)}{self.fits_extension}"
         )
-        
+
         if os.path.exists(src):
             # Remove destination file if it exists to ensure override
             if os.path.exists(dst):
                 os.remove(dst)
             shutil.copy2(src, dst)
             self.siril.log(
-            f"Copied {seq_name} to masters directory as {'_'.join(filename_parts)}{self.fits_extension}", 
-            LogColor.BLUE
+                f"Copied {seq_name} to masters directory as {'_'.join(filename_parts)}{self.fits_extension}",
+                LogColor.BLUE,
             )
         self.siril.cmd("cd", "..")
 
@@ -661,7 +661,9 @@ class PreprocessingInterface(QMainWindow):
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
 
-        object_name = current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
+        object_name = (
+            current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
+        )
         exptime = int(current_fits_headers.get("EXPTIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
         date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
@@ -1274,37 +1276,48 @@ class PreprocessingInterface(QMainWindow):
                     )
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
-    
+
     # TODO: Remove function in RC1
     def swap_red_blue_channels(self, image_path):
         """Swaps the red and blue channels of a FITS image to mitigate Siril bug for seestars"""
         try:
-            self.siril.log("Swapping red and blue channels using Python...", LogColor.BLUE)
-            
+            self.siril.log(
+                "Swapping red and blue channels using Python...", LogColor.BLUE
+            )
+
             # Read the FITS file
             with fits.open(image_path) as hdul:
-                data = hdul[0].data.copy()  
+                data = hdul[0].data.copy()
                 header = hdul[0].header.copy()
-                
+
                 if data.ndim == 3 and data.shape[0] == 3:
                     # Swap channels: [R, G, B] -> [B, G, R]
                     data[[0, 2]] = data[[2, 0]]
-                    
+
                     base_name = os.path.splitext(image_path)[0]
                     output_path = f"{base_name}_RBswapped{self.fits_extension}"
-                    
+
                     hdul_out = fits.PrimaryHDU(data=data, header=header)
                     hdul_out.writeto(output_path, overwrite=True)
-                    
-                    self.siril.log(f"Successfully swapped channels and saved: {output_path}", LogColor.GREEN)
+
+                    self.siril.log(
+                        f"Successfully swapped channels and saved: {output_path}",
+                        LogColor.GREEN,
+                    )
                     return output_path
-                    
+
                 else:
-                    self.siril.log(f"Image is not a 3-channel color image (shape: {data.shape})", LogColor.SALMON)
+                    self.siril.log(
+                        f"Image is not a 3-channel color image (shape: {data.shape})",
+                        LogColor.SALMON,
+                    )
                     return None
-                    
+
         except Exception as e:
-            self.siril.log(f"Color channel swap failed, may not mean anything: {e}", LogColor.SALMON)
+            self.siril.log(
+                f"Color channel swap failed, may not mean anything: {e}",
+                LogColor.SALMON,
+            )
             return None
 
     def batch(
@@ -1344,13 +1357,15 @@ class PreprocessingInterface(QMainWindow):
             self.calibrate_lights(
                 seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
             )
-            try: 
+            try:
                 if clean_up_files:
                     self.clean_up(
                         prefix=seq_name
                     )  # Remove "batch_lights_" or just "lights_" if not flat calibrated
             except Exception as e:
-                self.siril.log(f"Error during cleanup after calibration: {e}", LogColor.SALMON)
+                self.siril.log(
+                    f"Error during cleanup after calibration: {e}", LogColor.SALMON
+                )
             seq_name = "pp_" + seq_name
 
         if bg_extract:
@@ -1396,7 +1411,10 @@ class PreprocessingInterface(QMainWindow):
                 shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
                 shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "drizztmp"))
             except Exception as e:
-                self.siril.log(f"Error cleaning up temporary files, continuing with the script: {e}", LogColor.SALMON)
+                self.siril.log(
+                    f"Error cleaning up temporary files, continuing with the script: {e}",
+                    LogColor.SALMON,
+                )
 
         # Load the result (e.g. batch_lights_001.fits)
         self.load_image(image_name=output_name)
@@ -1606,7 +1624,11 @@ class PreprocessingInterface(QMainWindow):
         self.siril.cmd("close")
 
         # Check if old processing directories exist
-        if os.path.exists("sessions") or os.path.exists("process") or os.path.exists("final_stack"):
+        if (
+            os.path.exists("sessions")
+            or os.path.exists("process")
+            or os.path.exists("final_stack")
+        ):
             msg = "Old processing directories found. Do you want to delete them and start fresh?"
             answer = QMessageBox.question(
                 self,
@@ -1623,9 +1645,14 @@ class PreprocessingInterface(QMainWindow):
                     self.siril.log("Cleaned up old process directory", LogColor.BLUE)
                 if os.path.exists("final_stack"):
                     shutil.rmtree("final_stack")
-                    self.siril.log("Cleaned up old final_stack directory", LogColor.BLUE)
+                    self.siril.log(
+                        "Cleaned up old final_stack directory", LogColor.BLUE
+                    )
             else:
-                self.siril.log("User chose to preserve old processing files. Stopping script.", LogColor.BLUE)
+                self.siril.log(
+                    "User chose to preserve old processing files. Stopping script.",
+                    LogColor.BLUE,
+                )
                 return
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
@@ -1710,7 +1737,7 @@ class PreprocessingInterface(QMainWindow):
                 batch_dir = f"batch_lights{batch_index + 1}"
                 src_path = os.path.join(lights_directory, filename)
                 dest_path = os.path.join(batch_dir, filename)
-                
+
                 # try:
                 #     # Try creating symlink first
                 #     os.symlink(src_path, dest_path)
@@ -1826,11 +1853,21 @@ class PreprocessingInterface(QMainWindow):
         # TODO: Remove in RC1
         # if bg extraction AND drizzle are checked, we swap the channels to mitigate a siril bug that's only exists for Seestars
         self.siril.log("Checking if color channel swap is needed...", LogColor.BLUE)
-        self.siril.log(f"Telescope: {telescope}, Drizzle: {self.drizzle_status}, BG Extract: {self.bg_extract_checkbox.isChecked()}", LogColor.BLUE)
-        if self.bg_extract_checkbox.isChecked() and self.drizzle_status and telescope in ["ZWO Seestar S50", "ZWO Seestar S30"]:
+        self.siril.log(
+            f"Telescope: {telescope}, Drizzle: {self.drizzle_status}, BG Extract: {self.bg_extract_checkbox.isChecked()}",
+            LogColor.BLUE,
+        )
+        if (
+            self.bg_extract_checkbox.isChecked()
+            and self.drizzle_status
+            and telescope in ["ZWO Seestar S50", "ZWO Seestar S30"]
+        ):
             img_path = file_name + self.fits_extension
             self.swap_red_blue_channels(image_path=img_path)
-            self.siril.log("If the colors look off, please load the RBswapped image.", LogColor.SALMON)
+            self.siril.log(
+                "If the colors look off, please load the RBswapped image.",
+                LogColor.SALMON,
+            )
 
         self.siril.log(
             f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
