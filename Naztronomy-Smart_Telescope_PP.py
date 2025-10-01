@@ -30,6 +30,7 @@ CHANGELOG:
       - Exposed extra filter options
       - Allow changing batch size
       - Accepts master calibration frames (also creates master calibration frames)
+      - Temporary workaround to cfa debayering bug in Siril when using drizzle and background extraction for seestars
 1.1.1 - Bug fixes: 
       - Fixed Celestron Origin focal length to 335mm
       - Fixed clean up for pre-pp files
@@ -327,6 +328,10 @@ class PreprocessingInterface(QMainWindow):
                 return False
             try:
                 args = ["convert", dir_name, "-out=../process"]
+                # If there are no calibration frames or drizzle is off, debayer on convert, otherwise you get a monochrome image
+                # if "lights" in dir_name.lower():
+                #     if not self.darks_checkbox.isChecked() or not self.flats_checkbox.isChecked() or not self.drizzle_status:
+                #             args.append("-debayer")
                 self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
                 self.siril.cmd(*args)
             except (s.DataError, s.CommandError, s.SirilError) as e:
@@ -559,6 +564,7 @@ class PreprocessingInterface(QMainWindow):
         ]
 
         # Calibrate with -debayer if drizle is not set
+        print("Drizzle status:", self.drizzle_status)
         if not self.drizzle_status:
             cmd_args.append("-debayer")
 
@@ -620,7 +626,7 @@ class PreprocessingInterface(QMainWindow):
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
 
-        object_name = current_fits_headers.get("OBJECT", "Unknown").replace(" ", "_")
+        object_name = current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
         exptime = int(current_fits_headers.get("EXPTIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
         date_obs = current_fits_headers.get("DATE-OBS", current_datetime)
@@ -1233,6 +1239,38 @@ class PreprocessingInterface(QMainWindow):
                     )
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
+    
+    # TODO: Remove function in RC1
+    def swap_red_blue_channels(self, image_path):
+        """Swaps the red and blue channels of a FITS image to mitigate Siril bug for seestars"""
+        try:
+            self.siril.log("Swapping red and blue channels using Python...", LogColor.BLUE)
+            
+            # Read the FITS file
+            with fits.open(image_path) as hdul:
+                data = hdul[0].data.copy()  
+                header = hdul[0].header.copy()
+                
+                if data.ndim == 3 and data.shape[0] == 3:
+                    # Swap channels: [R, G, B] -> [B, G, R]
+                    data[[0, 2]] = data[[2, 0]]
+                    
+                    base_name = os.path.splitext(image_path)[0]
+                    output_path = f"{base_name}_RBswapped{self.fits_extension}"
+                    
+                    hdul_out = fits.PrimaryHDU(data=data, header=header)
+                    hdul_out.writeto(output_path, overwrite=True)
+                    
+                    self.siril.log(f"Successfully swapped channels and saved: {output_path}", LogColor.GREEN)
+                    return output_path
+                    
+                else:
+                    self.siril.log(f"Image is not a 3-channel color image (shape: {data.shape})", LogColor.SALMON)
+                    return None
+                    
+        except Exception as e:
+            self.siril.log(f"Color channel swap failed, may not mean anything: {e}", LogColor.SALMON)
+            return None
 
     def batch(
         self,
@@ -1260,14 +1298,14 @@ class PreprocessingInterface(QMainWindow):
 
         # Output name is actually the name of the batched working directory
         self.convert_files(dir_name=output_name)
-        self.unselect_bad_fits(seq_name=output_name)
+        # self.unselect_bad_fits(seq_name=output_name)
 
         seq_name = f"{output_name}_"
 
         # self.siril.cmd("cd", batch_working_dir)
 
         # Using calibration frames puts pp_ prefix in process directory
-        if use_flats or use_darks:
+        if True:
             self.calibrate_lights(
                 seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
             )
@@ -1746,6 +1784,13 @@ class PreprocessingInterface(QMainWindow):
 
         # self.clean_up()
 
+        # TODO: Remove in RC1
+        # if bg extraction AND drizzle are checked, we swap the channels to mitigate a siril bug that's only exists for Seestars
+        if self.bg_extract_checkbox.isChecked() and self.drizzle_status and telescope in ["Seestar S50", "Seestar S30"]:
+            img_path = file_name + self.fits_extension
+            self.swap_red_blue_channels(image_path=img_path)
+            self.siril.log("If the colors look off, please load the RBswapped image.", LogColor.SALMON)
+
         self.siril.log(
             f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             LogColor.GREEN,
@@ -1793,5 +1838,6 @@ if __name__ == "__main__":
 # YouTube: https://www.YouTube.com/Naztronomy
 # Discord: https://discord.gg/yXKqrawpjr
 # Patreon: https://www.patreon.com/c/naztronomy
+# Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
 ##############################################################################
