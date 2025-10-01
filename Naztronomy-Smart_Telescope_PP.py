@@ -544,13 +544,48 @@ class PreprocessingInterface(QMainWindow):
             self.current_working_directory,
             f"process/{seq_name}{file_name_end}{self.fits_extension}",
         )
-        dst = os.path.join(
-            masters_dir, f"{seq_name}{file_name_end}{self.fits_extension}"
-        )
+        # Read FITS headers if file exists
+        filename_parts = [seq_name, "stacked"]
+        
         if os.path.exists(src):
+            try:
+                with fits.open(src) as hdul:
+                    headers = hdul[0].header
+                    # Add temperature if exists
+                    if 'CCD-TEMP' in headers:
+                        temp = f"{headers['CCD-TEMP']:.1f}C"
+                        filename_parts.insert(1, temp)
+                        
+                    # Add date if exists
+                    if "DATE-OBS" in headers:
+                        try:
+                            dt = datetime.fromisoformat(headers["DATE-OBS"])
+                            date = dt.date().isoformat()  # "2025-09-29"
+                        except ValueError:
+                            # fallback if DATE-OBS is not strict ISO format
+                            date = headers["DATE-OBS"].split("T")[0]
+                        
+                        filename_parts.insert(1, date)
+                    
+                    # Add exposure time if exists  
+                    if 'EXPTIME' in headers:
+                        exp = f"{headers['EXPTIME']:.0f}s"
+                        filename_parts.insert(1, exp)
+            except Exception as e:
+                self.siril.log(f"Error reading FITS headers: {e}", LogColor.SALMON)
+        
+        dst = os.path.join(
+            masters_dir, f"{'_'.join(filename_parts)}{self.fits_extension}"
+        )
+        
+        if os.path.exists(src):
+            # Remove destination file if it exists to ensure override
+            if os.path.exists(dst):
+                os.remove(dst)
             shutil.copy2(src, dst)
             self.siril.log(
-                f"Copied {seq_name}{file_name_end} to masters directory.", LogColor.BLUE
+            f"Copied {seq_name} to masters directory as {'_'.join(filename_parts)}{self.fits_extension}", 
+            LogColor.BLUE
             )
         self.siril.cmd("cd", "..")
 
