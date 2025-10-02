@@ -1362,6 +1362,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_wfwhm": round(self.fwhm_spinbox.value(), 1),
             "cleanup": self.cleanup_check.isChecked(),
             "process_separately": self.process_separately_check.isChecked(),
+            "mono": self.mono_check.isChecked(),
             # Add session information
             "sessions": [],
         }
@@ -1433,6 +1434,7 @@ class PreprocessingInterface(QMainWindow):
                 self.process_separately_check.setChecked(
                     presets.get("process_separately", False)
                 )
+                self.mono_check.setChecked(presets.get("mono", False))
 
                 # Load session data
                 sessions_data = presets.get("sessions", [])
@@ -1502,9 +1504,10 @@ class PreprocessingInterface(QMainWindow):
         self.siril.cmd("close")
 
         # Check if old processing directories exist
-        if os.path.exists("sessions") or os.path.exists("process") or os.path.exists("collected_lights"):
-            msg = """Old processing directories found (sessions, process, and/or collected_lights). 
-                \nDo you want to delete them and start fresh?"""
+        if os.path.exists("sessions") or os.path.exists("process") or os.path.exists("collected_lights") or os.path.exists("mono_stacks") or os.path.exists("individual_stacks"):
+            msg = """One or more old processing directories found (sessions, process, collected_lights, mono_stacks, individual_stacks). 
+                \nDo you want to delete them and start fresh?
+                \nNote: There is no way to recover this data if you choose 'Yes'."""
             answer = QMessageBox.question(
                 self,
                 "Old Processing Files Found",
@@ -1521,6 +1524,12 @@ class PreprocessingInterface(QMainWindow):
                 if os.path.exists("collected_lights"):
                     shutil.rmtree("collected_lights")
                     self.siril.log("Cleaned up old collected_lights directory", LogColor.BLUE)
+                if os.path.exists("mono_stacks"):
+                    shutil.rmtree("mono_stacks")
+                    self.siril.log("Cleaned up old mono_stacks directory", LogColor.BLUE)
+                if os.path.exists("individual_stacks"):
+                    shutil.rmtree("individual_stacks")
+                    self.siril.log("Cleaned up old individual_stacks directory", LogColor.BLUE)
             else:
                 self.siril.log("User chose to preserve old processing files. Stopping script.", LogColor.BLUE)
                 return
@@ -1581,7 +1590,8 @@ class PreprocessingInterface(QMainWindow):
             # Process separately if requested or mono is selected
             if process_separately or self.mono_check.isChecked():
                 # Create individual_stacks directory
-                individual_stacks_dir = os.path.join(self.home_directory, "individual_stacks")
+                dirname = "individual_stacks" if process_separately else "mono_stacks"
+                individual_stacks_dir = os.path.join(self.home_directory, dirname)
                 os.makedirs(individual_stacks_dir, exist_ok=True)
                 
                 # Process this session individually
@@ -1640,15 +1650,112 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(f"Saved individual stack as {individual_file_name}", LogColor.GREEN)
                 # Move individual stack to individual_stacks directory
                 src_individual = os.path.join(self.current_working_directory, "process", f"{individual_file_name}{self.fits_extension}")
-                dst_individual = os.path.join(individual_stacks_dir, f"{individual_file_name}{self.fits_extension}")
+                new_dst_filename = "mono_" + individual_file_name if self.mono_check.isChecked() else individual_file_name
+                dst_individual = os.path.join(individual_stacks_dir, f"{new_dst_filename}{self.fits_extension}")
                 if os.path.exists(src_individual):
                     shutil.move(src_individual, dst_individual)
-                    self.siril.log(f"Moved {individual_file_name} to individual_stacks directory", LogColor.BLUE)
+                    self.siril.log(f"Moved {new_dst_filename} to individual_stacks directory", LogColor.BLUE)
                 else:
                     self.siril.log(f"Source file not found: {src_individual}", LogColor.RED)
 
-            # Current directory where files are located
-            current_dir = os.path.join(self.current_working_directory, "process")
+
+            # Go back to the previous directory
+            self.siril.cmd("cd", "../../..")
+            self.current_working_directory = self.siril.get_siril_wd()
+            # If clean up is selected, delete the session# directories one after another.
+            if clean_up_files:
+                shutil.rmtree(
+                    os.path.join(
+                        self.current_working_directory, "sessions", session_name
+                    )
+                )
+        # Current directory where files are located
+        current_dir = os.path.join(self.current_working_directory, "process")
+
+       
+        if self.mono_check.isChecked():
+            # TODO: If mono, go into the mono_stacks directory and combine all session stacks into one sequence and register them but not stack
+            self.siril.log("Mono checked: " + str(self.mono_check.isChecked()), LogColor.BLUE)
+            mono_dir = "mono_stacks"
+            fits_files = [
+                fname
+                for fname in os.listdir(mono_dir)
+                if fname.startswith("mono_") and fname.endswith(self.fits_extension)
+            ]
+            self.siril.log(f"Found {len(fits_files)} mono_*.fits files in {mono_dir}", LogColor.BLUE)
+            if len(fits_files) > 1:
+                self.siril.cmd("cd", f'"{mono_dir}"')
+                cwd = self.siril.get_siril_wd()
+                # Move all mono_*.fits files into a "lights" folder
+                mono_lights_dir = os.path.join(mono_dir, "lights")
+                os.makedirs(mono_lights_dir, exist_ok=True)
+                for fname in fits_files:
+                    src = os.path.join(mono_dir, fname)
+                    dst = os.path.join(mono_lights_dir, fname)
+                    shutil.copy2(src, dst)
+
+                # Call the convert command on the lights folder
+                args = ["convert", "lights", "-out=../mono_process"]
+                self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
+                self.siril.cmd(*args)
+
+                # Go into the process directory
+                self.siril.cmd("cd", "../mono_process")
+
+                # Register and apply registration to the lights_ sequence
+                seq_name = "lights_"
+                cmd_args = ["register", seq_name, "-2pass"]
+                try:
+                    self.siril.cmd(*cmd_args)
+                except (s.DataError, s.CommandError, s.SirilError) as e:
+                    self.siril.log(f"Data error occurred: {e}", LogColor.RED)
+
+                cmd_args = [
+                    "seqapplyreg",
+                    seq_name
+                ]
+
+                self.siril.log("Command arguments: " + " ".join(cmd_args), LogColor.BLUE)
+
+                try:
+                    self.siril.cmd(*cmd_args)
+                except (s.DataError, s.CommandError, s.SirilError) as e:
+                    self.siril.log(f"Data error occurred: {e}", LogColor.RED)
+
+                self.siril.log(
+                    f"Applied existing registration to seq {seq_name}", LogColor.GREEN
+                )
+
+                # Read the lights_conversion.txt file
+                conversion_file = os.path.join(os.getcwd(), "mono_process", "lights_conversion.txt")
+                self.siril.log(f"Looking for lights_conversion.txt in: {os.getcwd()}, {conversion_file}", LogColor.BLUE)
+                if os.path.exists(conversion_file):
+                    with open(conversion_file, 'r') as f:
+                        print(f"Opened conversion file: {conversion_file}")
+                        for line in f:
+                            if '->' in line:
+                                src_path, dest_path = line.strip().split(' -> ')
+                                src_path = src_path.strip("'")
+                                dest_path = dest_path.strip("'")
+                                
+                                # Get the original filename from the source path
+                                original_name = os.path.basename(src_path)
+                                
+                                # Create new filename with 'r_' prefix
+                                new_name = 'r_' + original_name
+                                # Get the destination file (lights_xxxxx.fits)
+                                dest_file = os.path.basename(dest_path)
+                                # Full path to the registered file (r_lights_xxxxx.fits)
+                                registered_file = os.path.join(os.getcwd(), "mono_process", 'r_' + dest_file)
+                                # New destination in mono_stacks
+                                final_dest = os.path.join(mono_dir, new_name)
+                                # Move the file if it exists
+                                if os.path.exists(registered_file):
+                                    shutil.move(registered_file, final_dest)
+                                    self.siril.log(f"Moved {registered_file} to {final_dest}", LogColor.BLUE)
+                else:
+                    self.siril.log("lights_conversion.txt not found", LogColor.SALMON)
+                self.siril.cmd("cd", "../")
 
             if not self.mono_check.isChecked():
                 # Mitigate bug: If collected_lights doesn't exist, create it here because sometimes it doesn't get created earlier
@@ -1670,16 +1777,6 @@ class PreprocessingInterface(QMainWindow):
                             LogColor.BLUE,
                         )
 
-            # Go back to the previous directory
-            self.siril.cmd("cd", "../../..")
-            self.current_working_directory = self.siril.get_siril_wd()
-            # If clean up is selected, delete the session# directories one after another.
-            if clean_up_files:
-                shutil.rmtree(
-                    os.path.join(
-                        self.current_working_directory, "sessions", session_name
-                    )
-                )
         if not self.mono_check.isChecked():
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
             self.current_working_directory = self.siril.get_siril_wd()
@@ -1760,17 +1857,31 @@ class PreprocessingInterface(QMainWindow):
             collected_lights_dir = os.path.join(
                 self.current_working_directory, "collected_lights"
             )
-            for filename in os.listdir(collected_lights_dir):
-                file_path = os.path.join(collected_lights_dir, filename)
+            try:
+                for filename in os.listdir(collected_lights_dir):
+                    file_path = os.path.join(collected_lights_dir, filename)
 
-                if os.path.isfile(file_path) and not (
-                    filename.startswith("session") and filename.endswith(extension)
-                ):
-                    os.remove(file_path)
-            shutil.rmtree(os.path.join(collected_lights_dir, "cache"))
-            shutil.rmtree(os.path.join(collected_lights_dir, "drizztmp"))
+                    if os.path.isfile(file_path) and not (
+                        filename.startswith("session") and filename.endswith(extension)
+                    ):
+                        os.remove(file_path)
+                shutil.rmtree(os.path.join(collected_lights_dir, "cache"))
+                shutil.rmtree(os.path.join(collected_lights_dir, "drizztmp"))
 
-            self.siril.log("Cleaned up collected_lights directory", LogColor.BLUE)
+                self.siril.log("Cleaned up collected_lights directory", LogColor.BLUE)
+            except Exception as e:
+                self.siril.log(f"Collected Lights Dir not found, skipping: {e}", LogColor.SALMON)
+
+            if self.mono_check.isChecked():
+                shutil.rmtree(os.path.join(self.current_working_directory, "mono_process"))
+                shutil.rmtree(os.path.join(self.current_working_directory, "mono_stacks", "lights"))
+                self.siril.log("Cleaned up mono_process directory", LogColor.BLUE)
+            try:
+                shutil.rmtree(os.path.join(self.current_working_directory, "cache"))
+                shutil.rmtree(os.path.join(self.current_working_directory, "drizztmp"))
+                self.siril.log("Cleaned up extra cache and drizztmp directories", LogColor.BLUE)
+            except Exception as e:
+                self.siril.log(f"Cache or drizztmp Dir not found, skipping: {e}", LogColor.SALMON)
 
         # self.clean_up()
 
