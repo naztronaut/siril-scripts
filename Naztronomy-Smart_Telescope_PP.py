@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 1.2.0
+Version: 2.0.0
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -25,7 +25,7 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-1.2.0 - Minor version update:
+2.0.0 - Major version update:
       - Refactored code to use Qt6 instead of Tkinter for the GUI
       - Exposed extra filter options
       - Allow changing batch size
@@ -79,8 +79,8 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "1.2.0"
-BUILD = "b01"
+VERSION = "2.0.0"
+BUILD = "20251002"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -881,7 +881,7 @@ class PreprocessingInterface(QMainWindow):
 
         self.telescope_combo = QComboBox()
         self.telescope_combo.addItems(self.telescope_options)
-        self.telescope_combo.setCurrentText("ZWO Seestar S50")
+        self.telescope_combo.setCurrentText("ZWO Seestar S30")
         self.telescope_combo.setToolTip(
             "Select your telescope model to ensure proper color calibration and processing settings."
         )
