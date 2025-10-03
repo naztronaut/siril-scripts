@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - OSC Image Preprocessing script
-Version: 1.1.0
+Version: 2.0.0
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -12,8 +12,8 @@ Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 Support me on Patreon: https://www.patreon.com/c/naztronomy
 Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
-This script is designed to process OSC images only at this time. Although mono images will process, they will be
-incorrectly debayered and be saved as an RGB image.
+This script is designed to process OSC images only at this time. An experimental monochrome feature is available in this script, however
+there are no guarantees. 
 
 If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically
 plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
@@ -28,10 +28,12 @@ allows you to choose files from any folder and drive and they will all be consol
 """
 CHANGELOG:
 
-1.1.0 - pyqt6 support
+2.0.0 - pyqt6 support
       - Save/Load presets
+      - Monochrome support (experimental)
+      - Improved session management
 1.0.0 - initial release
-      - Supports both Mosaics and star alignment for imags without proper headers
+      - Supports both Mosaics and star alignment for images without proper headers
       - Cleans up all intermediate files BUT keeps all preprocessed lights so they can be combined later
 """
 
@@ -77,7 +79,7 @@ from typing import List, Dict
 
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
-VERSION = "1.1.0"
+VERSION = "2.0.0"
 BUILD = "b01"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
@@ -1587,6 +1589,27 @@ class PreprocessingInterface(QMainWindow):
             self.convert_files(image_type="lights")
             self.calibrate_lights(seq_name="lights", use_darks=True, use_flats=True)
 
+            # Current directory where files are located
+            current_dir = os.path.join(self.current_working_directory, "process")
+            # Mitigate bug: If collected_lights doesn't exist, create it here because sometimes it doesn't get created earlier
+            os.makedirs(self.collected_lights_dir, exist_ok=True)
+            # Find and move all files starting with 'pp_lights'
+            for file_name in os.listdir(current_dir):
+                if file_name.startswith("pp_lights") and file_name.endswith(
+                    self.fits_extension
+                ):
+                    src_path = os.path.join(current_dir, file_name)
+
+                    # Prepend session_name to the filename
+                    new_file_name = f"{session_name}_{file_name}"
+                    dest_path = os.path.join(self.collected_lights_dir, new_file_name)
+
+                    shutil.copy2(src_path, dest_path)
+                    self.siril.log(
+                        f"Moved {file_name} to {self.collected_lights_dir} as {new_file_name}",
+                        LogColor.BLUE,
+                    )
+
             # Process separately if requested or mono is selected
             if process_separately or self.mono_check.isChecked():
                 # Create individual_stacks directory
@@ -1669,9 +1692,7 @@ class PreprocessingInterface(QMainWindow):
                         self.current_working_directory, "sessions", session_name
                     )
                 )
-        # Current directory where files are located
-        current_dir = os.path.join(self.current_working_directory, "process")
-
+        
        
         if self.mono_check.isChecked():
             # TODO: If mono, go into the mono_stacks directory and combine all session stacks into one sequence and register them but not stack
@@ -1757,25 +1778,7 @@ class PreprocessingInterface(QMainWindow):
                     self.siril.log("lights_conversion.txt not found", LogColor.SALMON)
                 self.siril.cmd("cd", "../")
 
-            if not self.mono_check.isChecked():
-                # Mitigate bug: If collected_lights doesn't exist, create it here because sometimes it doesn't get created earlier
-                os.makedirs(self.collected_lights_dir, exist_ok=True)
-                # Find and move all files starting with 'pp_lights'
-                for file_name in os.listdir(current_dir):
-                    if file_name.startswith("pp_lights") and file_name.endswith(
-                        self.fits_extension
-                    ):
-                        src_path = os.path.join(current_dir, file_name)
-
-                        # Prepend session_name to the filename
-                        new_file_name = f"{session_name}_{file_name}"
-                        dest_path = os.path.join(self.collected_lights_dir, new_file_name)
-
-                        shutil.copy2(src_path, dest_path)
-                        self.siril.log(
-                            f"Moved {file_name} to {self.collected_lights_dir} as {new_file_name}",
-                            LogColor.BLUE,
-                        )
+            
 
         if not self.mono_check.isChecked():
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
