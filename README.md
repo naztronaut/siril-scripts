@@ -1,47 +1,129 @@
 # Naztronomy - Siril Scripts
 
-## Scripts
+## Naztronomy-Smart_Telescope_PP.py
 
-### Naztronomy-Smart_Telescope_PP.py
+A comprehensive Python script that automates the preprocessing workflow for smart telescopes, including file conversion, registration, stacking, and SPCC color calibration.
 
-A Python script that automates the preprocessing workflow, including file conversion, registration, stacking, and SPCC color calibration.
+**Supported Telescopes:**
 
-### Naztronomy-Seestar_Broadband_Mosaic.ssf
+- ZWO Seestar S30
+- ZWO Seestar S50
+- Dwarf 2
+- Dwarf 3
+- Celestron Origin
 
-A Siril script optimized for broadband (UV/IR block) filters. It automates the stacking and mosaic creation process for images captured with Seestar telescopes.
+**Features:**
 
-### Naztronomy-Seestar_Narrowband_Mosaic.ssf
+- Automatic batching for large datasets (>2000 files on Windows)
+- Optional calibration frame support (darks, flats, biases)
+- Automatic master frame creation from calibration files
+- Drizzle integration for improved resolution
+- Background extraction and filtering options
+- Spectrophotometric Color Calibration (SPCC)
+- Save/Load presets functionality
 
-Tailored for narrowband (LP) filters, this Siril script handles stacking and mosaic generation for Seestar telescope images.
+**Demo Video:** [YouTube - Smart Telescope Processing](https://www.youtube.com/watch?v=6v0SHEe0ZJ8)
+
+## Naztronomy-OSC_PP.py
+
+An advanced OSC (One Shot Color) image preprocessing script designed for processing images from multiple sessions with full mosaic and alignment capabilities.
+
+**Features:**
+
+- Multi-session support with individual file management
+- Automatic plate solving and mosaicking for images with proper headers
+- Star alignment fallback for images without coordinates
+- Session-based organization and processing
+- Individual session stacking option in addition to merged stacks
+- Master frame creation from single calibration files
+- Preprocessed lights collection for later combination
+- Experimental mono camera support (no debayering)
+- Comprehensive filter settings for image quality control
+
+**Demo Video:** [YouTube - OSC Image Processing](https://www.YouTube.com/watch?v=-7XR245DX_Q)
 
 ## Installation
 
-Please the `.ssf` or `.py` files in local Siril scripts directory. You can find the location by going to Menu >> Get Scripts. Use a predefined location or add your own.
+Two ways to install these scripts:
 
-## Usage
+1. Place the Python `.py` files from this repository in your local Siril scripts directory
+2. Install directly through Siril by going to **Scripts >> Get Scripts** in Siril and searching for "Naztronomy"
 
-- Your home directory must have a `lights` directory with all of your lights images
-- The `.ssf` scripts does not work with file count > 2048 on Windows
+## System Requirements
+
+- Siril 1.3.6 or later
+- Python packages: PyQt6, numpy, astropy (automatically installed by the scripts)
+- Recommended: Blank working directory for clean setup
+
+## Usage Guidelines
+
+### For Smart Telescope Script:
+
+- Must have a `lights` subdirectory in your working directory
+- Calibration frames are optional but recommended
+- Supports automatic batching for large datasets
+- SPCC requires local Gaia catalog for best results
+
+### For OSC Processing Script:
+
+- Can be run from any directory
+- Supports multiple sessions with different frame types
+- Images are copied/symlinked for processing (requires disk space)
+- Individual sessions can be processed separately or combined
+- Experimental mono mode bypasses debayering for monochrome cameras
+
+## Limitations
+
+- **Windows File Limit:** The `.ssf` scripts do not work with file counts > 2048 on Windows
+- **OSC Optimization:** Current scripts are optimized for OSC cameras (mono support is experimental)
+- **Disk Space:** OSC script copies files before processing, requiring additional storage
 
 ## Authors
 
-- **Nazmus Nasir** - [Naztronomy](https://www.nazmtronomy.com)
+- **Nazmus Nasir** - [Naztronomy](https://www.naztronomy.com)
 
-### Social Media:
+### Social Media & Support:
 
 - **YouTube** - [YouTube.com/Naztronomy](https://www.youtube.com/naztronomy)
 - **Bluesky** - [Bluesky/Naztronomy.com](https://bsky.app/profile/naztronomy.com)
 - **Instagram** - [IG/Naztronomy](https://instagram.com/naztronomy)
+- **Discord** - [Join our community](https://discord.gg/yXKqrawpjr)
+- **Patreon** - [Support development](https://www.patreon.com/c/naztronomy)
+- **Buy Me a Coffee** - [One-time support](https://www.buymeacoffee.com/naztronomy)
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details
 
-## Questions ?
+## Support & Questions
 
-Have questions? You can reach me through several different channels. You can ask a question in the [issues forum](/../../issues),
-on [Discord](https://discord.gg/yXKqrawpjr), or on the video comments sectionon YouTube.
+Have questions? You can reach out through several channels:
 
-## Contribute
+- Create an issue in the [issues forum](/../../issues)
+- Join our [Discord community](https://discord.gg/yXKqrawpjr)
+- Comment on the demo videos on YouTube
+- Check the help sections within each script
 
-I will accept Pull requests fixing bugs or adding new features after I've vetted them. Feel free to create pull requests!
+## Contributing
+
+Pull requests are welcome! Please ensure you:
+
+- Test your changes thoroughly
+- Follow the existing code style
+- Update documentation as needed
+
+Bug fixes and new features will be reviewed before merging.
+
+## Deprecated Scripts (.ssf files)
+
+### Naztronomy-Seestar_Broadband_Mosaic.ssf
+
+A legacy Siril script optimized for broadband (UV/IR block) filters. Automates stacking and mosaic creation for Seestar telescope images.
+
+**⚠️ DEPRECATED:** This script is no longer actively supported. Please use the Python scripts above for new projects.
+
+### Naztronomy-Seestar_Narrowband_Mosaic.ssf
+
+A legacy Siril script tailored for narrowband (LP) filters, handling stacking and mosaic generation for Seestar telescope images.
+
+**⚠️ DEPRECATED:** This script is no longer actively supported. Please use the Python scripts above for new projects.
