@@ -1733,7 +1733,7 @@ class PreprocessingInterface(QMainWindow):
         is_windows = sys.platform.startswith("win")
 
         # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch or not is_windows:
+        if num_files <= max_files_per_batch: # or not is_windows:
             self.siril.log(
                 f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
