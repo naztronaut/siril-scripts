@@ -75,9 +75,9 @@ import subprocess
 
 # from tkinter import filedialog
 
-APP_NAME = "Naztronomy - Comet Converter"
+APP_NAME = "Naztronomy - Comet Preprocessor"
 VERSION = "1.0.0"
-BUILD = "20251002"
+BUILD = "20251102"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -115,7 +115,8 @@ class PreprocessingInterface(QMainWindow):
             return
 
         self.fits_extension = self.siril.get_siril_config("core", "extension")
-        self.starnet_available = True if self.siril.get_siril_config("core", "starnet_exe") != "(not set)" else False
+        self.starnet_location = self.siril.get_siril_config("core", "starnet_exe")
+        self.starnet_available = True if self.starnet_location != "(not set)" else False
 
         self.gaia_catalogue_available = False
         try:
@@ -829,6 +830,8 @@ class PreprocessingInterface(QMainWindow):
         # Current working directory label
         self.cwd_label = QLabel(self.cwd_label_text)
         main_layout.addWidget(self.cwd_label)
+        self.starnet_location_label = QLabel("Starnet++ Location: " + (self.starnet_location if self.starnet_available else "Not Set, please install."))
+        main_layout.addWidget(self.starnet_location_label)
 
         # Telescope section
         telescope_section = QGroupBox("Conversion Options")
@@ -962,6 +965,10 @@ class PreprocessingInterface(QMainWindow):
             \nNOTE: This will create a final 'stars_stacked' image but will NOT create a comet stacked image. You must do that yourself.
         """)
         stacking_layout.addWidget(self.remove_stars_checkbox, 0, 0)
+        # If starnet is not available, disable the remove stars checkbox
+        self.remove_stars_checkbox.setEnabled(self.starnet_available)
+        if not self.starnet_available:
+            self.remove_stars_checkbox.setToolTip("Starnet++ is not available. Please install it first.")
 
         # Stacking algorithm dropdown
         stacking_algorithm_label = QLabel("Pixel Rejection Algorithm:")
@@ -1345,7 +1352,8 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(f"Failed to move stars.fits: {e}", LogColor.SALMON)
 
         if clean_up_files:
-            self.clean_up(prefix=seq_name)  # clean up r_ files
+            # Don't clean up registered files because we need them for comet stacking
+            # self.clean_up(prefix=seq_name)  # clean up r_ files
             try:
                 shutil.rmtree(os.path.join(self.siril.get_siril_wd(), "cache"))
             except Exception as e:
@@ -1743,7 +1751,8 @@ class PreprocessingInterface(QMainWindow):
 
             # cleanup final_stack directory
             # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
-            self.clean_up(prefix=registered_final_stack_seq_name)
+            # Don't clean up registered frames because we need it for comet stacking
+            # self.clean_up(prefix=registered_final_stack_seq_name)
 
             # Go back to working dir
             self.siril.cmd("cd", "../")
