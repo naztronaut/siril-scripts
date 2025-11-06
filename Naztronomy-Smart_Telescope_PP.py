@@ -1019,7 +1019,16 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout.addWidget(batch_size_label, 0, 0)
 
         self.batch_size_spinbox = QSpinBox()
-        self.batch_size_spinbox.setRange(100, 2000)  # clamps input to 100–2000
+        # Set max batch size based on OS
+        if sys.platform.startswith('win'):
+            max_batch = 2000
+        elif sys.platform.startswith('linux'):
+            max_batch = 10000
+        elif sys.platform.startswith('darwin'):
+            max_batch = 25000
+        else:
+            max_batch = 2000  # Default to Windows limit for unknown OS
+        self.batch_size_spinbox.setRange(100, max_batch)  # clamps input based on OS
         self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
         self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
         self.batch_size_spinbox.setMinimumWidth(120)
