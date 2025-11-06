@@ -26,6 +26,11 @@ The following subdirectories are optional:
 CHANGELOG:
 
 2.0.1 - Allowing all os to batch
+      - Optional Black Frames Check
+      - Automatic Telescope Detection from FITS Header
+      - Removed feathering. Automatic feathering of panels still work.
+      - Fallback to regular registration if plate solving fails (which should accommodate any telescope now) and will not mosaic
+      - Added additional filters: background and star count
 2.0.0 - Major version update:
       - Refactored code to use Qt6 instead of Tkinter for the GUI
       - Exposed extra filter options
@@ -81,7 +86,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.1"
-BUILD = "20251010"
+BUILD = "20251106"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -410,11 +415,32 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             self.siril.cmd(*args)
+            self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
+            return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
-            # self.siril.error_messagebox(f"seqplatesolve failed: {e}")
-            # self.close_dialog()
-        self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
+            return False
+
+    
+    # Regular registration if plate solve not available - No Mosaics
+    def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
+        """Registers the sequence using the 'register' command."""
+        cmd_args = ["register", seq_name, "-2pass"]
+        if self.drizzle_status:
+            cmd_args.extend(
+                ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
+            )
+        self.siril.log(
+            "Regular Registration (Global Star Alignment) Done: " + " ".join(cmd_args), LogColor.BLUE
+        )
+
+        try:
+            self.siril.cmd(*cmd_args)
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Data error occurred: {e}", LogColor.RED)
+
+        self.siril.log("Registered Sequence", LogColor.GREEN)
+
 
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
@@ -426,14 +452,16 @@ class PreprocessingInterface(QMainWindow):
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
     def seq_apply_reg(
-        self, seq_name, drizzle_amount, pixel_fraction, filter_roundness, filter_fwhm
+        self, seq_name, drizzle_amount, pixel_fraction, filter_roundness, filter_fwhm, filter_bg, filter_star_count
     ):
         """Apply Existing Registration to the sequence."""
         cmd_args = [
             "seqapplyreg",
             seq_name,
-            f"-filter-round={filter_roundness}k",
-            f"-filter-wfwhm={filter_fwhm}k",
+            f"-filter-round={filter_roundness}%",
+            f"-filter-wfwhm={filter_fwhm}%",
+            f"-filter-bg={filter_bg}%",
+            f"-filter-star-count={filter_star_count}%",
             "-kernel=square",
             "-framing=max",
         ]
@@ -632,7 +660,7 @@ class PreprocessingInterface(QMainWindow):
         ]
 
         # Calibrate with -debayer if drizle is not set
-        print("Drizzle status:", self.drizzle_status)
+        self.siril.log(f"Drizzle status: {self.drizzle_status}", LogColor.BLUE)
         if not self.drizzle_status:
             cmd_args.append("-debayer")
 
@@ -854,8 +882,7 @@ class PreprocessingInterface(QMainWindow):
 
     def show_help(self):
         help_text = (
-            f"Author: {AUTHOR} ({WEBSITE})\n"
-            f"Youtube: {YOUTUBE}\n"
+            f"Author: {AUTHOR} ({WEBSITE}); Youtube: {YOUTUBE}\n"
             "Discord: https://discord.gg/yXKqrawpjr\n"
             "Patreon: https://www.patreon.com/c/naztronomy\n"
             "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
@@ -897,6 +924,15 @@ class PreprocessingInterface(QMainWindow):
         self.cwd_label = QLabel(self.cwd_label_text)
         main_layout.addWidget(self.cwd_label)
 
+        # Catalog section
+        if self.gaia_catalogue_available:
+            gaia_status_label = QLabel("Local Gaia Status: ✓ Available")
+            gaia_status_label.setStyleSheet("color: green;")
+        else:
+            gaia_status_label = QLabel("Local Gaia Status: ✗ Not available, mosaics will not be generated.")
+            gaia_status_label.setStyleSheet("color: red;")
+        main_layout.addWidget(gaia_status_label)
+        
         # Telescope section
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
@@ -1053,43 +1089,87 @@ class PreprocessingInterface(QMainWindow):
         )
         self.filters_checkbox = QCheckBox("Filters")
         self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
-        preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
+        preprocessing_layout.addWidget(self.filters_checkbox, 4, 0)
 
-        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower roundness value applies a stricter filter, keeping only frames with well-defined, circular stars. Higher roundness values allow more variation in star shapes."
+        # Roundness Filter
+        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower percentage keeps only frames with more circular stars. Higher percentages allow more variation in star shapes."
         roundness_label = QLabel("Roundness:")
+        roundness_label.setFont(title_font)
         roundness_label.setToolTip(roundness_label_tooltip)
         preprocessing_layout.addWidget(roundness_label, 4, 2)
 
         self.roundness_spinbox = QDoubleSpinBox()
-        self.roundness_spinbox.setRange(0.1, 5.0)
+        self.roundness_spinbox.setRange(1.0, 100.0)
         self.roundness_spinbox.setSingleStep(0.1)
-        self.roundness_spinbox.setDecimals(1)
-        self.roundness_spinbox.setValue(3.0)
+        self.roundness_spinbox.setDecimals(2)
+        self.roundness_spinbox.setValue(100.0)
         self.roundness_spinbox.setMinimumWidth(80)
-        self.roundness_spinbox.setSuffix(" σ")
+        self.roundness_spinbox.setSuffix(" %")
         self.roundness_spinbox.setEnabled(False)
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
         preprocessing_layout.addWidget(self.roundness_spinbox, 4, 3)
 
         self.filters_checkbox.toggled.connect(self.roundness_spinbox.setEnabled)
 
-        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower sigma value applies a stricter filter, keeping only frames close to the median FWHM. Higher sigma allows more variation."
-        fwhm_label = QLabel("Weighted FWHM:")
+        # FWHM Filter
+        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower percentage keeps only frames with consistent FWHM values. Higher percentages allow more variation."
+        fwhm_label = QLabel("FWHM:")
+        fwhm_label.setFont(title_font)
         fwhm_label.setToolTip(fwhm_label_tooltip)
-        preprocessing_layout.addWidget(fwhm_label, 5, 2)
+        preprocessing_layout.addWidget(fwhm_label, 4, 4)
 
         self.fwhm_spinbox = QDoubleSpinBox()
-        self.fwhm_spinbox.setRange(0.1, 5.0)
+        self.fwhm_spinbox.setRange(1.0, 100.0)
         self.fwhm_spinbox.setSingleStep(0.1)
-        self.fwhm_spinbox.setDecimals(1)
-        self.fwhm_spinbox.setValue(3.0)
+        self.fwhm_spinbox.setDecimals(2)
+        self.fwhm_spinbox.setValue(100.0)
         self.fwhm_spinbox.setMinimumWidth(80)
-        self.fwhm_spinbox.setSuffix(" σ")
+        self.fwhm_spinbox.setSuffix(" %")
         self.fwhm_spinbox.setEnabled(False)
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
-        preprocessing_layout.addWidget(self.fwhm_spinbox, 5, 3)
+        preprocessing_layout.addWidget(self.fwhm_spinbox, 4, 5)
 
         self.filters_checkbox.toggled.connect(self.fwhm_spinbox.setEnabled)
+
+        # Background Filter
+        bg_filter_label = QLabel("Background:")
+        bg_filter_label.setFont(title_font)
+        bg_filter_tooltip = "Filter frames by background value. Lower percentages keep frames with lower background levels."
+        bg_filter_label.setToolTip(bg_filter_tooltip)
+        preprocessing_layout.addWidget(bg_filter_label, 5, 2)
+
+        self.bg_filter_spinbox = QDoubleSpinBox()
+        self.bg_filter_spinbox.setRange(1.0, 100.0)
+        self.bg_filter_spinbox.setSingleStep(0.1)
+        self.bg_filter_spinbox.setDecimals(2)
+        self.bg_filter_spinbox.setValue(100.0)
+        self.bg_filter_spinbox.setMinimumWidth(80)
+        self.bg_filter_spinbox.setSuffix(" %")
+        self.bg_filter_spinbox.setEnabled(False)
+        self.bg_filter_spinbox.setToolTip(bg_filter_tooltip)
+        preprocessing_layout.addWidget(self.bg_filter_spinbox, 5, 3)
+
+        # Star Count Filter
+        star_count_filter_label = QLabel("Star Count:")
+        star_count_filter_label.setFont(title_font)
+        star_count_filter_tooltip = "Filter frames by star count. Lower percentages keep frames with fewer stars."
+        star_count_filter_label.setToolTip(star_count_filter_tooltip)
+        preprocessing_layout.addWidget(star_count_filter_label, 5, 4)
+
+        self.star_count_filter_spinbox = QDoubleSpinBox()
+        self.star_count_filter_spinbox.setRange(1.0, 100.0)
+        self.star_count_filter_spinbox.setSingleStep(0.1)
+        self.star_count_filter_spinbox.setDecimals(2)
+        self.star_count_filter_spinbox.setValue(100.0)
+        self.star_count_filter_spinbox.setMinimumWidth(80)
+        self.star_count_filter_spinbox.setSuffix(" %")
+        self.star_count_filter_spinbox.setEnabled(False)
+        self.star_count_filter_spinbox.setToolTip(star_count_filter_tooltip)
+        preprocessing_layout.addWidget(self.star_count_filter_spinbox, 5, 5)
+
+        # Connect the filters checkbox to enable/disable all filter controls
+        self.filters_checkbox.toggled.connect(self.bg_filter_spinbox.setEnabled)
+        self.filters_checkbox.toggled.connect(self.star_count_filter_spinbox.setEnabled)
 
         # Stacking options
         stacking_label = QLabel("Stacking:")
@@ -1099,27 +1179,27 @@ class PreprocessingInterface(QMainWindow):
         )
         preprocessing_layout.addWidget(stacking_label, 6, 0)
 
-        feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
-        self.feather_checkbox = QCheckBox("Feather?")
-        self.feather_checkbox.setToolTip(feather_tooltip)
-        preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
+        # feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
+        # self.feather_checkbox = QCheckBox("Feather?")
+        # self.feather_checkbox.setToolTip(feather_tooltip)
+        # preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
 
-        feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
-        feather_amount_label = QLabel("Feather amount:")
-        feather_amount_label.setToolTip(feather_amount_label_tooltip)
-        preprocessing_layout.addWidget(feather_amount_label, 6, 2)
+        # feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
+        # feather_amount_label = QLabel("Feather amount:")
+        # feather_amount_label.setToolTip(feather_amount_label_tooltip)
+        # preprocessing_layout.addWidget(feather_amount_label, 6, 2)
 
-        self.feather_amount_spinbox = QSpinBox()
-        self.feather_amount_spinbox.setRange(5, 2000)
-        self.feather_amount_spinbox.setSingleStep(5)
-        self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
-        self.feather_amount_spinbox.setMinimumWidth(80)
-        self.feather_amount_spinbox.setSuffix(" px")
-        self.feather_amount_spinbox.setEnabled(False)
-        self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
-        preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
+        # self.feather_amount_spinbox = QSpinBox()
+        # self.feather_amount_spinbox.setRange(5, 2000)
+        # self.feather_amount_spinbox.setSingleStep(5)
+        # self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
+        # self.feather_amount_spinbox.setMinimumWidth(80)
+        # self.feather_amount_spinbox.setSuffix(" px")
+        # self.feather_amount_spinbox.setEnabled(False)
+        # self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
+        # preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
 
-        self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
+        # self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
 
         # SPCC Section
         self.spcc_section = QGroupBox("Post-Stacking")
@@ -1152,32 +1232,24 @@ class PreprocessingInterface(QMainWindow):
         )
         spcc_layout.addWidget(self.filter_combo, 1, 1)
 
-        catalog_label = QLabel("Catalog:")
-        catalog_label.setFont(title_font)
-        catalog_tooltip = "Source of star color data. Local Gaia is faster but requires downloaded catalog. Online Gaia works without local catalog but is slower and often crashes."
-        catalog_label.setToolTip(catalog_tooltip)
-        spcc_layout.addWidget(catalog_label, 2, 0)
+        # catalog_label = QLabel("Catalog:")
+        # catalog_label.setFont(title_font)
+        # catalog_tooltip = "Source of star color data. Local Gaia is faster but requires downloaded catalog. Online Gaia works without local catalog but is slower and often crashes."
+        # catalog_label.setToolTip(catalog_tooltip)
+        # spcc_layout.addWidget(catalog_label, 2, 0)
 
-        self.catalog_combo = QComboBox()
-        catalog_options = ["localgaia", "gaia"]
-        self.catalog_combo.addItems(catalog_options)
-        self.catalog_combo.setCurrentText("localgaia")
-        self.catalog_combo.setEnabled(False)
-        self.catalog_combo.setToolTip(catalog_tooltip)
-        spcc_layout.addWidget(self.catalog_combo, 2, 1)
+        # self.catalog_combo = QComboBox()
+        # catalog_options = ["localgaia"]
+        # self.catalog_combo.addItems(catalog_options)
+        # self.catalog_combo.setCurrentText("localgaia")
+        # self.catalog_combo.setEnabled(False)
+        # self.catalog_combo.setToolTip(catalog_tooltip)
+        # spcc_layout.addWidget(self.catalog_combo, 2, 1)
 
         # Connect SPCC checkbox to enable/disable filter and catalog combos
         self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
         self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
-        if self.gaia_catalogue_available:
-            gaia_status_label = QLabel("✓ Local Gaia Available")
-            gaia_status_label.setStyleSheet("color: green;")
-            spcc_layout.addWidget(gaia_status_label, 2, 2)
-        else:
-            gaia_status_label = QLabel("✗ Local Gaia Not available")
-            gaia_status_label.setStyleSheet("color: red;")
-            spcc_layout.addWidget(gaia_status_label, 2, 2)
 
         self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
         self.scan_blackframes_checkbox.setToolTip(
@@ -1267,6 +1339,8 @@ class PreprocessingInterface(QMainWindow):
             pixel_fraction=self.pixel_fraction_spinbox.value(),
             filter_roundness=self.roundness_spinbox.value(),
             filter_fwhm=self.fwhm_spinbox.value(),
+            filter_bg=self.bg_filter_spinbox.value(),
+            filter_star_count=self.star_count_filter_spinbox.value(),
             feather=self.feather_checkbox.isChecked(),
             feather_amount=self.feather_amount_spinbox.value(),
             clean_up_files=self.cleanup_files_checkbox.isChecked(),
@@ -1295,7 +1369,7 @@ class PreprocessingInterface(QMainWindow):
             return
 
         first_file = matching_files[0]
-        print(first_file)
+        self.siril.log(f"Extracting Coordinates from file: {first_file}", LogColor.BLUE)
         file_path = os.path.join(process_dir, first_file)
 
         try:
@@ -1370,8 +1444,10 @@ class PreprocessingInterface(QMainWindow):
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
-        filter_roundness: float = 3.0,
-        filter_fwhm: float = 3.0,
+        filter_roundness: float = 100.0,
+        filter_fwhm: float = 100.0,
+        filter_bg: float = 100.0,
+        filter_star_count: float = 100.0,
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
         clean_up_files: bool = False,
@@ -1419,7 +1495,16 @@ class PreprocessingInterface(QMainWindow):
         if self.chosen_telescope in ["Celestron Origin", "Dwarf 2"]:
             self.extract_coords_from_fits(prefix=seq_name)
 
-        self.seq_plate_solve(seq_name=seq_name)
+        # Only do plate solve if local gaia is available!
+        if not self.gaia_catalogue_available: 
+            self.siril.log("Local Gaia catalogue not available, skipping plate solving. Mosaics will NOT be automatically created.", LogColor.SALMON)
+            self.regular_register_seq(seq_name=seq_name, drizzle_amount=drizzle_amount, pixel_fraction=pixel_fraction)
+        else:
+            individual_plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
+            if not individual_plate_solve_status:
+                self.siril.log("Plate solving failed, falling back to regular registration.", LogColor.SALMON)
+                self.regular_register_seq(seq_name=seq_name, drizzle_amount=drizzle_amount, pixel_fraction=pixel_fraction)
+
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
             seq_name=seq_name,
@@ -1427,6 +1512,8 @@ class PreprocessingInterface(QMainWindow):
             pixel_fraction=pixel_fraction,
             filter_roundness=filter_roundness,
             filter_fwhm=filter_fwhm,
+            filter_bg=filter_bg,
+            filter_star_count=filter_star_count,
         )
         if clean_up_files:
             self.clean_up(
@@ -1526,7 +1613,7 @@ class PreprocessingInterface(QMainWindow):
         presets = {
             "telescope": self.telescope_combo.currentText(),
             "filter": self.filter_combo.currentText(),
-            "catalog": self.catalog_combo.currentText(),
+            "catalog": self.catalog_combo.currentText(), 
             "darks": self.darks_checkbox.isChecked(),
             "flats": self.flats_checkbox.isChecked(),
             "biases": self.biases_checkbox.isChecked(),
@@ -1537,10 +1624,12 @@ class PreprocessingInterface(QMainWindow):
             "drizzle_amount": self.drizzle_amount_spinbox.value(),
             "pixel_fraction": self.pixel_fraction_spinbox.value(),
             "filters": self.filters_checkbox.isChecked(),
-            "roundness": self.roundness_spinbox.value(),
+            "roundness": self.roundness_spinbox.value(), 
             "fwhm": self.fwhm_spinbox.value(),
-            "feather": self.feather_checkbox.isChecked(),
-            "feather_amount": self.feather_amount_spinbox.value(),
+            "star_count_filter": self.star_count_filter_spinbox.value(),
+            "bg_filter": self.bg_filter_spinbox.value(),
+            # "feather": self.feather_checkbox.isChecked(),
+            # "feather_amount": self.feather_amount_spinbox.value(),
             "spcc": self.spcc_checkbox.isChecked(),
         }
 
@@ -1572,7 +1661,7 @@ class PreprocessingInterface(QMainWindow):
                 # If default presets don't exist, show file dialog
                 presets_file, _ = QFileDialog.getOpenFileName(
                     self,
-                    "Load Presets",
+                    "Load Presets", 
                     os.path.join(self.current_working_directory, "presets"),
                     "JSON Files (*.json);;All Files (*.*)",
                 )
@@ -1610,10 +1699,12 @@ class PreprocessingInterface(QMainWindow):
             self.filters_checkbox.setChecked(presets.get("filters", False))
             self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
             self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
-            self.feather_checkbox.setChecked(presets.get("feather", False))
-            self.feather_amount_spinbox.setValue(
-                presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
-            )
+            self.star_count_filter_spinbox.setValue(presets.get("star_count_filter", 100.0))
+            self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
+            # self.feather_checkbox.setChecked(presets.get("feather", False))
+            # self.feather_amount_spinbox.setValue(
+            #     presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
+            # )
             self.spcc_checkbox.setChecked(presets.get("spcc", False))
 
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
@@ -1634,8 +1725,10 @@ class PreprocessingInterface(QMainWindow):
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
-        filter_roundness: float = 3.0,
-        filter_fwhm: float = 3.0,
+        filter_roundness: float = 100.0,
+        filter_fwhm: float = 100.0,
+        filter_bg: float = 100.0,
+        filter_star_count: float = 100.0,
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
         clean_up_files: bool = False,
@@ -1655,6 +1748,8 @@ class PreprocessingInterface(QMainWindow):
             f"drizzle_amount={drizzle_amount}\n"
             f"filter_roundness={filter_roundness}\n"
             f"filter_fwhm={filter_fwhm}\n"
+            f"filter_bg={filter_bg}\n"
+            f"filter_star_count={filter_star_count}\n"
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
@@ -1844,8 +1939,10 @@ class PreprocessingInterface(QMainWindow):
                 seq_name=final_stack_seq_name,
                 drizzle_amount=drizzle_amount,
                 pixel_fraction=pixel_fraction,
-                filter_roundness=3.0,
-                filter_fwhm=3.0,
+                filter_roundness=100.0,
+                filter_fwhm=100.0,
+                filter_bg=100.0,
+                filter_star_count=100.0
             )
             self.clean_up(prefix=final_stack_seq_name)
             registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
