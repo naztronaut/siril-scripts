@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 2.0.0
+Version: 2.0.1
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -25,6 +25,7 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.1 - Allowing all os to batch
 2.0.0 - Major version update:
       - Refactored code to use Qt6 instead of Tkinter for the GUI
       - Exposed extra filter options
@@ -79,8 +80,8 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.0"
-BUILD = "20251002"
+VERSION = "2.0.1"
+BUILD = "20251010"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -288,10 +289,42 @@ class PreprocessingInterface(QMainWindow):
                         self, "Invalid Directory", msg, QMessageBox.StandardButton.Ok
                     )
                     continue
-
         self.create_widgets()
+        self.set_telescope_from_fits()
+
         # self.setup_shortcuts()
         self.initialization_successful = True
+
+    def set_telescope_from_fits(self):
+        """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
+        # Mapping from FITS header values to UI telescope names
+        telescope_map = {
+            'Seestar S30': 'ZWO Seestar S30',
+            'Seestar S50': 'ZWO Seestar S50',
+            'DWARFII': 'Dwarf 2',
+            'DWARFIII': 'Dwarf 3',
+            'Origin': 'Celestron Origin'
+        }
+        
+        try:
+            lights_dir = os.path.join(self.current_working_directory, "lights")
+            fits_files = [f for f in os.listdir(lights_dir) if f.lower().endswith(self.fits_extension)]
+            
+            if not fits_files:
+                return
+                
+            first_file = os.path.join(lights_dir, fits_files[0])
+            with fits.open(first_file) as hdul:
+                header = hdul[0].header
+                telescope = header.get('TELESCOP', 'Seestar S30')
+                
+                mapped_telescope = telescope_map.get(telescope, 'ZWO Seestar S30')
+                self.telescope_combo.setCurrentText(mapped_telescope)
+                self.chosen_telescope = mapped_telescope
+                self.siril.log(f"Set telescope to {mapped_telescope} from FITS header", LogColor.BLUE)
+                
+        except Exception as e:
+            self.siril.log(f"Error reading telescope from FITS: {e}", LogColor.SALMON)
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -1146,6 +1179,13 @@ class PreprocessingInterface(QMainWindow):
             gaia_status_label.setStyleSheet("color: red;")
             spcc_layout.addWidget(gaia_status_label, 2, 2)
 
+        self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
+        self.scan_blackframes_checkbox.setToolTip(
+            "Enable this option to automatically scan for black frames in your image sequence ONLY If you see black frames as a result of drizzle." \
+            "\nWhen the bug is confirmed fixed, this option and check will be removed."
+        )
+        spcc_layout.addWidget(self.scan_blackframes_checkbox, 3, 0, 1, 2)
+
         # Buttons section
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(
@@ -1395,7 +1435,8 @@ class PreprocessingInterface(QMainWindow):
         seq_name = f"r_{seq_name}"
 
         if drizzle:
-            self.scan_black_frames(seq_name=seq_name)
+            if self.scan_blackframes_checkbox.isChecked():
+                self.scan_black_frames(seq_name=seq_name)
 
         self.seq_stack(
             seq_name=seq_name,
@@ -1693,7 +1734,7 @@ class PreprocessingInterface(QMainWindow):
         is_windows = sys.platform.startswith("win")
 
         # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch or not is_windows:
+        if num_files <= max_files_per_batch: # or not is_windows:
             self.siril.log(
                 f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,

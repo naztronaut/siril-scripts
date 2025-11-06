@@ -80,7 +80,7 @@ from typing import List, Dict
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
 VERSION = "2.0.0"
-BUILD = "b01"
+BUILD = "20251025"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -923,7 +923,7 @@ class PreprocessingInterface(QMainWindow):
 
         # Default filename
         drizzle_str = str(self.drizzle_factor).replace(".", "-")
-        file_name = f"result__drizzle-{drizzle_str}x__{current_datetime}{suffix}"
+        file_name = f"result_drizzle-{drizzle_str}x_{current_datetime}{suffix}"
 
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
@@ -1670,6 +1670,8 @@ class PreprocessingInterface(QMainWindow):
                 # Save individual stack
                 self.load_image(image_name=individual_stack_name)
                 individual_file_name = self.save_image(f"_{session_name}")
+                # Remove any quotes from the filename
+                individual_file_name = individual_file_name.strip("'\"")
                 self.siril.log(f"Saved individual stack as {individual_file_name}", LogColor.GREEN)
                 # Move individual stack to individual_stacks directory
                 src_individual = os.path.join(self.current_working_directory, "process", f"{individual_file_name}{self.fits_extension}")
