@@ -31,6 +31,7 @@ CHANGELOG:
       - Removed feathering. Automatic feathering of panels still work.
       - Fallback to regular registration if plate solving fails (which should accommodate any telescope now) and will not mosaic
       - Added additional filters: background and star count
+      - Removed rbswapped file for Siril 1.4 RC1
 2.0.0 - Major version update:
       - Refactored code to use Qt6 instead of Tkinter for the GUI
       - Exposed extra filter options
@@ -1400,48 +1401,6 @@ class PreprocessingInterface(QMainWindow):
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
 
-    # TODO: Remove function in RC1
-    def swap_red_blue_channels(self, image_path):
-        """Swaps the red and blue channels of a FITS image to mitigate Siril bug for seestars"""
-        try:
-            self.siril.log(
-                "Swapping red and blue channels using Python...", LogColor.BLUE
-            )
-
-            # Read the FITS file
-            with fits.open(image_path) as hdul:
-                data = hdul[0].data.copy()
-                header = hdul[0].header.copy()
-
-                if data.ndim == 3 and data.shape[0] == 3:
-                    # Swap channels: [R, G, B] -> [B, G, R]
-                    data[[0, 2]] = data[[2, 0]]
-
-                    base_name = os.path.splitext(image_path)[0]
-                    output_path = f"{base_name}_RBswapped{self.fits_extension}"
-
-                    hdul_out = fits.PrimaryHDU(data=data, header=header)
-                    hdul_out.writeto(output_path, overwrite=True)
-
-                    self.siril.log(
-                        f"Successfully swapped channels and saved: {output_path}",
-                        LogColor.GREEN,
-                    )
-                    return output_path
-
-                else:
-                    self.siril.log(
-                        f"Image is not a 3-channel color image (shape: {data.shape})",
-                        LogColor.SALMON,
-                    )
-                    return None
-
-        except Exception as e:
-            self.siril.log(
-                f"Color channel swap failed, may not mean anything: {e}",
-                LogColor.SALMON,
-            )
-            return None
 
     def batch(
         self,
@@ -1996,25 +1955,6 @@ class PreprocessingInterface(QMainWindow):
             )  # Load either og or spcc image
 
         # self.clean_up()
-
-        # TODO: Remove in RC1
-        # if bg extraction AND drizzle are checked, we swap the channels to mitigate a siril bug that's only exists for Seestars
-        self.siril.log("Checking if color channel swap is needed...", LogColor.BLUE)
-        self.siril.log(
-            f"Telescope: {telescope}, Drizzle: {self.drizzle_status}, BG Extract: {self.bg_extract_checkbox.isChecked()}",
-            LogColor.BLUE,
-        )
-        if (
-            self.bg_extract_checkbox.isChecked()
-            and self.drizzle_status
-            and telescope in ["ZWO Seestar S50", "ZWO Seestar S30"]
-        ):
-            img_path = file_name + self.fits_extension
-            self.swap_red_blue_channels(image_path=img_path)
-            self.siril.log(
-                "If the colors look off, please load the RBswapped image.",
-                LogColor.SALMON,
-            )
 
         self.siril.log(
             f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
