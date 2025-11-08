@@ -87,7 +87,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.1"
-BUILD = "20251106"
+BUILD = "20251108"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -461,8 +461,8 @@ class PreprocessingInterface(QMainWindow):
             seq_name,
             f"-filter-round={filter_roundness}%",
             f"-filter-wfwhm={filter_fwhm}%",
-            f"-filter-bg={filter_bg}%",
-            f"-filter-star-count={filter_star_count}%",
+            f"-filter-bkg={filter_bg}%",
+            f"-filter-nbstars={filter_star_count}%",
             "-kernel=square",
             "-framing=max",
         ]
@@ -1258,7 +1258,7 @@ class PreprocessingInterface(QMainWindow):
 
         # Connect SPCC checkbox to enable/disable filter and catalog combos
         self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
-        self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
+        # self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
 
         self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
@@ -1338,7 +1338,7 @@ class PreprocessingInterface(QMainWindow):
             do_spcc=self.spcc_checkbox.isChecked(),
             filter=self.filter_combo.currentText(),
             telescope=self.telescope_combo.currentText(),
-            catalog=self.catalog_combo.currentText(),
+            # catalog=self.catalog_combo.currentText(),
             use_darks=self.darks_checkbox.isChecked(),
             use_flats=self.flats_checkbox.isChecked(),
             use_biases=self.biases_checkbox.isChecked(),
@@ -1351,8 +1351,8 @@ class PreprocessingInterface(QMainWindow):
             filter_fwhm=self.fwhm_spinbox.value(),
             filter_bg=self.bg_filter_spinbox.value(),
             filter_star_count=self.star_count_filter_spinbox.value(),
-            feather=self.feather_checkbox.isChecked(),
-            feather_amount=self.feather_amount_spinbox.value(),
+            # feather=self.feather_checkbox.isChecked(),
+            # feather_amount=self.feather_amount_spinbox.value(),
             clean_up_files=self.cleanup_files_checkbox.isChecked(),
         )
 
@@ -1581,7 +1581,7 @@ class PreprocessingInterface(QMainWindow):
         presets = {
             "telescope": self.telescope_combo.currentText(),
             "filter": self.filter_combo.currentText(),
-            "catalog": self.catalog_combo.currentText(), 
+            # "catalog": self.catalog_combo.currentText(), 
             "darks": self.darks_checkbox.isChecked(),
             "flats": self.flats_checkbox.isChecked(),
             "biases": self.biases_checkbox.isChecked(),
@@ -1648,7 +1648,7 @@ class PreprocessingInterface(QMainWindow):
             self.filter_combo.setCurrentText(
                 presets.get("filter", "No Filter (Broadband)")
             )
-            self.catalog_combo.setCurrentText(presets.get("catalog", "localgaia"))
+            # self.catalog_combo.setCurrentText(presets.get("catalog", "localgaia"))
             self.darks_checkbox.setChecked(presets.get("darks", False))
             self.flats_checkbox.setChecked(presets.get("flats", False))
             self.biases_checkbox.setChecked(presets.get("biases", False))
@@ -1741,17 +1741,29 @@ class PreprocessingInterface(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if answer == QMessageBox.StandardButton.Yes:
-                if os.path.exists("sessions"):
-                    shutil.rmtree("sessions")
-                    self.siril.log("Cleaned up old sessions directories", LogColor.BLUE)
-                if os.path.exists("process"):
-                    shutil.rmtree("process")
-                    self.siril.log("Cleaned up old process directory", LogColor.BLUE)
-                if os.path.exists("final_stack"):
-                    shutil.rmtree("final_stack")
+                try:
+                    if os.path.exists("sessions"):
+                        shutil.rmtree("sessions")
+                        self.siril.log("Cleaned up old sessions directories", LogColor.BLUE)
+                    if os.path.exists("process"):
+                        shutil.rmtree("process")
+                        self.siril.log("Cleaned up old process directory", LogColor.BLUE)
+                    if os.path.exists("final_stack"):
+                        shutil.rmtree("final_stack")
+                        self.siril.log(
+                            "Cleaned up old final_stack directory", LogColor.BLUE
+                        )
+                except Exception as e:
                     self.siril.log(
-                        "Cleaned up old final_stack directory", LogColor.BLUE
+                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.",
+                        LogColor.RED,
                     )
+                    QMessageBox.warning(
+                        self,
+                        "Error",
+                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.\nPlease remove them manually and try again.\n\n",
+                    )
+                    return
             else:
                 self.siril.log(
                     "User chose to preserve old processing files. Stopping script.",
