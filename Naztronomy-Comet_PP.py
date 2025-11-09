@@ -40,7 +40,7 @@ import shutil
 import sirilpy as s
 from datetime import datetime
 import json
-import tifffile
+
 
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
@@ -67,7 +67,7 @@ from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 from astropy.visualization import ZScaleInterval
-from PIL import Image
+# from PIL import Image
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -733,7 +733,7 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             if sequence:
-                self.siril.cmd("seqstarnet", seq_name, "-stretch")
+                self.siril.cmd("seqstarnet", seq_name, "-stretch", "-nostarmask")
             else:
                 self.siril.cmd("starnet", "-stretch")
         except (s.DataError, s.CommandError, s.SirilError) as e:
@@ -1325,8 +1325,8 @@ class PreprocessingInterface(QMainWindow):
 
 
         if self.remove_stars_checkbox.isChecked():            
-            # self.remove_stars(sequence=True, seq_name=seq_name)
-            self.seq_starnet(seq_name=seq_name)
+            self.remove_stars(sequence=True, seq_name=seq_name)
+            # self.seq_starnet(seq_name=seq_name)
             # seq_name = f"starless_{seq_name}"
 
         # Still stack starless file
