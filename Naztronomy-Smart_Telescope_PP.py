@@ -1094,12 +1094,17 @@ class PreprocessingInterface(QMainWindow):
 
         # Add spinboxes for roundness and FWHM filters
 
+        filter_label = QLabel("Filters:")
+        filter_label.setFont(title_font)
+        filter_label.setToolTip("Options for filtering images before stacking.")
+        preprocessing_layout.addWidget(filter_label, 4, 0)
+
         filters_checkbox_tooltip = (
             "Options for filtering images based on various criteria."
         )
-        self.filters_checkbox = QCheckBox("Filters")
+        self.filters_checkbox = QCheckBox("Enable")
         self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
-        preprocessing_layout.addWidget(self.filters_checkbox, 4, 0)
+        preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
 
         # Roundness Filter
         roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower percentage keeps only frames with more circular stars. Higher percentages allow more variation in star shapes."
