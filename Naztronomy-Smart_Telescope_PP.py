@@ -50,6 +50,8 @@ CHANGELOG:
 1.0.0 - initial release
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 import os
 import sys
 import math
@@ -83,11 +85,12 @@ from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
 
+
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.1"
-BUILD = "20251108"
+BUILD = "20251111"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -479,6 +482,40 @@ class PreprocessingInterface(QMainWindow):
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
 
+    def process_frame(self, idx, filename, seq_name, folder, threshold, crop_fraction):
+        """Process a single frame and return results"""
+        if not filename.startswith(seq_name) or not filename.lower().endswith(
+            self.fits_extension
+        ):
+            return None
+            
+        filepath = os.path.join(folder, filename)
+        try:
+            with fits.open(filepath) as hdul:
+                data = hdul[0].data
+                if data is not None and data.ndim >= 2:
+                    dynamic_threshold = threshold
+                    data_max = np.max(data)
+                    if (
+                        np.issubdtype(data.dtype, np.floating)
+                        or data_max <= 10.0
+                    ):
+                        dynamic_threshold = 0.0001
+
+                    is_black, median_val = self.is_black_frame(
+                        data, dynamic_threshold, crop_fraction
+                    )
+                    return (idx, filename, median_val, is_black)
+                else:
+                    self.siril.log(
+                        f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
+                        LogColor.SALMON,
+                    )
+        except Exception as e:
+            self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
+            return None
+        
+        
     def is_black_frame(self, data, threshold=10, crop_fraction=0.4):
         if data.ndim > 2:
             data = data[0]
@@ -502,52 +539,34 @@ class PreprocessingInterface(QMainWindow):
     def scan_black_frames(
         self, folder="process", threshold=30, crop_fraction=0.4, seq_name=None
     ):
+        
         black_frames = []
         black_indices = []
         all_frames_info = []
+        lock = threading.Lock()
+        
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
         self.siril.log(
             "Note: This process is running in the background and may take a while depending on your system and drizzle factor.",
             LogColor.BLUE,
         )
 
-        for idx, filename in enumerate(sorted(os.listdir(folder))):
-            if filename.startswith(seq_name) and filename.lower().endswith(
-                self.fits_extension
-            ):
-                filepath = os.path.join(folder, filename)
-                try:
-                    with fits.open(filepath) as hdul:
-                        data = hdul[0].data
-                        if data is not None and data.ndim >= 2:
-                            dynamic_threshold = threshold
-                            data_max = np.max(data)
-                            if (
-                                np.issubdtype(data.dtype, np.floating)
-                                or data_max <= 10.0
-                            ):
-                                dynamic_threshold = 0.0001
-
-                            is_black, median_val = self.is_black_frame(
-                                data, dynamic_threshold, crop_fraction
-                            )
-                            all_frames_info.append((filename, median_val))
-
-                            # Log for debugging
-                            # print(
-                            #     f"{filename} | shape: {data.shape} | dtype: {data.dtype} | min: {np.min(data)} | max: {data_max} | median: {median_val} | threshold used: {dynamic_threshold}"
-                            # )
-
-                            if is_black:
-                                black_frames.append(filename)
-                                black_indices.append(len(all_frames_info))
-                        else:
-                            self.siril.log(
-                                f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
-                                LogColor.SALMON,
-                            )
-                except Exception as e:
-                    self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
+        # Use ThreadPoolExecutor for multi-threaded processing
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(self.process_frame, idx, filename, seq_name, folder, threshold, crop_fraction): idx
+                for idx, filename in enumerate(sorted(os.listdir(folder)))
+            }
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    idx, filename, median_val, is_black = result
+                    with lock:
+                        all_frames_info.append((filename, median_val))
+                        if is_black:
+                            black_frames.append(filename)
+                            black_indices.append(len(all_frames_info))
 
         self.siril.log(f"Following files are black: {black_frames}", LogColor.SALMON)
         self.siril.log(
@@ -1494,9 +1513,12 @@ class PreprocessingInterface(QMainWindow):
             )  # Clean up bkg_ files or pp_ if flat calibrated, otherwise lights_
         seq_name = f"r_{seq_name}"
 
-        if drizzle:
-            if self.scan_blackframes_checkbox.isChecked():
-                self.scan_black_frames(seq_name=seq_name)
+        try: 
+            if drizzle:
+                self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Data error occurred during black frame scan: {e}", LogColor.RED)
+
 
         self.seq_stack(
             seq_name=seq_name,
@@ -1532,53 +1554,6 @@ class PreprocessingInterface(QMainWindow):
 
         return file_name
 
-    def unselect_bad_fits(self, seq_name, folder="process"):
-        """
-        Checks all FITS files in the given folder with the given prefix
-        for integrity and unselects any bad ones in the current sequence
-        in Siril.
-
-        Parameters
-        ----------
-        seq_name : str
-            The prefix of the sequence to check.
-        folder : str, optional
-            The folder to check for FITS files. Defaults to "process".
-
-        Returns
-        -------
-        None
-        """
-        self.siril.log("Checking for bad FITS files...", LogColor.BLUE)
-        bad_fits = []
-        all_files = sorted(
-            [
-                f
-                for f in os.listdir(folder)
-                if f.startswith(seq_name) and f.lower().endswith(self.fits_extension)
-            ]
-        )
-        for idx, filename in enumerate(all_files):
-            file_path = os.path.join(folder, filename)
-            try:
-                with fits.open(file_path) as hdul:
-                    _ = hdul[0].data  # Try to access data
-
-            except Exception as e:
-                self.siril.log(f"Bad FITS file: {filename} — {e}", LogColor.SALMON)
-                bad_fits.append(idx + 1)  # Siril indices start at 1
-
-        if bad_fits:
-            self.siril.log(f"Unselecting bad frames: {bad_fits}", LogColor.SALMON)
-            for index in bad_fits:
-                try:
-                    self.siril.cmd("unselect", seq_name, index, index)
-                except Exception as e:
-                    self.siril.log(
-                        f"Failed to unselect index {index}: {e}", LogColor.RED
-                    )
-        else:
-            self.siril.log("No bad FITS files found.", LogColor.GREEN)
 
     # Save and Load Presets code
     def save_presets(self):
@@ -1725,7 +1700,7 @@ class PreprocessingInterface(QMainWindow):
             f"filter_star_count={filter_star_count}\n"
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
-            f"feather_amount={feather_amount}\n"
+            f"feather_amount={feather_amount} (unused)\n"
             f"clean_up_files={clean_up_files}\n"
             f"build={VERSION}-{BUILD}",
             LogColor.BLUE,
