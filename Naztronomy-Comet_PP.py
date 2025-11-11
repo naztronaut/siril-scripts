@@ -1345,12 +1345,12 @@ class PreprocessingInterface(QMainWindow):
 
             try: 
                 shutil.move(
-                    os.path.join(self.siril.get_siril_wd(), "starmask_lights.fits"),
-                    os.path.join(os.path.dirname(self.siril.get_siril_wd()), "stars.fits")
+                    os.path.join(self.siril.get_siril_wd(), f"starmask_lights{self.fits_extension}"),
+                    os.path.join(os.path.dirname(self.siril.get_siril_wd()), f"stars{self.fits_extension}")
                 )
-                self.siril.log("Moved stars.fits to working directory", LogColor.GREEN)
+                self.siril.log(f"Moved stars{self.fits_extension} to working directory", LogColor.GREEN)
             except Exception as e:
-                self.siril.log(f"Failed to move stars.fits: {e}", LogColor.SALMON)
+                self.siril.log(f"Failed to move stars{self.fits_extension}: {e}", LogColor.SALMON)
 
         if clean_up_files:
             # Don't clean up registered files because we need them for comet stacking
