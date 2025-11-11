@@ -2,8 +2,9 @@
 (c) Nazmus Nasir 2025
 SPDX-License-Identifier: GPL-3.0-or-later
 
-Smart Telescope Preprocessing script
-Version: 2.0.0
+Naztronomy - Comet Preprocessing script
+Version: 1.0.0
+Git branch: v.2.1.0_comet_stacking
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
