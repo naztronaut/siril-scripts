@@ -76,6 +76,8 @@ from astropy.io import fits
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
@@ -658,6 +660,39 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
+    
+    def process_frame(self, idx, filename, seq_name, folder, threshold, crop_fraction):
+        """Process a single frame and return results"""
+        if not filename.startswith(seq_name) or not filename.lower().endswith(
+            self.fits_extension
+        ):
+            return None
+            
+        filepath = os.path.join(folder, filename)
+        try:
+            with fits.open(filepath) as hdul:
+                data = hdul[0].data
+                if data is not None and data.ndim >= 2:
+                    dynamic_threshold = threshold
+                    data_max = np.max(data)
+                    if (
+                        np.issubdtype(data.dtype, np.floating)
+                        or data_max <= 10.0
+                    ):
+                        dynamic_threshold = 0.0001
+
+                    is_black, median_val = self.is_black_frame(
+                        data, dynamic_threshold, crop_fraction
+                    )
+                    return (idx, filename, median_val, is_black)
+                else:
+                    self.siril.log(
+                        f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
+                        LogColor.SALMON,
+                    )
+        except Exception as e:
+            self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
+            return None
 
     def is_black_frame(self, data, threshold=10, crop_fraction=0.4):
         if data.ndim > 2:
@@ -682,52 +717,34 @@ class PreprocessingInterface(QMainWindow):
     def scan_black_frames(
         self, folder="process", threshold=30, crop_fraction=0.4, seq_name=None
     ):
+        
         black_frames = []
         black_indices = []
         all_frames_info = []
+        lock = threading.Lock()
+        
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
         self.siril.log(
             "Note: This process is running in the background and may take a while depending on your system and drizzle factor.",
             LogColor.BLUE,
         )
 
-        for idx, filename in enumerate(sorted(os.listdir(folder))):
-            if filename.startswith(seq_name) and filename.lower().endswith(
-                self.fits_extension
-            ):
-                filepath = os.path.join(folder, filename)
-                try:
-                    with fits.open(filepath) as hdul:
-                        data = hdul[0].data
-                        if data is not None and data.ndim >= 2:
-                            dynamic_threshold = threshold
-                            data_max = np.max(data)
-                            if (
-                                np.issubdtype(data.dtype, np.floating)
-                                or data_max <= 10.0
-                            ):
-                                dynamic_threshold = 0.0001
-
-                            is_black, median_val = self.is_black_frame(
-                                data, dynamic_threshold, crop_fraction
-                            )
-                            all_frames_info.append((filename, median_val))
-
-                            # Log for debugging
-                            # print(
-                            #     f"{filename} | shape: {data.shape} | dtype: {data.dtype} | min: {np.min(data)} | max: {data_max} | median: {median_val} | threshold used: {dynamic_threshold}"
-                            # )
-
-                            if is_black:
-                                black_frames.append(filename)
-                                black_indices.append(len(all_frames_info))
-                        else:
-                            self.siril.log(
-                                f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
-                                LogColor.SALMON,
-                            )
-                except Exception as e:
-                    self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
+        # Use ThreadPoolExecutor for multi-threaded processing
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(self.process_frame, idx, filename, seq_name, folder, threshold, crop_fraction): idx
+                for idx, filename in enumerate(sorted(os.listdir(folder)))
+            }
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    idx, filename, median_val, is_black = result
+                    with lock:
+                        all_frames_info.append((filename, median_val))
+                        if is_black:
+                            black_frames.append(filename)
+                            black_indices.append(len(all_frames_info))
 
         self.siril.log(f"Following files are black: {black_frames}", LogColor.SALMON)
         self.siril.log(
@@ -735,6 +752,7 @@ class PreprocessingInterface(QMainWindow):
         )
         for index in black_indices:
             self.siril.cmd("unselect", seq_name, index, index)
+
 
     def calibration_stack(self, seq_name):
         # not in /process dir here
@@ -1248,6 +1266,13 @@ class PreprocessingInterface(QMainWindow):
         self.process_separately_check.setEnabled(len(self.sessions) > 1)
         stack_layout.addWidget(self.process_separately_check)
 
+        create_final_stack_tooltip = "Create a final stack by combining all preprocessed lights."
+
+        self.create_final_stack_check = QCheckBox("Create final stack")
+        self.create_final_stack_check.setToolTip(create_final_stack_tooltip)
+        self.create_final_stack_check.setChecked(True)
+        stack_layout.addWidget(self.create_final_stack_check)
+
         mono_checkbox_tooltip = "Experimental: Process images as monochrome (no debayering). Use only for monochrome cameras or special processing needs."
 
         self.mono_check = QCheckBox("Mono (Experimental)")
@@ -1364,6 +1389,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_wfwhm": round(self.fwhm_spinbox.value(), 1),
             "cleanup": self.cleanup_check.isChecked(),
             "process_separately": self.process_separately_check.isChecked(),
+            "create_final_stack": self.create_final_stack_check.isChecked(),
             "mono": self.mono_check.isChecked(),
             # Add session information
             "sessions": [],
@@ -1435,6 +1461,9 @@ class PreprocessingInterface(QMainWindow):
                 self.cleanup_check.setChecked(presets.get("cleanup", False))
                 self.process_separately_check.setChecked(
                     presets.get("process_separately", False)
+                )
+                self.create_final_stack_check.setChecked(
+                    presets.get("create_final_stack", True)
                 )
                 self.mono_check.setChecked(presets.get("mono", False))
 
@@ -1683,6 +1712,9 @@ class PreprocessingInterface(QMainWindow):
                 else:
                     self.siril.log(f"Source file not found: {src_individual}", LogColor.RED)
 
+                self.siril.cmd("close")
+                time.sleep(3)  # Small delay to ensure Siril processes the command
+
 
             # Go back to the previous directory
             self.siril.cmd("cd", "../../..")
@@ -1694,6 +1726,9 @@ class PreprocessingInterface(QMainWindow):
                         self.current_working_directory, "sessions", session_name
                     )
                 )
+
+            self.siril.cmd("close")
+            time.sleep(3)  # Small delay to ensure Siril processes the command
         
        
         if self.mono_check.isChecked():
@@ -1782,7 +1817,7 @@ class PreprocessingInterface(QMainWindow):
 
             
 
-        if not self.mono_check.isChecked():
+        if not self.mono_check.isChecked() and self.create_final_stack_check.isChecked():
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
             self.current_working_directory = self.siril.get_siril_wd()
             # Create a new sequence for each session
@@ -1799,13 +1834,16 @@ class PreprocessingInterface(QMainWindow):
 
                 # Merge all session files
                 seq_name = "pp_lights_merged_"
-                if session_files:
-                    self.siril.cmd("merge", *session_files, seq_name)
-                    self.siril.log(
-                        f"Merged session files: {', '.join(session_files)}", LogColor.GREEN
-                    )
-                else:
-                    self.siril.log("No session files found to merge", LogColor.SALMON)
+                try: 
+                    if session_files:
+                        self.siril.cmd("merge", *session_files, seq_name)
+                        self.siril.log(
+                            f"Merged session files: {', '.join(session_files)}", LogColor.GREEN
+                        )
+                    else:
+                        self.siril.log("No session files found to merge", LogColor.SALMON)
+                except (s.DataError, s.CommandError, s.SirilError) as e:
+                    self.siril.log(f"Could not merge sequences. Please see error and stack the individual sessions manually:\n {e}", LogColor.RED)
             else:
                 seq_name = "session1_pp_lights_"
 
@@ -1837,8 +1875,11 @@ class PreprocessingInterface(QMainWindow):
             seq_name = f"r_{seq_name}"
 
             # Scans for black frames due to existing Siril bug.
-            if drizzle:
-                self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
+            try: 
+                if drizzle:
+                    self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"Data error occurred during black frame scan: {e}", LogColor.RED)
 
             # Stacks the sequence with rejection
             stack_name = "merge_stacked" if len(session_to_process) > 1 else "final_stacked"
@@ -1855,6 +1896,8 @@ class PreprocessingInterface(QMainWindow):
             self.current_working_directory = self.siril.get_siril_wd()
             file_name = self.save_image("_og")
             self.load_image(image_name=file_name)
+        else:
+            self.siril.log("Final stack creation skipped", LogColor.BLUE)
         # Delete the blank sessions dir
         if clean_up_files:
             shutil.rmtree(os.path.join(self.current_working_directory, "sessions"))
