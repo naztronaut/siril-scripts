@@ -78,7 +78,7 @@ import subprocess
 
 APP_NAME = "Naztronomy - Comet Preprocessor"
 VERSION = "1.0.0"
-BUILD = "20251102"
+BUILD = "20251113"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -306,11 +306,12 @@ class PreprocessingInterface(QMainWindow):
         cmd_args = [
             "seqapplyreg",
             seq_name,
-            f"-filter-round={filter_roundness}k",
-            f"-filter-wfwhm={filter_fwhm}k",
             "-kernel=square",
             "-framing=current",
         ]
+        if self.filters_checkbox.isChecked():
+            cmd_args.append(f"-filter-round={filter_roundness}k")
+            cmd_args.append(f"-filter-wfwhm={filter_fwhm}k")
 
         self.siril.log("Command arguments: " + " ".join(cmd_args), LogColor.BLUE)
 
