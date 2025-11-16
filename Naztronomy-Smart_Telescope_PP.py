@@ -26,12 +26,15 @@ The following subdirectories are optional:
 CHANGELOG:
 
 2.0.1 - Allowing all os to batch
+      - Batch min size set to 50. Batch Max Size set based on OS: Windows 2000, Linux/Mac 25000
       - Optional Black Frames Check
       - Automatic Telescope Detection from FITS Header
       - Removed feathering. Automatic feathering of panels still work.
       - Fallback to regular registration if plate solving fails (which should accommodate any telescope now) and will not mosaic
       - Added additional filters: background and star count
+      - Filters used only if checkbox is checked without default fallback
       - Removed rbswapped file for Siril 1.4 RC1
+      - Full Celestron Origin Support - latest version of Celestron firmware only
 2.0.0 - Major version update:
       - Refactored code to use Qt6 instead of Tkinter for the GUI
       - Exposed extra filter options
@@ -90,7 +93,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.1"
-BUILD = "20251111"
+BUILD = "20251115"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -462,13 +465,18 @@ class PreprocessingInterface(QMainWindow):
         cmd_args = [
             "seqapplyreg",
             seq_name,
-            f"-filter-round={filter_roundness}%",
-            f"-filter-wfwhm={filter_fwhm}%",
-            f"-filter-bkg={filter_bg}%",
-            f"-filter-nbstars={filter_star_count}%",
             "-kernel=square",
             "-framing=max",
         ]
+
+        if self.filters_checkbox.isChecked():
+            cmd_args.extend([
+                f"-filter-round={filter_roundness}%",
+                f"-filter-wfwhm={filter_fwhm}%",
+                f"-filter-bkg={filter_bg}%",
+                f"-filter-nbstars={filter_star_count}%"
+            ])
+        
         if self.drizzle_status:
             cmd_args.extend(
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
@@ -704,6 +712,7 @@ class PreprocessingInterface(QMainWindow):
             " rej 3 3" if rejection else " rej none",
             "-norm=addscale",
             "-output_norm",
+            "-overlap_norm",
             "-rgb_equal",
             "-maximize",
             "-filter-included",
@@ -910,11 +919,12 @@ class PreprocessingInterface(QMainWindow):
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
             "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
             "3. If only one calibration frame is present, it will be treated as a master frame.\n"
-            f"4. If on Windows and you have more than the default {UI_DEFAULTS['max_files_per_batch']} files, this script will automatically split them into batches. You can change the batching count from 100 to 2000.\n"
-            "5. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
-            "6. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
-            "7. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "8. When asking for help, please have the logs handy."
+            "4. Local Gaia catalog is required for mosaics!\n"
+            f"5. If on Windows and you have more than the default {UI_DEFAULTS['max_files_per_batch']} files, this script will automatically split them into batches. You can change the batching count from 100 to 2000.\n"
+            "6. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
+            "7. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
+            "8. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
+            "9. When asking for help, please have the logs handy."
         )
 
         # Show help in Qt message box
@@ -1043,12 +1053,12 @@ class PreprocessingInterface(QMainWindow):
         if sys.platform.startswith('win'):
             max_batch = 2000
         elif sys.platform.startswith('linux'):
-            max_batch = 10000
+            max_batch = 25000
         elif sys.platform.startswith('darwin'):
             max_batch = 25000
         else:
             max_batch = 2000  # Default to Windows limit for unknown OS
-        self.batch_size_spinbox.setRange(100, max_batch)  # clamps input based on OS
+        self.batch_size_spinbox.setRange(50, max_batch)  # clamps input based on OS
         self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
         self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
         self.batch_size_spinbox.setMinimumWidth(120)
@@ -1515,7 +1525,7 @@ class PreprocessingInterface(QMainWindow):
 
         try: 
             if drizzle:
-                self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
+                self.scan_black_frames(seq_name=seq_name)
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Data error occurred during black frame scan: {e}", LogColor.RED)
 
@@ -1912,14 +1922,15 @@ class PreprocessingInterface(QMainWindow):
                 seq_name=registered_final_stack_seq_name,
                 feather=True,
                 rejection=False,
-                feather_amount=60,
+                feather_amount=100,
                 output_name="final_result",
             )
             self.load_image(image_name="final_result")
 
             # cleanup final_stack directory
             # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
-            self.clean_up(prefix=registered_final_stack_seq_name)
+            if clean_up_files:
+                self.clean_up(prefix=registered_final_stack_seq_name)
 
             # Go back to working dir
             self.siril.cmd("cd", "../")
