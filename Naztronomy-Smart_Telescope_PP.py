@@ -701,7 +701,7 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
 
     def seq_stack(
-        self, seq_name, feather, feather_amount, rejection=False, output_name=None
+        self, seq_name, feather, feather_amount, rejection=False, output_name=None, overlap_norm=False
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -712,7 +712,7 @@ class PreprocessingInterface(QMainWindow):
             " rej 3 3" if rejection else " rej none",
             "-norm=addscale",
             "-output_norm",
-            "-overlap_norm",
+            "-overlap_norm" if overlap_norm else "",
             "-rgb_equal",
             "-maximize",
             "-filter-included",
@@ -1536,6 +1536,7 @@ class PreprocessingInterface(QMainWindow):
             feather_amount=feather_amount,
             rejection=True,
             output_name=output_name,
+            overlap_norm=False
         )
 
         if clean_up_files:
@@ -1924,6 +1925,7 @@ class PreprocessingInterface(QMainWindow):
                 rejection=False,
                 feather_amount=100,
                 output_name="final_result",
+                overlap_norm=True
             )
             self.load_image(image_name="final_result")
 
