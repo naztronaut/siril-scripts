@@ -27,7 +27,9 @@ allows you to choose files from any folder and drive and they will all be consol
 
 """
 CHANGELOG:
-
+2.0.1 - Threading on Black Frames check
+      - Final Stack Checkbox
+      - Delay between stacks to reduce IO errors
 2.0.0 - pyqt6 support
       - Save/Load presets
       - Monochrome support (experimental)
@@ -906,6 +908,7 @@ class PreprocessingInterface(QMainWindow):
             " rej 3 3" if rejection else " rej none",
             "-norm=addscale",
             "-output_norm",
+            "-overlap_norm",
             "-rgb_equal",
             "-maximize",
             "-filter-included",
