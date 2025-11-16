@@ -311,30 +311,37 @@ class PreprocessingInterface(QMainWindow):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
         # Mapping from FITS header values to UI telescope names
         telescope_map = {
-            'Seestar S30': 'ZWO Seestar S30',
-            'Seestar S50': 'ZWO Seestar S50',
-            'DWARFII': 'Dwarf 2',
-            'DWARFIII': 'Dwarf 3',
-            'Origin': 'Celestron Origin'
+            "Seestar S30": "ZWO Seestar S30",
+            "Seestar S50": "ZWO Seestar S50",
+            "DWARFII": "Dwarf 2",
+            "DWARFIII": "Dwarf 3",
+            "Origin": "Celestron Origin",
         }
-        
+
         try:
             lights_dir = os.path.join(self.current_working_directory, "lights")
-            fits_files = [f for f in os.listdir(lights_dir) if f.lower().endswith(self.fits_extension)]
-            
+            fits_files = [
+                f
+                for f in os.listdir(lights_dir)
+                if f.lower().endswith(self.fits_extension)
+            ]
+
             if not fits_files:
                 return
-                
+
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
                 header = hdul[0].header
-                telescope = header.get('TELESCOP', 'Seestar S30')
-                
-                mapped_telescope = telescope_map.get(telescope, 'ZWO Seestar S30')
+                telescope = header.get("TELESCOP", "Seestar S30")
+
+                mapped_telescope = telescope_map.get(telescope, "ZWO Seestar S30")
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
-                self.siril.log(f"Set telescope to {mapped_telescope} from FITS header", LogColor.BLUE)
-                
+                self.siril.log(
+                    f"Set telescope to {mapped_telescope} from FITS header",
+                    LogColor.BLUE,
+                )
+
         except Exception as e:
             self.siril.log(f"Error reading telescope from FITS: {e}", LogColor.SALMON)
 
@@ -428,7 +435,6 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
             return False
 
-    
     # Regular registration if plate solve not available - No Mosaics
     def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
         """Registers the sequence using the 'register' command."""
@@ -438,7 +444,8 @@ class PreprocessingInterface(QMainWindow):
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
             )
         self.siril.log(
-            "Regular Registration (Global Star Alignment) Done: " + " ".join(cmd_args), LogColor.BLUE
+            "Regular Registration (Global Star Alignment) Done: " + " ".join(cmd_args),
+            LogColor.BLUE,
         )
 
         try:
@@ -447,7 +454,6 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
-
 
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
@@ -459,7 +465,14 @@ class PreprocessingInterface(QMainWindow):
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
 
     def seq_apply_reg(
-        self, seq_name, drizzle_amount, pixel_fraction, filter_roundness, filter_fwhm, filter_bg, filter_star_count
+        self,
+        seq_name,
+        drizzle_amount,
+        pixel_fraction,
+        filter_roundness,
+        filter_fwhm,
+        filter_bg,
+        filter_star_count,
     ):
         """Apply Existing Registration to the sequence."""
         cmd_args = [
@@ -470,13 +483,15 @@ class PreprocessingInterface(QMainWindow):
         ]
 
         if self.filters_checkbox.isChecked():
-            cmd_args.extend([
-                f"-filter-round={filter_roundness}%",
-                f"-filter-wfwhm={filter_fwhm}%",
-                f"-filter-bkg={filter_bg}%",
-                f"-filter-nbstars={filter_star_count}%"
-            ])
-        
+            cmd_args.extend(
+                [
+                    f"-filter-round={filter_roundness}%",
+                    f"-filter-wfwhm={filter_fwhm}%",
+                    f"-filter-bkg={filter_bg}%",
+                    f"-filter-nbstars={filter_star_count}%",
+                ]
+            )
+
         if self.drizzle_status:
             cmd_args.extend(
                 ["-drizzle", f"-scale={drizzle_amount}", f"-pixfrac={pixel_fraction}"]
@@ -496,7 +511,7 @@ class PreprocessingInterface(QMainWindow):
             self.fits_extension
         ):
             return None
-            
+
         filepath = os.path.join(folder, filename)
         try:
             with fits.open(filepath) as hdul:
@@ -504,10 +519,7 @@ class PreprocessingInterface(QMainWindow):
                 if data is not None and data.ndim >= 2:
                     dynamic_threshold = threshold
                     data_max = np.max(data)
-                    if (
-                        np.issubdtype(data.dtype, np.floating)
-                        or data_max <= 10.0
-                    ):
+                    if np.issubdtype(data.dtype, np.floating) or data_max <= 10.0:
                         dynamic_threshold = 0.0001
 
                     is_black, median_val = self.is_black_frame(
@@ -522,8 +534,7 @@ class PreprocessingInterface(QMainWindow):
         except Exception as e:
             self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
             return None
-        
-        
+
     def is_black_frame(self, data, threshold=10, crop_fraction=0.4):
         if data.ndim > 2:
             data = data[0]
@@ -547,12 +558,12 @@ class PreprocessingInterface(QMainWindow):
     def scan_black_frames(
         self, folder="process", threshold=30, crop_fraction=0.4, seq_name=None
     ):
-        
+
         black_frames = []
         black_indices = []
         all_frames_info = []
         lock = threading.Lock()
-        
+
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
         self.siril.log(
             "Note: This process is running in the background and may take a while depending on your system and drizzle factor.",
@@ -562,10 +573,18 @@ class PreprocessingInterface(QMainWindow):
         # Use ThreadPoolExecutor for multi-threaded processing
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
-                executor.submit(self.process_frame, idx, filename, seq_name, folder, threshold, crop_fraction): idx
+                executor.submit(
+                    self.process_frame,
+                    idx,
+                    filename,
+                    seq_name,
+                    folder,
+                    threshold,
+                    crop_fraction,
+                ): idx
                 for idx, filename in enumerate(sorted(os.listdir(folder)))
             }
-            
+
             for future in as_completed(futures):
                 result = future.result()
                 if result:
@@ -701,7 +720,13 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
 
     def seq_stack(
-        self, seq_name, feather, feather_amount, rejection=False, output_name=None, overlap_norm=False
+        self,
+        seq_name,
+        feather,
+        feather_amount,
+        rejection=False,
+        output_name=None,
+        overlap_norm=False,
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -959,10 +984,12 @@ class PreprocessingInterface(QMainWindow):
             gaia_status_label = QLabel("Local Gaia Status: ✓ Available")
             gaia_status_label.setStyleSheet("color: green;")
         else:
-            gaia_status_label = QLabel("Local Gaia Status: ✗ Not available, mosaics will not be generated.")
+            gaia_status_label = QLabel(
+                "Local Gaia Status: ✗ Not available, mosaics will not be generated."
+            )
             gaia_status_label.setStyleSheet("color: red;")
         main_layout.addWidget(gaia_status_label)
-        
+
         # Telescope section
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
@@ -1050,11 +1077,11 @@ class PreprocessingInterface(QMainWindow):
 
         self.batch_size_spinbox = QSpinBox()
         # Set max batch size based on OS
-        if sys.platform.startswith('win'):
+        if sys.platform.startswith("win"):
             max_batch = 2000
-        elif sys.platform.startswith('linux'):
+        elif sys.platform.startswith("linux"):
             max_batch = 25000
-        elif sys.platform.startswith('darwin'):
+        elif sys.platform.startswith("darwin"):
             max_batch = 25000
         else:
             max_batch = 2000  # Default to Windows limit for unknown OS
@@ -1294,10 +1321,9 @@ class PreprocessingInterface(QMainWindow):
         self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
         # self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
-
         self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
         self.scan_blackframes_checkbox.setToolTip(
-            "Enable this option to automatically scan for black frames in your image sequence ONLY If you see black frames as a result of drizzle." \
+            "Enable this option to automatically scan for black frames in your image sequence ONLY If you see black frames as a result of drizzle."
             "\nWhen the bug is confirmed fixed, this option and check will be removed."
         )
         spcc_layout.addWidget(self.scan_blackframes_checkbox, 3, 0, 1, 2)
@@ -1435,7 +1461,6 @@ class PreprocessingInterface(QMainWindow):
         except Exception as e:
             self.siril.log(f"Error reading FITS header: {e}", LogColor.RED)
 
-
     def batch(
         self,
         output_name: str,
@@ -1498,14 +1523,28 @@ class PreprocessingInterface(QMainWindow):
             self.extract_coords_from_fits(prefix=seq_name)
 
         # Only do plate solve if local gaia is available!
-        if not self.gaia_catalogue_available: 
-            self.siril.log("Local Gaia catalogue not available, skipping plate solving. Mosaics will NOT be automatically created.", LogColor.SALMON)
-            self.regular_register_seq(seq_name=seq_name, drizzle_amount=drizzle_amount, pixel_fraction=pixel_fraction)
+        if not self.gaia_catalogue_available:
+            self.siril.log(
+                "Local Gaia catalogue not available, skipping plate solving. Mosaics will NOT be automatically created.",
+                LogColor.SALMON,
+            )
+            self.regular_register_seq(
+                seq_name=seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+            )
         else:
             individual_plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
             if not individual_plate_solve_status:
-                self.siril.log("Plate solving failed, falling back to regular registration.", LogColor.SALMON)
-                self.regular_register_seq(seq_name=seq_name, drizzle_amount=drizzle_amount, pixel_fraction=pixel_fraction)
+                self.siril.log(
+                    "Plate solving failed, falling back to regular registration.",
+                    LogColor.SALMON,
+                )
+                self.regular_register_seq(
+                    seq_name=seq_name,
+                    drizzle_amount=drizzle_amount,
+                    pixel_fraction=pixel_fraction,
+                )
 
         # seq_name stays the same after plate solve
         self.seq_apply_reg(
@@ -1523,12 +1562,13 @@ class PreprocessingInterface(QMainWindow):
             )  # Clean up bkg_ files or pp_ if flat calibrated, otherwise lights_
         seq_name = f"r_{seq_name}"
 
-        try: 
+        try:
             if drizzle:
                 self.scan_black_frames(seq_name=seq_name)
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"Data error occurred during black frame scan: {e}", LogColor.RED)
-
+            self.siril.log(
+                f"Data error occurred during black frame scan: {e}", LogColor.RED
+            )
 
         self.seq_stack(
             seq_name=seq_name,
@@ -1536,7 +1576,7 @@ class PreprocessingInterface(QMainWindow):
             feather_amount=feather_amount,
             rejection=True,
             output_name=output_name,
-            overlap_norm=False
+            overlap_norm=False,
         )
 
         if clean_up_files:
@@ -1565,14 +1605,13 @@ class PreprocessingInterface(QMainWindow):
 
         return file_name
 
-
     # Save and Load Presets code
     def save_presets(self):
         """Save current UI settings to a JSON file in the working directory."""
         presets = {
             "telescope": self.telescope_combo.currentText(),
             "filter": self.filter_combo.currentText(),
-            # "catalog": self.catalog_combo.currentText(), 
+            # "catalog": self.catalog_combo.currentText(),
             "darks": self.darks_checkbox.isChecked(),
             "flats": self.flats_checkbox.isChecked(),
             "biases": self.biases_checkbox.isChecked(),
@@ -1583,7 +1622,7 @@ class PreprocessingInterface(QMainWindow):
             "drizzle_amount": self.drizzle_amount_spinbox.value(),
             "pixel_fraction": self.pixel_fraction_spinbox.value(),
             "filters": self.filters_checkbox.isChecked(),
-            "roundness": self.roundness_spinbox.value(), 
+            "roundness": self.roundness_spinbox.value(),
             "fwhm": self.fwhm_spinbox.value(),
             "star_count_filter": self.star_count_filter_spinbox.value(),
             "bg_filter": self.bg_filter_spinbox.value(),
@@ -1620,7 +1659,7 @@ class PreprocessingInterface(QMainWindow):
                 # If default presets don't exist, show file dialog
                 presets_file, _ = QFileDialog.getOpenFileName(
                     self,
-                    "Load Presets", 
+                    "Load Presets",
                     os.path.join(self.current_working_directory, "presets"),
                     "JSON Files (*.json);;All Files (*.*)",
                 )
@@ -1658,7 +1697,9 @@ class PreprocessingInterface(QMainWindow):
             self.filters_checkbox.setChecked(presets.get("filters", False))
             self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
             self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
-            self.star_count_filter_spinbox.setValue(presets.get("star_count_filter", 100.0))
+            self.star_count_filter_spinbox.setValue(
+                presets.get("star_count_filter", 100.0)
+            )
             self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
             # self.feather_checkbox.setChecked(presets.get("feather", False))
             # self.feather_amount_spinbox.setValue(
@@ -1735,10 +1776,14 @@ class PreprocessingInterface(QMainWindow):
                 try:
                     if os.path.exists("sessions"):
                         shutil.rmtree("sessions")
-                        self.siril.log("Cleaned up old sessions directories", LogColor.BLUE)
+                        self.siril.log(
+                            "Cleaned up old sessions directories", LogColor.BLUE
+                        )
                     if os.path.exists("process"):
                         shutil.rmtree("process")
-                        self.siril.log("Cleaned up old process directory", LogColor.BLUE)
+                        self.siril.log(
+                            "Cleaned up old process directory", LogColor.BLUE
+                        )
                     if os.path.exists("final_stack"):
                         shutil.rmtree("final_stack")
                         self.siril.log(
@@ -1800,7 +1845,7 @@ class PreprocessingInterface(QMainWindow):
         is_windows = sys.platform.startswith("win")
 
         # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch: # or not is_windows:
+        if num_files <= max_files_per_batch:  # or not is_windows:
             self.siril.log(
                 f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
@@ -1913,7 +1958,7 @@ class PreprocessingInterface(QMainWindow):
                 filter_roundness=100.0,
                 filter_fwhm=100.0,
                 filter_bg=100.0,
-                filter_star_count=100.0
+                filter_star_count=100.0,
             )
             self.clean_up(prefix=final_stack_seq_name)
             registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
@@ -1925,7 +1970,7 @@ class PreprocessingInterface(QMainWindow):
                 rejection=False,
                 feather_amount=100,
                 output_name="final_result",
-                overlap_norm=True
+                overlap_norm=True,
             )
             self.load_image(image_name="final_result")
 

@@ -13,7 +13,7 @@ Support me on Patreon: https://www.patreon.com/c/naztronomy
 Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
 This script is designed to process OSC images only at this time. An experimental monochrome feature is available in this script, however
-there are no guarantees. 
+there are no guarantees.
 
 If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically
 plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
@@ -524,11 +524,11 @@ class PreprocessingInterface(QMainWindow):
         if os.path.isdir(directory):
             self.siril.cmd("cd", f'"{directory}"')
             file_count = len(
-            [
-                name
-                for name in os.listdir(directory)
-                if os.path.isfile(os.path.join(directory, name))
-            ]
+                [
+                    name
+                    for name in os.listdir(directory)
+                    if os.path.isfile(os.path.join(directory, name))
+                ]
             )
             if file_count == 0:
                 self.siril.log(
@@ -662,14 +662,14 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
-    
+
     def process_frame(self, idx, filename, seq_name, folder, threshold, crop_fraction):
         """Process a single frame and return results"""
         if not filename.startswith(seq_name) or not filename.lower().endswith(
             self.fits_extension
         ):
             return None
-            
+
         filepath = os.path.join(folder, filename)
         try:
             with fits.open(filepath) as hdul:
@@ -677,10 +677,7 @@ class PreprocessingInterface(QMainWindow):
                 if data is not None and data.ndim >= 2:
                     dynamic_threshold = threshold
                     data_max = np.max(data)
-                    if (
-                        np.issubdtype(data.dtype, np.floating)
-                        or data_max <= 10.0
-                    ):
+                    if np.issubdtype(data.dtype, np.floating) or data_max <= 10.0:
                         dynamic_threshold = 0.0001
 
                     is_black, median_val = self.is_black_frame(
@@ -719,12 +716,12 @@ class PreprocessingInterface(QMainWindow):
     def scan_black_frames(
         self, folder="process", threshold=30, crop_fraction=0.4, seq_name=None
     ):
-        
+
         black_frames = []
         black_indices = []
         all_frames_info = []
         lock = threading.Lock()
-        
+
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
         self.siril.log(
             "Note: This process is running in the background and may take a while depending on your system and drizzle factor.",
@@ -734,10 +731,18 @@ class PreprocessingInterface(QMainWindow):
         # Use ThreadPoolExecutor for multi-threaded processing
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
-                executor.submit(self.process_frame, idx, filename, seq_name, folder, threshold, crop_fraction): idx
+                executor.submit(
+                    self.process_frame,
+                    idx,
+                    filename,
+                    seq_name,
+                    folder,
+                    threshold,
+                    crop_fraction,
+                ): idx
                 for idx, filename in enumerate(sorted(os.listdir(folder)))
             }
-            
+
             for future in as_completed(futures):
                 result = future.result()
                 if result:
@@ -754,7 +759,6 @@ class PreprocessingInterface(QMainWindow):
         )
         for index in black_indices:
             self.siril.cmd("unselect", seq_name, index, index)
-
 
     def calibration_stack(self, seq_name):
         # not in /process dir here
@@ -779,7 +783,7 @@ class PreprocessingInterface(QMainWindow):
                     "-norm=mul",
                     f"-out={seq_name}_stacked",
                 )
-                
+
                 # return
         else:
             # Don't run code below for flats
@@ -804,27 +808,27 @@ class PreprocessingInterface(QMainWindow):
         original_wd = self.home_directory
         masters_dir = os.path.join(original_wd, "masters")
         os.makedirs(masters_dir, exist_ok=True)
-        
+
         src = os.path.join(
             self.current_working_directory,
             f"process/{seq_name}_stacked{self.fits_extension}",
         )
-        
+
         # Get current session name from working directory path
-        session_name = Path(self.current_working_directory).name # e.g. session1
-        
+        session_name = Path(self.current_working_directory).name  # e.g. session1
+
         # Read FITS headers if file exists
         filename_parts = [session_name, seq_name, "stacked"]
-        
+
         if os.path.exists(src):
             try:
                 with fits.open(src) as hdul:
                     headers = hdul[0].header
                     # Add temperature if exists
-                    if 'CCD-TEMP' in headers:
+                    if "CCD-TEMP" in headers:
                         temp = f"{headers['CCD-TEMP']:.1f}C"
                         filename_parts.insert(1, temp)
-                        
+
                     # Add date if exists
                     if "DATE-OBS" in headers:
                         try:
@@ -833,28 +837,28 @@ class PreprocessingInterface(QMainWindow):
                         except ValueError:
                             # fallback if DATE-OBS is not strict ISO format
                             date = headers["DATE-OBS"].split("T")[0]
-                        
+
                         filename_parts.insert(1, date)
-                    
-                    # Add exposure time if exists  
-                    if 'EXPTIME' in headers:
+
+                    # Add exposure time if exists
+                    if "EXPTIME" in headers:
                         exp = f"{headers['EXPTIME']:.0f}s"
                         filename_parts.insert(1, exp)
             except Exception as e:
                 self.siril.log(f"Error reading FITS headers: {e}", LogColor.SALMON)
-        
+
         dst = os.path.join(
             masters_dir, f"{'_'.join(filename_parts)}{self.fits_extension}"
         )
-        
+
         if os.path.exists(src):
             # Remove destination file if it exists to ensure override
             if os.path.exists(dst):
                 os.remove(dst)
             shutil.copy2(src, dst)
             self.siril.log(
-            f"Copied {seq_name} to masters directory as {'_'.join(filename_parts)}{self.fits_extension}", 
-            LogColor.BLUE
+                f"Copied {seq_name} to masters directory as {'_'.join(filename_parts)}{self.fits_extension}",
+                LogColor.BLUE,
             )
         self.siril.cmd("cd", "..")
 
@@ -897,7 +901,13 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
 
     def seq_stack(
-        self, seq_name, feather, feather_amount, rejection=False, output_name=None, overlap_norm=False
+        self,
+        seq_name,
+        feather,
+        feather_amount,
+        rejection=False,
+        output_name=None,
+        overlap_norm=False,
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -974,7 +984,7 @@ class PreprocessingInterface(QMainWindow):
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Save command execution failed: {e}", LogColor.RED)
             self.close_dialog()
-        
+
     def image_plate_solve(self):
         """Plate solve the loaded image with the '-force' argument."""
         try:
@@ -1269,7 +1279,9 @@ class PreprocessingInterface(QMainWindow):
         self.process_separately_check.setEnabled(len(self.sessions) > 1)
         stack_layout.addWidget(self.process_separately_check)
 
-        create_final_stack_tooltip = "Create a final stack by combining all preprocessed lights."
+        create_final_stack_tooltip = (
+            "Create a final stack by combining all preprocessed lights."
+        )
 
         self.create_final_stack_check = QCheckBox("Create final stack")
         self.create_final_stack_check.setToolTip(create_final_stack_tooltip)
@@ -1376,7 +1388,6 @@ class PreprocessingInterface(QMainWindow):
         self.process_separately_check.setEnabled(len(self.sessions) > 1)
         if len(self.sessions) == 1:
             self.process_separately_check.setChecked(False)
-
 
     def save_presets(self):
         """Save current UI settings and session data to a preset file"""
@@ -1538,7 +1549,13 @@ class PreprocessingInterface(QMainWindow):
         self.siril.cmd("close")
 
         # Check if old processing directories exist
-        if os.path.exists("sessions") or os.path.exists("process") or os.path.exists("collected_lights") or os.path.exists("mono_stacks") or os.path.exists("individual_stacks"):
+        if (
+            os.path.exists("sessions")
+            or os.path.exists("process")
+            or os.path.exists("collected_lights")
+            or os.path.exists("mono_stacks")
+            or os.path.exists("individual_stacks")
+        ):
             msg = """One or more old processing directories found (sessions, process, collected_lights, mono_stacks, individual_stacks). 
                 \nDo you want to delete them and start fresh?
                 \nNote: There is no way to recover this data if you choose 'Yes'."""
@@ -1557,15 +1574,24 @@ class PreprocessingInterface(QMainWindow):
                     self.siril.log("Cleaned up old process directory", LogColor.BLUE)
                 if os.path.exists("collected_lights"):
                     shutil.rmtree("collected_lights")
-                    self.siril.log("Cleaned up old collected_lights directory", LogColor.BLUE)
+                    self.siril.log(
+                        "Cleaned up old collected_lights directory", LogColor.BLUE
+                    )
                 if os.path.exists("mono_stacks"):
                     shutil.rmtree("mono_stacks")
-                    self.siril.log("Cleaned up old mono_stacks directory", LogColor.BLUE)
+                    self.siril.log(
+                        "Cleaned up old mono_stacks directory", LogColor.BLUE
+                    )
                 if os.path.exists("individual_stacks"):
                     shutil.rmtree("individual_stacks")
-                    self.siril.log("Cleaned up old individual_stacks directory", LogColor.BLUE)
+                    self.siril.log(
+                        "Cleaned up old individual_stacks directory", LogColor.BLUE
+                    )
             else:
-                self.siril.log("User chose to preserve old processing files. Stopping script.", LogColor.BLUE)
+                self.siril.log(
+                    "User chose to preserve old processing files. Stopping script.",
+                    LogColor.BLUE,
+                )
                 return
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
@@ -1648,18 +1674,19 @@ class PreprocessingInterface(QMainWindow):
                 dirname = "individual_stacks" if process_separately else "mono_stacks"
                 individual_stacks_dir = os.path.join(self.home_directory, dirname)
                 os.makedirs(individual_stacks_dir, exist_ok=True)
-                
+
                 # Process this session individually
                 individual_seq_name = "pp_lights_"
                 # self.siril.create_new_seq(individual_seq_name)
-                
+
                 if bg_extract:
                     self.seq_bg_extract(seq_name=individual_seq_name)
                     individual_seq_name = "bkg_" + individual_seq_name
 
-                
-                individual_plate_solve_status = self.seq_plate_solve(seq_name=individual_seq_name)
-                
+                individual_plate_solve_status = self.seq_plate_solve(
+                    seq_name=individual_seq_name
+                )
+
                 if individual_plate_solve_status:
                     self.seq_apply_reg(
                         seq_name=individual_seq_name,
@@ -1682,13 +1709,13 @@ class PreprocessingInterface(QMainWindow):
                         filter_wfwhm=filter_wfwhm,
                         filter_round=filter_round,
                     )
-                
+
                 individual_seq_name = f"r_{individual_seq_name}"
-                
+
                 # Scans for black frames due to existing Siril bug.
                 # if drizzle:
                 #     self.scan_black_frames(seq_name=individual_seq_name, folder="process")
-                
+
                 # Stack this individual session
                 individual_stack_name = f"{session_name}_stacked"
                 self.seq_stack(
@@ -1697,28 +1724,44 @@ class PreprocessingInterface(QMainWindow):
                     feather_amount=feather_amount,
                     rejection=True,
                     output_name=individual_stack_name,
-                    overlap_norm=False
+                    overlap_norm=False,
                 )
-                
+
                 # Save individual stack
                 self.load_image(image_name=individual_stack_name)
                 individual_file_name = self.save_image(f"_{session_name}")
                 # Remove any quotes from the filename
                 individual_file_name = individual_file_name.strip("'\"")
-                self.siril.log(f"Saved individual stack as {individual_file_name}", LogColor.GREEN)
+                self.siril.log(
+                    f"Saved individual stack as {individual_file_name}", LogColor.GREEN
+                )
                 # Move individual stack to individual_stacks directory
-                src_individual = os.path.join(self.current_working_directory, "process", f"{individual_file_name}{self.fits_extension}")
-                new_dst_filename = "mono_" + individual_file_name if self.mono_check.isChecked() else individual_file_name
-                dst_individual = os.path.join(individual_stacks_dir, f"{new_dst_filename}{self.fits_extension}")
+                src_individual = os.path.join(
+                    self.current_working_directory,
+                    "process",
+                    f"{individual_file_name}{self.fits_extension}",
+                )
+                new_dst_filename = (
+                    "mono_" + individual_file_name
+                    if self.mono_check.isChecked()
+                    else individual_file_name
+                )
+                dst_individual = os.path.join(
+                    individual_stacks_dir, f"{new_dst_filename}{self.fits_extension}"
+                )
                 if os.path.exists(src_individual):
                     shutil.move(src_individual, dst_individual)
-                    self.siril.log(f"Moved {new_dst_filename} to individual_stacks directory", LogColor.BLUE)
+                    self.siril.log(
+                        f"Moved {new_dst_filename} to individual_stacks directory",
+                        LogColor.BLUE,
+                    )
                 else:
-                    self.siril.log(f"Source file not found: {src_individual}", LogColor.RED)
+                    self.siril.log(
+                        f"Source file not found: {src_individual}", LogColor.RED
+                    )
 
                 self.siril.cmd("close")
                 time.sleep(3)  # Small delay to ensure Siril processes the command
-
 
             # Go back to the previous directory
             self.siril.cmd("cd", "../../..")
@@ -1733,18 +1776,22 @@ class PreprocessingInterface(QMainWindow):
 
             self.siril.cmd("close")
             time.sleep(3)  # Small delay to ensure Siril processes the command
-        
-       
+
         if self.mono_check.isChecked():
             # TODO: If mono, go into the mono_stacks directory and combine all session stacks into one sequence and register them but not stack
-            self.siril.log("Mono checked: " + str(self.mono_check.isChecked()), LogColor.BLUE)
+            self.siril.log(
+                "Mono checked: " + str(self.mono_check.isChecked()), LogColor.BLUE
+            )
             mono_dir = "mono_stacks"
             fits_files = [
                 fname
                 for fname in os.listdir(mono_dir)
                 if fname.startswith("mono_") and fname.endswith(self.fits_extension)
             ]
-            self.siril.log(f"Found {len(fits_files)} mono_*.fits files in {mono_dir}", LogColor.BLUE)
+            self.siril.log(
+                f"Found {len(fits_files)} mono_*.fits files in {mono_dir}",
+                LogColor.BLUE,
+            )
             if len(fits_files) > 1:
                 self.siril.cmd("cd", f'"{mono_dir}"')
                 cwd = self.siril.get_siril_wd()
@@ -1772,12 +1819,11 @@ class PreprocessingInterface(QMainWindow):
                 except (s.DataError, s.CommandError, s.SirilError) as e:
                     self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
-                cmd_args = [
-                    "seqapplyreg",
-                    seq_name
-                ]
+                cmd_args = ["seqapplyreg", seq_name]
 
-                self.siril.log("Command arguments: " + " ".join(cmd_args), LogColor.BLUE)
+                self.siril.log(
+                    "Command arguments: " + " ".join(cmd_args), LogColor.BLUE
+                )
 
                 try:
                     self.siril.cmd(*cmd_args)
@@ -1789,39 +1835,50 @@ class PreprocessingInterface(QMainWindow):
                 )
 
                 # Read the lights_conversion.txt file
-                conversion_file = os.path.join(os.getcwd(), "mono_process", "lights_conversion.txt")
-                self.siril.log(f"Looking for lights_conversion.txt in: {os.getcwd()}, {conversion_file}", LogColor.BLUE)
+                conversion_file = os.path.join(
+                    os.getcwd(), "mono_process", "lights_conversion.txt"
+                )
+                self.siril.log(
+                    f"Looking for lights_conversion.txt in: {os.getcwd()}, {conversion_file}",
+                    LogColor.BLUE,
+                )
                 if os.path.exists(conversion_file):
-                    with open(conversion_file, 'r') as f:
+                    with open(conversion_file, "r") as f:
                         print(f"Opened conversion file: {conversion_file}")
                         for line in f:
-                            if '->' in line:
-                                src_path, dest_path = line.strip().split(' -> ')
+                            if "->" in line:
+                                src_path, dest_path = line.strip().split(" -> ")
                                 src_path = src_path.strip("'")
                                 dest_path = dest_path.strip("'")
-                                
+
                                 # Get the original filename from the source path
                                 original_name = os.path.basename(src_path)
-                                
+
                                 # Create new filename with 'r_' prefix
-                                new_name = 'r_' + original_name
+                                new_name = "r_" + original_name
                                 # Get the destination file (lights_xxxxx.fits)
                                 dest_file = os.path.basename(dest_path)
                                 # Full path to the registered file (r_lights_xxxxx.fits)
-                                registered_file = os.path.join(os.getcwd(), "mono_process", 'r_' + dest_file)
+                                registered_file = os.path.join(
+                                    os.getcwd(), "mono_process", "r_" + dest_file
+                                )
                                 # New destination in mono_stacks
                                 final_dest = os.path.join(mono_dir, new_name)
                                 # Move the file if it exists
                                 if os.path.exists(registered_file):
                                     shutil.move(registered_file, final_dest)
-                                    self.siril.log(f"Moved {registered_file} to {final_dest}", LogColor.BLUE)
+                                    self.siril.log(
+                                        f"Moved {registered_file} to {final_dest}",
+                                        LogColor.BLUE,
+                                    )
                 else:
                     self.siril.log("lights_conversion.txt not found", LogColor.SALMON)
                 self.siril.cmd("cd", "../")
 
-            
-
-        if not self.mono_check.isChecked() and self.create_final_stack_check.isChecked():
+        if (
+            not self.mono_check.isChecked()
+            and self.create_final_stack_check.isChecked()
+        ):
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
             self.current_working_directory = self.siril.get_siril_wd()
             # Create a new sequence for each session
@@ -1838,16 +1895,22 @@ class PreprocessingInterface(QMainWindow):
 
                 # Merge all session files
                 seq_name = "pp_lights_merged_"
-                try: 
+                try:
                     if session_files:
                         self.siril.cmd("merge", *session_files, seq_name)
                         self.siril.log(
-                            f"Merged session files: {', '.join(session_files)}", LogColor.GREEN
+                            f"Merged session files: {', '.join(session_files)}",
+                            LogColor.GREEN,
                         )
                     else:
-                        self.siril.log("No session files found to merge", LogColor.SALMON)
+                        self.siril.log(
+                            "No session files found to merge", LogColor.SALMON
+                        )
                 except (s.DataError, s.CommandError, s.SirilError) as e:
-                    self.siril.log(f"Could not merge sequences. Please see error and stack the individual sessions manually:\n {e}", LogColor.RED)
+                    self.siril.log(
+                        f"Could not merge sequences. Please see error and stack the individual sessions manually:\n {e}",
+                        LogColor.RED,
+                    )
             else:
                 seq_name = "session1_pp_lights_"
 
@@ -1879,21 +1942,27 @@ class PreprocessingInterface(QMainWindow):
             seq_name = f"r_{seq_name}"
 
             # Scans for black frames due to existing Siril bug.
-            try: 
+            try:
                 if drizzle:
-                    self.scan_black_frames(seq_name=seq_name, folder=self.collected_lights_dir)
+                    self.scan_black_frames(
+                        seq_name=seq_name, folder=self.collected_lights_dir
+                    )
             except (s.DataError, s.CommandError, s.SirilError) as e:
-                self.siril.log(f"Data error occurred during black frame scan: {e}", LogColor.RED)
+                self.siril.log(
+                    f"Data error occurred during black frame scan: {e}", LogColor.RED
+                )
 
             # Stacks the sequence with rejection
-            stack_name = "merge_stacked" if len(session_to_process) > 1 else "final_stacked"
+            stack_name = (
+                "merge_stacked" if len(session_to_process) > 1 else "final_stacked"
+            )
             self.seq_stack(
                 seq_name=seq_name,
                 feather=feather,
                 feather_amount=feather_amount,
                 rejection=True,
                 output_name=stack_name,
-                overlap_norm=False
+                overlap_norm=False,
             )
 
             self.load_image(image_name=stack_name)
@@ -1923,18 +1992,30 @@ class PreprocessingInterface(QMainWindow):
 
                 self.siril.log("Cleaned up collected_lights directory", LogColor.BLUE)
             except Exception as e:
-                self.siril.log(f"Collected Lights Dir not found, skipping: {e}", LogColor.SALMON)
+                self.siril.log(
+                    f"Collected Lights Dir not found, skipping: {e}", LogColor.SALMON
+                )
 
             if self.mono_check.isChecked():
-                shutil.rmtree(os.path.join(self.current_working_directory, "mono_process"))
-                shutil.rmtree(os.path.join(self.current_working_directory, "mono_stacks", "lights"))
+                shutil.rmtree(
+                    os.path.join(self.current_working_directory, "mono_process")
+                )
+                shutil.rmtree(
+                    os.path.join(
+                        self.current_working_directory, "mono_stacks", "lights"
+                    )
+                )
                 self.siril.log("Cleaned up mono_process directory", LogColor.BLUE)
             try:
                 shutil.rmtree(os.path.join(self.current_working_directory, "cache"))
                 shutil.rmtree(os.path.join(self.current_working_directory, "drizztmp"))
-                self.siril.log("Cleaned up extra cache and drizztmp directories", LogColor.BLUE)
+                self.siril.log(
+                    "Cleaned up extra cache and drizztmp directories", LogColor.BLUE
+                )
             except Exception as e:
-                self.siril.log(f"Cache or drizztmp Dir not found, skipping: {e}", LogColor.SALMON)
+                self.siril.log(
+                    f"Cache or drizztmp Dir not found, skipping: {e}", LogColor.SALMON
+                )
 
         # self.clean_up()
 
