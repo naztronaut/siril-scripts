@@ -332,9 +332,14 @@ class PreprocessingInterface(QMainWindow):
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
                 header = hdul[0].header
-                telescope = header.get("TELESCOP", "Seestar S30")
+                telescope = header.get("TELESCOP") or header.get("CAMERA", "Seestar S30")
 
-                mapped_telescope = telescope_map.get(telescope, "ZWO Seestar S30")
+                # Try to map telescope name, using startswith for partial matches
+                mapped_telescope = "ZWO Seestar S30"  # default
+                for telescope_local_name, ui_name in telescope_map.items():
+                    if telescope.startswith(telescope_local_name):
+                        mapped_telescope = ui_name
+                        break
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
                 self.siril.log(
@@ -1564,7 +1569,8 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             if drizzle:
-                self.scan_black_frames(seq_name=seq_name)
+                if self.scan_blackframes_checkbox.isChecked():
+                    self.scan_black_frames(seq_name=seq_name)
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(
                 f"Data error occurred during black frame scan: {e}", LogColor.RED
