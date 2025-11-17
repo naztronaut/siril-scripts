@@ -28,7 +28,7 @@ CHANGELOG:
 2.0.1 - Allowing all os to batch
       - Batch min size set to 50. Batch Max Size set based on OS: Windows 2000, Linux/Mac 25000
       - Optional Black Frames Check
-      - Automatic Telescope Detection from FITS Header
+      - Automatic Telescope Detection from FITS Header when available
       - Removed feathering. Automatic feathering of panels still work.
       - Fallback to regular registration if plate solving fails (which should accommodate any telescope now) and will not mosaic
       - Added additional filters: background and star count
@@ -1248,12 +1248,12 @@ class PreprocessingInterface(QMainWindow):
         self.filters_checkbox.toggled.connect(self.star_count_filter_spinbox.setEnabled)
 
         # Stacking options
-        stacking_label = QLabel("Stacking:")
-        stacking_label.setFont(title_font)
-        stacking_label.setToolTip(
-            "Options for combining aligned images into a final stack."
-        )
-        preprocessing_layout.addWidget(stacking_label, 6, 0)
+        # stacking_label = QLabel("Stacking:")
+        # stacking_label.setFont(title_font)
+        # stacking_label.setToolTip(
+        #     "Options for combining aligned images into a final stack."
+        # )
+        # preprocessing_layout.addWidget(stacking_label, 6, 0)
 
         # feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
         # self.feather_checkbox = QCheckBox("Feather?")
