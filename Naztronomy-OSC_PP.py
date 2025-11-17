@@ -559,7 +559,9 @@ class PreprocessingInterface(QMainWindow):
                 return False
             else:
                 try:
-                    args = ["convert", image_type, "-out=../process"]
+                    # using `link` to only get fits files
+                    args = ["link", image_type, "-out=../process"]
+                    #args = ["convert", image_type, "-out=../process"]
                     # if "lights" in image_type.lower():
                     #     if not self.drizzle_status:
                     #         args.append("-debayer")

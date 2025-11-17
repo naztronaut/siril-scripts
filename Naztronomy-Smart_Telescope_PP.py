@@ -384,7 +384,9 @@ class PreprocessingInterface(QMainWindow):
                 # return false because there's no conversion
                 return False
             try:
-                args = ["convert", dir_name, "-out=../process"]
+                # args = ["convert", dir_name, "-out=../process"]
+                # Switched to `link` command to only get fits files
+                args = ["link", dir_name, "-out=../process"]
                 # If there are no calibration frames or drizzle is off, debayer on convert, otherwise you get a monochrome image
                 # if "lights" in dir_name.lower():
                 #     if not self.darks_checkbox.isChecked() or not self.flats_checkbox.isChecked() or not self.drizzle_status:
