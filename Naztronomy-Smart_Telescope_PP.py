@@ -331,8 +331,8 @@ class PreprocessingInterface(QMainWindow):
         telescope_map = {
             "Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
-            "DWARFII": "Dwarf 2",
             "DWARFIII": "Dwarf 3",
+            "DWARFII": "Dwarf 2",
             "Origin": "Celestron Origin",
         }
 
