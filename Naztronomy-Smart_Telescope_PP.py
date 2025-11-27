@@ -205,6 +205,8 @@ class PreprocessingInterface(QMainWindow):
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label_text = ""
 
+        self.initial_message()
+
         changed_cwd = False  # a way not to run the prompting loop
         initial_cwd = os.path.join(self.current_working_directory, "lights")
         if os.path.isdir(initial_cwd):
@@ -220,7 +222,7 @@ class PreprocessingInterface(QMainWindow):
         elif os.path.basename(self.current_working_directory.lower()) == "lights":
             msg = "You're currently in the 'lights' directory, do you want to select the parent directory?"
             answer = QMessageBox.question(self, "Already in Lights Dir", msg)
-            if answer == QMessageBox.Yes:
+            if answer == QMessageBox.StandardButton.Yes:
                 self.siril.cmd("cd", "../")
                 os.chdir(os.path.dirname(self.current_working_directory))
                 self.current_working_directory = os.path.dirname(
@@ -306,6 +308,22 @@ class PreprocessingInterface(QMainWindow):
 
         # self.setup_shortcuts()
         self.initialization_successful = True
+
+    def initial_message(self):
+        msg = (
+            f"""
+            Welcome to {APP_NAME} v{VERSION}!
+            Please watch latest demos on https://youtube.com/Naztronomy which can answer most questions.
+            Here are some Frequently Asked Questions:
+            Q: Can it handle telescopes not listed in the dropdown?
+            A: Yes, but it will not mosaic them. It will do regular star registration. 
+            Q: How do I get support?
+            A: Join the Naztronomy Discord server for support and discussion. Please have your logs handy.
+            Q: Where can I find the logs?
+            A: You can export logs by clicking the download button on the lower right hand side of the console.\n
+            """
+        )
+        self.siril.log(msg, LogColor.BLUE)
 
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
