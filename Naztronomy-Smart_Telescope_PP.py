@@ -304,6 +304,8 @@ class PreprocessingInterface(QMainWindow):
                     )
                     continue
         self.create_widgets()
+        # Initialize fits_files_count before creating widgets
+        self.fits_files_count = 0
         self.set_telescope_from_fits()
 
         # self.setup_shortcuts()
@@ -323,8 +325,6 @@ class PreprocessingInterface(QMainWindow):
             A: You can export logs by clicking the download button on the lower right hand side of the console.\n
             """
         )
-        self.siril.log(msg, LogColor.BLUE)
-
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
         # Mapping from FITS header values to UI telescope names
@@ -346,6 +346,12 @@ class PreprocessingInterface(QMainWindow):
 
             if not fits_files:
                 return
+            
+            # Store fits files count to use later
+            self.fits_files_count = len(fits_files)
+            # Update the label if it exists
+            if hasattr(self, 'files_found_label'):
+                self.files_found_label.setText(f"Files found in lights directory: {self.fits_files_count}")
 
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
@@ -1095,7 +1101,7 @@ class PreprocessingInterface(QMainWindow):
         batch_size_tooltip = (
             "Maximum number of files to process in each batch. Windows only. This is ignored on Mac/Linux."
             "This is an advanced option. Only change if you are comfortable with it.\n"
-            "Valid range: 100–2000."
+            "Valid range: 50–2000."
         )
         batch_size_label.setToolTip(batch_size_tooltip)
         preprocessing_layout.addWidget(batch_size_label, 0, 0)
@@ -1113,10 +1119,11 @@ class PreprocessingInterface(QMainWindow):
         self.batch_size_spinbox.setRange(50, max_batch)  # clamps input based on OS
         self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
         self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
-        self.batch_size_spinbox.setMinimumWidth(120)
-
-        self.batch_size_spinbox.setToolTip(batch_size_tooltip)
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
+        # Files found label
+        self.files_found_label = QLabel(f"Files found in lights directory: {self.fits_files_count if hasattr(self, 'fits_files_count') else 0}")
+        preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
+        
 
         bg_extract_label = QLabel("Background Extraction:")
         bg_extract_label.setFont(title_font)
