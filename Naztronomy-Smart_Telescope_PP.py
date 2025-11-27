@@ -341,7 +341,7 @@ class PreprocessingInterface(QMainWindow):
             fits_files = [
                 f
                 for f in os.listdir(lights_dir)
-                if f.lower().endswith(self.fits_extension)
+                if f.lower().endswith(".fits") or f.lower().endswith(".fit")
             ]
 
             if not fits_files:
@@ -349,9 +349,10 @@ class PreprocessingInterface(QMainWindow):
             
             # Store fits files count to use later
             self.fits_files_count = len(fits_files)
+            print(f"Found {self.fits_files_count} FITS files in lights directory.")
             # Update the label if it exists
             if hasattr(self, 'files_found_label'):
-                self.files_found_label.setText(f"Files found in lights directory: {self.fits_files_count}")
+                self.files_found_label.setText(f"Fit(s) in lights directory: {self.fits_files_count}")
 
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
@@ -1121,7 +1122,7 @@ class PreprocessingInterface(QMainWindow):
         self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
         # Files found label
-        self.files_found_label = QLabel(f"Files found in lights directory: {self.fits_files_count if hasattr(self, 'fits_files_count') else 0}")
+        self.files_found_label = QLabel()
         preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
         
 
