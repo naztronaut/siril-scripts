@@ -25,6 +25,8 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.2 - Bug fixes:
+      - Fixed pixel fraction decimal precision
 2.0.1 - Allowing all os to batch
       - Batch min size set to 50. Batch Max Size set based on OS: Windows 2000, Linux/Mac 25000
       - Optional Black Frames Check
@@ -92,8 +94,8 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.1"
-BUILD = "20251115"
+VERSION = "2.0.2"
+BUILD = "20251130"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -312,19 +314,18 @@ class PreprocessingInterface(QMainWindow):
         self.initialization_successful = True
 
     def initial_message(self):
-        msg = (
-            f"""
-            Welcome to {APP_NAME} v{VERSION}!
-            Please watch latest demos on https://youtube.com/Naztronomy which can answer most questions.
-            Here are some Frequently Asked Questions:
-            Q: Can it handle telescopes not listed in the dropdown?
-            A: Yes, but it will not mosaic them. It will do regular star registration. 
-            Q: How do I get support?
-            A: Join the Naztronomy Discord server for support and discussion. Please have your logs handy.
-            Q: Where can I find the logs?
-            A: You can export logs by clicking the download button on the lower right hand side of the console.\n
-            """
-        )
+        msg = f"""Welcome to {APP_NAME} v{VERSION}!
+        Please watch latest demos on https://youtube.com/Naztronomy which can answer most questions.
+        Here are some Frequently Asked Questions:
+        Q: Can it handle telescopes not listed in the dropdown?
+        A: Yes, but it will not mosaic them. It will do regular star registration. 
+        Q: How do I get support?
+        A: Join the Naztronomy Discord server for support and discussion. Please have your logs handy.
+        Q: Where can I find the logs?
+        A: You can export logs by clicking the download button on the lower right hand side of the console.\n
+        """
+        self.siril.log(msg, LogColor.BLUE)
+
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
         # Mapping from FITS header values to UI telescope names
@@ -346,18 +347,22 @@ class PreprocessingInterface(QMainWindow):
 
             if not fits_files:
                 return
-            
+
             # Store fits files count to use later
             self.fits_files_count = len(fits_files)
             print(f"Found {self.fits_files_count} FITS files in lights directory.")
             # Update the label if it exists
-            if hasattr(self, 'files_found_label'):
-                self.files_found_label.setText(f"Fit(s) in lights directory: {self.fits_files_count}")
+            if hasattr(self, "files_found_label"):
+                self.files_found_label.setText(
+                    f"Fit(s) in lights directory: {self.fits_files_count}"
+                )
 
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
                 header = hdul[0].header
-                telescope = header.get("TELESCOP") or header.get("CAMERA", "Seestar S30")
+                telescope = header.get("TELESCOP") or header.get(
+                    "CAMERA", "Seestar S30"
+                )
 
                 # Try to map telescope name, using startswith for partial matches
                 mapped_telescope = "ZWO Seestar S30"  # default
@@ -593,7 +598,6 @@ class PreprocessingInterface(QMainWindow):
 
         black_frames = []
         black_indices = []
-        all_frames_info = []
         lock = threading.Lock()
 
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
@@ -601,6 +605,9 @@ class PreprocessingInterface(QMainWindow):
             "Note: This process is running in the background and may take a while depending on your system and drizzle factor.",
             LogColor.BLUE,
         )
+
+        # Sort once, outside the loop
+        sorted_files = sorted(os.listdir(folder))
 
         # Use ThreadPoolExecutor for multi-threaded processing
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -614,7 +621,7 @@ class PreprocessingInterface(QMainWindow):
                     threshold,
                     crop_fraction,
                 ): idx
-                for idx, filename in enumerate(sorted(os.listdir(folder)))
+                for idx, filename in enumerate(sorted_files)
             }
 
             for future in as_completed(futures):
@@ -622,16 +629,15 @@ class PreprocessingInterface(QMainWindow):
                 if result:
                     idx, filename, median_val, is_black = result
                     with lock:
-                        all_frames_info.append((filename, median_val))
                         if is_black:
                             black_frames.append(filename)
-                            black_indices.append(len(all_frames_info))
+                            black_indices.append(idx + 1)  # +1 because Siril uses 1-based indexing
 
         self.siril.log(f"Following files are black: {black_frames}", LogColor.SALMON)
         self.siril.log(
             f"Black indices skipped in stacking: {black_indices}", LogColor.SALMON
         )
-        for index in black_indices:
+        for index in sorted(black_indices):  # Sort to unselect in order
             self.siril.cmd("unselect", seq_name, index, index)
 
     def calibration_stack(self, seq_name):
@@ -1124,7 +1130,6 @@ class PreprocessingInterface(QMainWindow):
         # Files found label
         self.files_found_label = QLabel()
         preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
-        
 
         bg_extract_label = QLabel("Background Extraction:")
         bg_extract_label.setFont(title_font)
@@ -1170,6 +1175,7 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout.addWidget(pixel_fraction_label, 3, 2)
 
         self.pixel_fraction_spinbox = QDoubleSpinBox()
+        self.pixel_fraction_spinbox.setDecimals(2)
         self.pixel_fraction_spinbox.setRange(0.1, 10.0)
         self.pixel_fraction_spinbox.setSingleStep(0.01)
         self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
@@ -1439,7 +1445,7 @@ class PreprocessingInterface(QMainWindow):
             bg_extract=self.bg_extract_checkbox.isChecked(),
             drizzle=self.drizzle_checkbox.isChecked(),
             drizzle_amount=self.drizzle_amount_spinbox.value(),
-            pixel_fraction=self.pixel_fraction_spinbox.value(),
+            pixel_fraction=round(self.pixel_fraction_spinbox.value(), 2),
             filter_roundness=self.roundness_spinbox.value(),
             filter_fwhm=self.fwhm_spinbox.value(),
             filter_bg=self.bg_filter_spinbox.value(),
