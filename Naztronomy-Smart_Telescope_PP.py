@@ -25,8 +25,12 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-2.0.2 - Bug fixes:
+2.0.2 - Small Bug fixes
+      - Reenable feathering
       - Fixed pixel fraction decimal precision
+      - Added 'DWARF 3' to auto find telescope from FITS header
+      - Disallow SPCC for Celestron Origin
+      - Bypasss seqplatesolve false error for now
 2.0.1 - Allowing all os to batch
       - Batch min size set to 50. Batch Max Size set based on OS: Windows 2000, Linux/Mac 25000
       - Optional Black Frames Check
@@ -95,7 +99,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.2"
-BUILD = "20251130"
+BUILD = "20251207"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -333,6 +337,7 @@ class PreprocessingInterface(QMainWindow):
             "Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
             "DWARFIII": "Dwarf 3",
+            "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
             "Origin": "Celestron Origin",
         }
@@ -448,12 +453,12 @@ class PreprocessingInterface(QMainWindow):
         args = ["seqplatesolve", seq_name]
 
         # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
-        if self.chosen_telescope == "Celestron Origin":
-            args.append(self.target_coords)
-            focal_len = 335
-            pixel_size = 2.4
-            args.append(f"-focal={focal_len}")
-            args.append(f"-pixelsize={pixel_size}")
+        # if self.chosen_telescope == "Celestron Origin":
+        #     args.append(self.target_coords)
+        #     focal_len = 335
+        #     pixel_size = 2.4
+        #     args.append(f"-focal={focal_len}")
+        #     args.append(f"-pixelsize={pixel_size}")
         if self.chosen_telescope == "Dwarf 2":
             args.append(self.target_coords)
             focal_len = 100
@@ -470,7 +475,7 @@ class PreprocessingInterface(QMainWindow):
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
-            return False
+            return True # TODO: disabling fallback because Siril seems to be throwing a false error 
 
     # Regular registration if plate solve not available - No Mosaics
     def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
@@ -969,6 +974,16 @@ class PreprocessingInterface(QMainWindow):
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
 
+        # Disable SPCC for Celestron Origin
+        if selected_scope == "Celestron Origin":
+            self.spcc_checkbox.setChecked(False)
+            self.spcc_checkbox.setEnabled(False)
+            self.siril.log(
+                "SPCC cannot be run on Celestron Origin automatically. It must be done manually.",
+                LogColor.SALMON,
+            )
+        else:
+            self.spcc_checkbox.setEnabled(True)
         # Update enabled state based on SPCC checkbox
         self.filter_combo.setEnabled(self.spcc_checkbox.isChecked())
 
@@ -1282,34 +1297,34 @@ class PreprocessingInterface(QMainWindow):
         self.filters_checkbox.toggled.connect(self.star_count_filter_spinbox.setEnabled)
 
         # Stacking options
-        # stacking_label = QLabel("Stacking:")
-        # stacking_label.setFont(title_font)
-        # stacking_label.setToolTip(
-        #     "Options for combining aligned images into a final stack."
-        # )
-        # preprocessing_layout.addWidget(stacking_label, 6, 0)
+        stacking_label = QLabel("Stacking:")
+        stacking_label.setFont(title_font)
+        stacking_label.setToolTip(
+            "Options for combining aligned images into a final stack."
+        )
+        preprocessing_layout.addWidget(stacking_label, 6, 0)
 
-        # feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
-        # self.feather_checkbox = QCheckBox("Feather?")
-        # self.feather_checkbox.setToolTip(feather_tooltip)
-        # preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
+        feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
+        self.feather_checkbox = QCheckBox("Feather?")
+        self.feather_checkbox.setToolTip(feather_tooltip)
+        preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
 
-        # feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
-        # feather_amount_label = QLabel("Feather amount:")
-        # feather_amount_label.setToolTip(feather_amount_label_tooltip)
-        # preprocessing_layout.addWidget(feather_amount_label, 6, 2)
+        feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
+        feather_amount_label = QLabel("Feather amount:")
+        feather_amount_label.setToolTip(feather_amount_label_tooltip)
+        preprocessing_layout.addWidget(feather_amount_label, 6, 2)
 
-        # self.feather_amount_spinbox = QSpinBox()
-        # self.feather_amount_spinbox.setRange(5, 2000)
-        # self.feather_amount_spinbox.setSingleStep(5)
-        # self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
-        # self.feather_amount_spinbox.setMinimumWidth(80)
-        # self.feather_amount_spinbox.setSuffix(" px")
-        # self.feather_amount_spinbox.setEnabled(False)
-        # self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
-        # preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
+        self.feather_amount_spinbox = QSpinBox()
+        self.feather_amount_spinbox.setRange(5, 2000)
+        self.feather_amount_spinbox.setSingleStep(5)
+        self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
+        self.feather_amount_spinbox.setMinimumWidth(80)
+        self.feather_amount_spinbox.setSuffix(" px")
+        self.feather_amount_spinbox.setEnabled(False)
+        self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
+        preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
 
-        # self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
+        self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
 
         # SPCC Section
         self.spcc_section = QGroupBox("Post-Stacking")
@@ -1366,6 +1381,19 @@ class PreprocessingInterface(QMainWindow):
             "\nWhen the bug is confirmed fixed, this option and check will be removed."
         )
         spcc_layout.addWidget(self.scan_blackframes_checkbox, 3, 0, 1, 2)
+
+        # Warning message for feather checkbox
+        feather_warning = QLabel(
+            "⚠ You enabled feather, this can cause slow processing and memory issues. If you get an error, turn it off and try again.\nSupport will not be provided for feather-related issues. ⚠"
+        )
+        feather_warning.setStyleSheet("color: red;")
+        feather_warning.setWordWrap(True)
+        feather_warning.setVisible(False)  # Hidden by default
+        spcc_layout.addWidget(feather_warning, 4, 0, 1, 2)
+
+        # Connect feather checkbox to show/hide warning
+        self.feather_checkbox.toggled.connect(feather_warning.setVisible)
+        self.feather_checkbox.toggled.connect(self.adjustSize)
 
         # Buttons section
         button_layout = QHBoxLayout()
@@ -1450,8 +1478,8 @@ class PreprocessingInterface(QMainWindow):
             filter_fwhm=self.fwhm_spinbox.value(),
             filter_bg=self.bg_filter_spinbox.value(),
             filter_star_count=self.star_count_filter_spinbox.value(),
-            # feather=self.feather_checkbox.isChecked(),
-            # feather_amount=self.feather_amount_spinbox.value(),
+            feather=self.feather_checkbox.isChecked(),
+            feather_amount=self.feather_amount_spinbox.value(),
             clean_up_files=self.cleanup_files_checkbox.isChecked(),
         )
 
@@ -1610,14 +1638,26 @@ class PreprocessingInterface(QMainWindow):
                 f"Data error occurred during black frame scan: {e}", LogColor.RED
             )
 
-        self.seq_stack(
-            seq_name=seq_name,
-            feather=feather,
-            feather_amount=feather_amount,
-            rejection=True,
-            output_name=output_name,
-            overlap_norm=False,
-        )
+        try:
+            self.seq_stack(
+                seq_name=seq_name,
+                feather=feather,
+                feather_amount=feather_amount,
+                rejection=True,
+                output_name=output_name,
+                overlap_norm=False,
+            )
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(
+                f"Error occurred during stacking: {e.status_code}", LogColor.RED
+            )
+            if feather:
+                QMessageBox.warning(
+                    self,
+                    "Stacking Error",
+                    "There was an error during the stacking process which could have been caused by feathering. Please uncheck the feather option and try again.",
+                )
+            return None
 
         if clean_up_files:
             self.clean_up(prefix=seq_name)  # clean up r_ files
@@ -1666,8 +1706,8 @@ class PreprocessingInterface(QMainWindow):
             "fwhm": self.fwhm_spinbox.value(),
             "star_count_filter": self.star_count_filter_spinbox.value(),
             "bg_filter": self.bg_filter_spinbox.value(),
-            # "feather": self.feather_checkbox.isChecked(),
-            # "feather_amount": self.feather_amount_spinbox.value(),
+            "feather": self.feather_checkbox.isChecked(),
+            "feather_amount": self.feather_amount_spinbox.value(),
             "spcc": self.spcc_checkbox.isChecked(),
         }
 
@@ -1741,10 +1781,10 @@ class PreprocessingInterface(QMainWindow):
                 presets.get("star_count_filter", 100.0)
             )
             self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
-            # self.feather_checkbox.setChecked(presets.get("feather", False))
-            # self.feather_amount_spinbox.setValue(
-            #     presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
-            # )
+            self.feather_checkbox.setChecked(presets.get("feather", False))
+            self.feather_amount_spinbox.setValue(
+                presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
+            )
             self.spcc_checkbox.setChecked(presets.get("spcc", False))
 
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
@@ -1798,6 +1838,14 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
         self.siril.cmd("close")
+
+        if self.fits_files_count == 0:
+            QMessageBox.warning(
+                self,
+                "No FITS Files Found",
+                "No FITS files found in the lights directory. Please add files and try again.",
+            )
+            return
 
         # Check if old processing directories exist
         if (
@@ -2062,7 +2110,6 @@ class PreprocessingInterface(QMainWindow):
         """,
             LogColor.BLUE,
         )
-
         self.close_dialog()
 
 
