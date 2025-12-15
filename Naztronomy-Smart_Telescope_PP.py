@@ -31,6 +31,7 @@ CHANGELOG:
       - Added 'DWARF 3' to auto find telescope from FITS header
       - Disallow SPCC for Celestron Origin
       - Bypasss seqplatesolve false error for now
+      - Issue #56 - don't crash if there are no lights
 2.0.1 - Allowing all os to batch
       - Batch min size set to 50. Batch Max Size set based on OS: Windows 2000, Linux/Mac 25000
       - Optional Black Frames Check
@@ -99,7 +100,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.2"
-BUILD = "20251207"
+BUILD = "20251214"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
