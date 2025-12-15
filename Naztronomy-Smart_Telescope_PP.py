@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 2.0.1
+Version: 2.0.2
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
