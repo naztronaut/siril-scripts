@@ -60,8 +60,6 @@ CHANGELOG:
 1.0.0 - initial release
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 import os
 import sys
 import math
@@ -548,36 +546,6 @@ class PreprocessingInterface(QMainWindow):
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
 
-    def process_frame(self, idx, filename, seq_name, folder, threshold, crop_fraction):
-        """Process a single frame and return results"""
-        if not filename.startswith(seq_name) or not filename.lower().endswith(
-            self.fits_extension
-        ):
-            return None
-
-        filepath = os.path.join(folder, filename)
-        try:
-            with fits.open(filepath) as hdul:
-                data = hdul[0].data
-                if data is not None and data.ndim >= 2:
-                    dynamic_threshold = threshold
-                    data_max = np.max(data)
-                    if np.issubdtype(data.dtype, np.floating) or data_max <= 10.0:
-                        dynamic_threshold = 0.0001
-
-                    is_black, median_val = self.is_black_frame(
-                        data, dynamic_threshold, crop_fraction
-                    )
-                    return (idx, filename, median_val, is_black)
-                else:
-                    self.siril.log(
-                        f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
-                        LogColor.SALMON,
-                    )
-        except Exception as e:
-            self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
-            return None
-
     def is_black_frame(self, data, threshold=10, crop_fraction=0.4):
         if data.ndim > 2:
             data = data[0]
@@ -601,49 +569,58 @@ class PreprocessingInterface(QMainWindow):
     def scan_black_frames(
         self, folder="process", threshold=30, crop_fraction=0.4, seq_name=None
     ):
-
         black_frames = []
         black_indices = []
-        lock = threading.Lock()
-
+        all_frames_info = []
         self.siril.log("Starting scan for black frames...", LogColor.BLUE)
         self.siril.log(
             "Note: This process is running in the background and may take a while depending on your system and drizzle factor.",
             LogColor.BLUE,
         )
 
-        # Sort once, outside the loop
-        sorted_files = sorted(os.listdir(folder))
+        for idx, filename in enumerate(sorted(os.listdir(folder))):
+            if filename.startswith(seq_name) and filename.lower().endswith(
+                self.fits_extension
+            ):
+                filepath = os.path.join(folder, filename)
+                try:
+                    with fits.open(filepath) as hdul:
+                        data = hdul[0].data
+                        if data is not None and data.ndim >= 2:
+                            dynamic_threshold = threshold
+                            data_max = np.max(data)
+                            if (
+                                np.issubdtype(data.dtype, np.floating)
+                                or data_max <= 10.0
+                            ):
+                                dynamic_threshold = 0.0001
 
-        # Use ThreadPoolExecutor for multi-threaded processing
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {
-                executor.submit(
-                    self.process_frame,
-                    idx,
-                    filename,
-                    seq_name,
-                    folder,
-                    threshold,
-                    crop_fraction,
-                ): idx
-                for idx, filename in enumerate(sorted_files)
-            }
+                            is_black, median_val = self.is_black_frame(
+                                data, dynamic_threshold, crop_fraction
+                            )
+                            all_frames_info.append((filename, median_val))
 
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    idx, filename, median_val, is_black = result
-                    with lock:
-                        if is_black:
-                            black_frames.append(filename)
-                            black_indices.append(idx + 1)  # +1 because Siril uses 1-based indexing
+                            # Log for debugging
+                            # print(
+                            #     f"{filename} | shape: {data.shape} | dtype: {data.dtype} | min: {np.min(data)} | max: {data_max} | median: {median_val} | threshold used: {dynamic_threshold}"
+                            # )
+
+                            if is_black:
+                                black_frames.append(filename)
+                                black_indices.append(len(all_frames_info))
+                        else:
+                            self.siril.log(
+                                f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
+                                LogColor.SALMON,
+                            )
+                except Exception as e:
+                    self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
 
         self.siril.log(f"Following files are black: {black_frames}", LogColor.SALMON)
         self.siril.log(
             f"Black indices skipped in stacking: {black_indices}", LogColor.SALMON
         )
-        for index in sorted(black_indices):  # Sort to unselect in order
+        for index in black_indices:
             self.siril.cmd("unselect", seq_name, index, index)
 
     def calibration_stack(self, seq_name):
