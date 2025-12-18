@@ -64,6 +64,7 @@ import os
 import sys
 import math
 import shutil
+import time
 import sirilpy as s
 from datetime import datetime
 import json
@@ -98,7 +99,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.2"
-BUILD = "20251214"
+BUILD = "20251215_1"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -499,7 +500,11 @@ class PreprocessingInterface(QMainWindow):
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
         try:
-            self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10")
+            self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10", )
+            self.siril.cmd("cd", ".")  # Refresh current directory
+            self.siril.cmd("close")    # Close and reopen to flush cache
+            self.siril.cmd("cd", ".")  # Re-establish working directory
+            time.sleep(10)          # Wait for Siril to flush cache
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Seq BG Extraction failed: {e}", LogColor.RED)
             self.close_dialog()
@@ -1810,7 +1815,7 @@ class PreprocessingInterface(QMainWindow):
             f"filter_star_count={filter_star_count}\n"
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
-            f"feather_amount={feather_amount} (unused)\n"
+            f"feather_amount={feather_amount}\n"
             f"clean_up_files={clean_up_files}\n"
             f"build={VERSION}-{BUILD}",
             LogColor.BLUE,
