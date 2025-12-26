@@ -190,6 +190,7 @@ class PreprocessingInterface(QMainWindow):
             return
         try:
             self.siril.cmd("requires", "1.3.6")
+            self.siril.cmd("setcompress", "1 -type=rice 16")
         except s.CommandError:
             self.close_dialog()
             return
@@ -585,12 +586,12 @@ class PreprocessingInterface(QMainWindow):
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
-                self.fits_extension
+                self.fits_extension + ".fz"
             ):
                 filepath = os.path.join(folder, filename)
                 try:
                     with fits.open(filepath) as hdul:
-                        data = hdul[0].data
+                        data = hdul[1].data
                         if data is not None and data.ndim >= 2:
                             dynamic_threshold = threshold
                             data_max = np.max(data)
@@ -822,6 +823,7 @@ class PreprocessingInterface(QMainWindow):
         file_name += f"__{current_datetime}{suffix}"
 
         try:
+            self.siril.cmd("setcompress", "0")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
