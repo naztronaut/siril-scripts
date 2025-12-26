@@ -586,12 +586,12 @@ class PreprocessingInterface(QMainWindow):
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
-                self.fits_extension
+                self.fits_extension + ".fz"
             ):
                 filepath = os.path.join(folder, filename)
                 try:
                     with fits.open(filepath) as hdul:
-                        data = hdul[0].data
+                        data = hdul[1].data
                         if data is not None and data.ndim >= 2:
                             dynamic_threshold = threshold
                             data_max = np.max(data)
