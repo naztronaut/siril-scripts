@@ -467,7 +467,7 @@ class PreprocessingInterface(QMainWindow):
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
 
-        args.extend(["-nocache", "-force", "-disto=ps_distortion"])
+        args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4"])
         # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
