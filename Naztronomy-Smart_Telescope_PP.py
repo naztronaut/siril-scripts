@@ -172,6 +172,7 @@ class PreprocessingInterface(QMainWindow):
             return
         try:
             self.siril.cmd("requires", "1.3.6")
+            self.siril.cmd("setcompress", "1 -type=rice 16")
         except s.CommandError:
             self.close_dialog()
             return
@@ -714,6 +715,7 @@ class PreprocessingInterface(QMainWindow):
         file_name += f"__{current_datetime}{suffix}"
 
         try:
+            self.siril.cmd("setcompress", "0")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
