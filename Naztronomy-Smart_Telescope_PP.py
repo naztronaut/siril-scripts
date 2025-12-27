@@ -109,6 +109,9 @@ TELESCOPES = [
     "Dwarf 3",
     "Dwarf 2",
     "Celestron Origin",
+    "Unistellar eVscope 1 / eQuinox 1",
+    "Unistellar eVscope 2 / eQuinox 2",
+    "Unistellar Odyssey / Odyssey Pro",
 ]
 
 FILTER_OPTIONS_MAP = {
@@ -117,6 +120,9 @@ FILTER_OPTIONS_MAP = {
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 2": ["Astro filter (UV/IR)"],
     "Celestron Origin": ["No Filter (Broadband)"],
+    "Unistellar eVscope 1 / eQuinox 1": ["No Filter (Broadband)"],
+    "Unistellar eVscope 2 / eQuinox 2": ["No Filter (Broadband)"],
+    "Unistellar Odyssey / Odyssey Pro": ["No Filter (Broadband)"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -337,10 +343,14 @@ class PreprocessingInterface(QMainWindow):
         telescope_map = {
             "Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
+            "S50": "ZWO Seestar S50",
             "DWARFIII": "Dwarf 3",
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
             "Origin": "Celestron Origin",
+            "eVscope v1.0": "Unistellar eVscope 1 / eQuinox 1",
+            "eVscope v2.0": "Unistellar eVscope 2 / eQuinox 2",
+            "Odyssey": "Unistellar Odyssey / Odyssey Pro",
         }
 
         try:
@@ -376,6 +386,15 @@ class PreprocessingInterface(QMainWindow):
                     if telescope.startswith(telescope_local_name):
                         mapped_telescope = ui_name
                         break
+
+                if header.get("ORIGIN","NULL").startswith("Unistellar"):
+                    if header.get("INSTRUME","NULL").startswith("IMX224"):
+                        mapped_telescope = "Unistellar eVscope 1 / eQuinox 1"
+                    if header.get("INSTRUME","NULL").startswith("IMX347"):
+                        mapped_telescope = "Unistellar eVscope 2 / eQuinox 2"
+                    if header.get("INSTRUME","NULL").startswith("IMX415"):
+                        mapped_telescope = "Unistellar Odyssey / Odyssey Pro"
+
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
                 self.siril.log(
@@ -464,6 +483,12 @@ class PreprocessingInterface(QMainWindow):
             args.append(self.target_coords)
             focal_len = 100
             pixel_size = 1.45
+            args.append(f"-focal={focal_len}")
+            args.append(f"-pixelsize={pixel_size}")
+        if self.chosen_telescope == "Unistellar eVscope 1 / eQuinox 1":
+            args.append(self.target_coords)
+            focal_len = 450
+            pixel_size = 3.75
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
 
