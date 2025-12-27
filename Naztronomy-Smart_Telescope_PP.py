@@ -1525,6 +1525,10 @@ class PreprocessingInterface(QMainWindow):
                 ra = header.get("RA")
                 dec = header.get("DEC")
 
+                if ra is None:
+                    ra = header.get("FOVRA")
+                    dec = header.get("FOVDEC")
+
                 if ra is not None and dec is not None:
                     self.target_coords = f"{ra},{dec}"
                     self.siril.log(
