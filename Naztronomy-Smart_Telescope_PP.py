@@ -819,6 +819,18 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Command execution failed: {e}", LogColor.RED)
             self.close_dialog()
 
+        if "eVscope 1" in self.chosen_telescope:
+            # crop files for evscope1/equinox1 IMX224
+            cmd_args = ["seqcrop", f"pp_{seq_name}", "7 0 1296 976"]
+
+            self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
+
+            try:
+                self.siril.cmd(*cmd_args)
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"Command execution failed: {e}", LogColor.RED)
+                self.close_dialog()
+
     def seq_stack(
         self,
         seq_name,
@@ -1642,6 +1654,8 @@ class PreprocessingInterface(QMainWindow):
                     f"Error during cleanup after calibration: {e}", LogColor.SALMON
                 )
             seq_name = "pp_" + seq_name
+            if "eVscope 1" in self.chosen_telescope:
+                seq_name = "cropped_" + seq_name
 
         if bg_extract:
             self.seq_bg_extract(seq_name=seq_name)
