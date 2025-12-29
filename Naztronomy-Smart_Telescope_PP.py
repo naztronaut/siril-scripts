@@ -937,7 +937,7 @@ class PreprocessingInterface(QMainWindow):
         catalog="localgaia",
         whiteref="Average Spiral Galaxy",
     ):
-        if oscsensor == "Unistellar Evscope 2":
+        if oscsensor == "Unistellar eVscope 2 / eQuinox 2":
             self.siril.cmd("pcc", f"-catalog={catalog}")
             self.siril.log(
                 "PCC'd Image, SPCC Unavailable for Evscope 2", LogColor.GREEN
