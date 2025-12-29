@@ -533,12 +533,6 @@ class PreprocessingInterface(QMainWindow):
             pixel_size = 1.45
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
-        if self.chosen_telescope == "Unistellar eVscope 1 / eQuinox 1":
-            args.append(self.target_coords)
-            focal_len = 450
-            pixel_size = 3.75
-            args.append(f"-focal={focal_len}")
-            args.append(f"-pixelsize={pixel_size}")
 
         args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4"])
         # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
