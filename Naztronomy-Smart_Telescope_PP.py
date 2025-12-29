@@ -653,7 +653,7 @@ class PreprocessingInterface(QMainWindow):
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
-                self.fits_extension+".fz"
+                self.fits_extension + ".fz"
             ):
                 filepath = os.path.join(folder, filename)
                 try:
