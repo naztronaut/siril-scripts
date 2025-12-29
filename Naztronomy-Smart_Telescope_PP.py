@@ -423,7 +423,7 @@ class PreprocessingInterface(QMainWindow):
                     hdr.set("FOCALLEN", 450.0)  # add a FOCALLEN header
                     hdr.set("XPIXSZ", 3.75)  # add a XPIXSZ header
                     hdr.set("YPIXSZ", 3.75)  # add a YPIXSZ header
-
+                    telescope = "eVscope v1.0"
                 if hdr["INSTRUME"].startswith("IMX347"):  # eVscope2 or eQuinox2
                     hdr.set("FOCALLEN", 450.0)  # add a FOCALLEN header
                     hdr.set("XPIXSZ", 2.9)  # add a XPIXSZ header
