@@ -937,44 +937,45 @@ class PreprocessingInterface(QMainWindow):
         catalog="localgaia",
         whiteref="Average Spiral Galaxy",
     ):
-        if oscsensor == "Unistellar eVscope 2 / eQuinox 2":
-            self.siril.cmd("pcc", f"-catalog={catalog}")
-            self.siril.log(
-                "PCC'd Image, SPCC Unavailable for Evscope 2", LogColor.GREEN
-            )
+
+        recoded_sensor = oscsensor
+        """SPCC with oscsensor, filter, catalog, and whiteref."""
+        if oscsensor in ["Dwarf 3"]:
+            recoded_sensor = "Sony IMX678"
+        elif "eVscope 1" in oscsensor:
+            recoded_sensor = "Sony IMX224"
+        elif "eVscope 2" in oscsensor:
+            recoded_sensor = "Sony IMX415" # very similar to IMX347
+        elif "Odyssey" in oscsensor:
+            recoded_sensor = "Sony IMX415"
         else:
             recoded_sensor = oscsensor
-            """SPCC with oscsensor, filter, catalog, and whiteref."""
-            if oscsensor in ["Dwarf 3"]:
-                recoded_sensor = "Sony IMX678"
-            else:
-                recoded_sensor = oscsensor
 
-            args = [
-                f"-oscsensor={recoded_sensor}",
-                f"-catalog={catalog}",
-                f"-whiteref={whiteref}",
-            ]
+        args = [
+            f"-oscsensor={recoded_sensor}",
+            f"-catalog={catalog}",
+            f"-whiteref={whiteref}",
+        ]
 
-            # Add filter-specific arguments
-            filter_args = FILTER_COMMANDS_MAP.get(oscsensor, {}).get(filter)
-            if filter_args:
-                args.extend(filter_args)
-            else:
-                # Default to UV/IR Block
-                args.append("-oscfilter=UV/IR Block")
+        # Add filter-specific arguments
+        filter_args = FILTER_COMMANDS_MAP.get(oscsensor, {}).get(filter)
+        if filter_args:
+            args.extend(filter_args)
+        else:
+            # Default to UV/IR Block
+            args.append("-oscfilter=UV/IR Block")
 
-            # Double Quote each argument due to potential spaces
-            quoted_args = [f'"{arg}"' for arg in args]
-            try:
-                self.siril.cmd("spcc", *quoted_args)
-            except (s.CommandError, s.DataError, s.SirilError) as e:
-                self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
-                self.close_dialog()
+        # Double Quote each argument due to potential spaces
+        quoted_args = [f'"{arg}"' for arg in args]
+        try:
+            self.siril.cmd("spcc", *quoted_args)
+        except (s.CommandError, s.DataError, s.SirilError) as e:
+            self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
+            self.close_dialog()
 
-            img = self.save_image("_spcc")
-            self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
-            return img
+        img = self.save_image("_spcc")
+        self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
+        return img
 
     def load_image(self, image_name):
         """Loads the result."""
