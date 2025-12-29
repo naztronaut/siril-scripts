@@ -109,6 +109,9 @@ TELESCOPES = [
     "Dwarf 3",
     "Dwarf 2",
     "Celestron Origin",
+    "Unistellar eVscope 1 / eQuinox 1",
+    "Unistellar eVscope 2 / eQuinox 2",
+    "Unistellar Odyssey / Odyssey Pro",
 ]
 
 FILTER_OPTIONS_MAP = {
@@ -117,6 +120,9 @@ FILTER_OPTIONS_MAP = {
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 2": ["Astro filter (UV/IR)"],
     "Celestron Origin": ["No Filter (Broadband)"],
+    "Unistellar eVscope 1 / eQuinox 1": ["No Filter (Broadband)"],
+    "Unistellar eVscope 2 / eQuinox 2": ["No Filter (Broadband)"],
+    "Unistellar Odyssey / Odyssey Pro": ["No Filter (Broadband)"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -337,10 +343,14 @@ class PreprocessingInterface(QMainWindow):
         telescope_map = {
             "Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
+            "S50": "ZWO Seestar S50",
             "DWARFIII": "Dwarf 3",
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
             "Origin": "Celestron Origin",
+            "eVscope v1.0": "Unistellar eVscope 1 / eQuinox 1",
+            "eVscope v2.0": "Unistellar eVscope 2 / eQuinox 2",
+            "odyssey": "Unistellar Odyssey / Odyssey Pro",
         }
 
         try:
@@ -376,6 +386,15 @@ class PreprocessingInterface(QMainWindow):
                     if telescope.startswith(telescope_local_name):
                         mapped_telescope = ui_name
                         break
+
+                if header.get("ORIGIN","NULL").startswith("Unistellar"):
+                    if header.get("INSTRUME","NULL").startswith("IMX224"):
+                        mapped_telescope = "Unistellar eVscope 1 / eQuinox 1"
+                    if header.get("INSTRUME","NULL").startswith("IMX347"):
+                        mapped_telescope = "Unistellar eVscope 2 / eQuinox 2"
+                    if header.get("INSTRUME","NULL").startswith("IMX415"):
+                        mapped_telescope = "Unistellar Odyssey / Odyssey Pro"
+
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
                 self.siril.log(
@@ -385,6 +404,54 @@ class PreprocessingInterface(QMainWindow):
 
         except Exception as e:
             self.siril.log(f"Error reading telescope from FITS: {e}", LogColor.SALMON)
+
+    def fixUnistellarHeaders(self, dir_name):
+        dir = os.path.join(self.current_working_directory, dir_name)
+        for file in os.listdir(dir):
+            if file.upper().endswith("STACKINPUT.FITS") or file.upper().endswith(
+                "STACKINPUT.FIT"
+            ):
+                data, hdr = fits.getdata(os.path.join(dir, file), header=True)
+                hdr.set(
+                    "RA", hdr["FOVRA"]
+                )  # add a RA header based on the FOVRA unistellar header
+                hdr.set(
+                    "DEC", hdr["FOVDEC"]
+                )  # add a DEC header based on the FOVDEC unistellar header
+                telescope = None
+                if hdr["INSTRUME"].startswith("IMX224"):  # eVscope1 or eQuinox1
+                    hdr.set("FOCALLEN", 450.0)  # add a FOCALLEN header
+                    hdr.set("XPIXSZ", 3.75)  # add a XPIXSZ header
+                    hdr.set("YPIXSZ", 3.75)  # add a YPIXSZ header
+                    telescope = "eVscope v1.0"
+                if hdr["INSTRUME"].startswith("IMX347"):  # eVscope2 or eQuinox2
+                    hdr.set("FOCALLEN", 450.0)  # add a FOCALLEN header
+                    hdr.set("XPIXSZ", 2.9)  # add a XPIXSZ header
+                    hdr.set("YPIXSZ", 2.9)  # add a YPIXSZ header
+                    telescope = "eVscope v2.0"
+                if hdr["INSTRUME"].startswith("IMX415"):  # Odyssey or Odyssey Pro
+                    hdr.set("FOCALLEN", 320.0)  # add a FOCALLEN header
+                    hdr.set("XPIXSZ", 2.9)  # add a XPIXSZ header
+                    hdr.set("YPIXSZ", 2.9)  # add a YPIXSZ header
+                    telescope = "Odyssey"
+
+                if hdr["SOFTVER"].startswith("4.2") and telescope.startswith(
+                    "eVscope"
+                ):  # fix for bayer issue with latest FW 4.2
+                    hdr.set("XBAYROFF", 0)  # add a XPIXSZ header
+                    hdr.set("YBAYROFF", 1)  # add a YPIXSZ header
+                else:
+                    hdr.set("XBAYROFF", 0)  # add a XPIXSZ header
+                    hdr.set("YBAYROFF", 0)  # add a YPIXSZ header
+
+                if hdr.get("TELESCOP") is None and telescope is not None:
+                    hdr.set(
+                        "TELESCOP", telescope
+                    )  # add a TELESCOP header for older FW version
+
+                fits.writeto(os.path.join(dir, file), data, hdr, overwrite=True)
+                print(file)
+        print("Unistellar headers fixed!")
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -467,7 +534,7 @@ class PreprocessingInterface(QMainWindow):
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
 
-        args.extend(["-nocache", "-force", "-disto=ps_distortion"])
+        args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4"])
         # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
@@ -746,6 +813,18 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Command execution failed: {e}", LogColor.RED)
             self.close_dialog()
 
+        if "eVscope 1" in self.chosen_telescope:
+            # crop files for evscope1/equinox1 IMX224
+            cmd_args = ["seqcrop", f"pp_{seq_name}", "7 0 1296 976"]
+
+            self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
+
+            try:
+                self.siril.cmd(*cmd_args)
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(f"Command execution failed: {e}", LogColor.RED)
+                self.close_dialog()
+
     def seq_stack(
         self,
         seq_name,
@@ -858,44 +937,45 @@ class PreprocessingInterface(QMainWindow):
         catalog="localgaia",
         whiteref="Average Spiral Galaxy",
     ):
-        if oscsensor == "Unistellar Evscope 2":
-            self.siril.cmd("pcc", f"-catalog={catalog}")
-            self.siril.log(
-                "PCC'd Image, SPCC Unavailable for Evscope 2", LogColor.GREEN
-            )
+
+        recoded_sensor = oscsensor
+        """SPCC with oscsensor, filter, catalog, and whiteref."""
+        if oscsensor in ["Dwarf 3"]:
+            recoded_sensor = "Sony IMX678"
+        elif "eVscope 1" in oscsensor:
+            recoded_sensor = "Sony IMX224"
+        elif "eVscope 2" in oscsensor:
+            recoded_sensor = "Sony IMX415" # very similar to IMX347
+        elif "Odyssey" in oscsensor:
+            recoded_sensor = "Sony IMX415"
         else:
             recoded_sensor = oscsensor
-            """SPCC with oscsensor, filter, catalog, and whiteref."""
-            if oscsensor in ["Dwarf 3"]:
-                recoded_sensor = "Sony IMX678"
-            else:
-                recoded_sensor = oscsensor
 
-            args = [
-                f"-oscsensor={recoded_sensor}",
-                f"-catalog={catalog}",
-                f"-whiteref={whiteref}",
-            ]
+        args = [
+            f"-oscsensor={recoded_sensor}",
+            f"-catalog={catalog}",
+            f"-whiteref={whiteref}",
+        ]
 
-            # Add filter-specific arguments
-            filter_args = FILTER_COMMANDS_MAP.get(oscsensor, {}).get(filter)
-            if filter_args:
-                args.extend(filter_args)
-            else:
-                # Default to UV/IR Block
-                args.append("-oscfilter=UV/IR Block")
+        # Add filter-specific arguments
+        filter_args = FILTER_COMMANDS_MAP.get(oscsensor, {}).get(filter)
+        if filter_args:
+            args.extend(filter_args)
+        else:
+            # Default to UV/IR Block
+            args.append("-oscfilter=UV/IR Block")
 
-            # Double Quote each argument due to potential spaces
-            quoted_args = [f'"{arg}"' for arg in args]
-            try:
-                self.siril.cmd("spcc", *quoted_args)
-            except (s.CommandError, s.DataError, s.SirilError) as e:
-                self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
-                self.close_dialog()
+        # Double Quote each argument due to potential spaces
+        quoted_args = [f'"{arg}"' for arg in args]
+        try:
+            self.siril.cmd("spcc", *quoted_args)
+        except (s.CommandError, s.DataError, s.SirilError) as e:
+            self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
+            self.close_dialog()
 
-            img = self.save_image("_spcc")
-            self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
-            return img
+        img = self.save_image("_spcc")
+        self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
+        return img
 
     def load_image(self, image_name):
         """Loads the result."""
@@ -1500,6 +1580,10 @@ class PreprocessingInterface(QMainWindow):
                 ra = header.get("RA")
                 dec = header.get("DEC")
 
+                if ra is None:
+                    ra = header.get("FOVRA")
+                    dec = header.get("FOVDEC")
+
                 if ra is not None and dec is not None:
                     self.target_coords = f"{ra},{dec}"
                     self.siril.log(
@@ -1539,6 +1623,9 @@ class PreprocessingInterface(QMainWindow):
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
 
+        if self.chosen_telescope.startswith("Unistellar"):
+            self.fixUnistellarHeaders(dir_name=output_name)
+
         # Output name is actually the name of the batched working directory
         self.convert_files(dir_name=output_name)
         # self.unselect_bad_fits(seq_name=output_name)
@@ -1562,6 +1649,8 @@ class PreprocessingInterface(QMainWindow):
                     f"Error during cleanup after calibration: {e}", LogColor.SALMON
                 )
             seq_name = "pp_" + seq_name
+            if "eVscope 1" in self.chosen_telescope:
+                seq_name = "cropped_" + seq_name
 
         if bg_extract:
             self.seq_bg_extract(seq_name=seq_name)
