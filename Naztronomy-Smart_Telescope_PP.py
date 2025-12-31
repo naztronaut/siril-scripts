@@ -207,18 +207,31 @@ class PreprocessingInterface(QMainWindow):
 
         self.fits_extension = self.siril.get_siril_config("core", "extension")
 
-        self.gaia_catalogue_available = False
+        self.astrometry_gaia_available = False
         try:
-            catalog_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
+            astrometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
             if (
-                catalog_status
-                and catalog_status != "(not set)"
-                and os.path.isfile(catalog_status)
+                astrometry_gaia_status
+                and astrometry_gaia_status != "(not set)"
+                and os.path.isfile(astrometry_gaia_status)
             ):
-                self.gaia_catalogue_available = True
-
+                self.astrometry_gaia_available = True
         except s.CommandError:
             pass
+            
+        self.photometry_gaia_available = False
+        try:
+            photometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_photo")
+            print(photometry_gaia_status)
+            if (
+                photometry_gaia_status
+                and photometry_gaia_status != "(not set)"
+                and os.path.isdir(photometry_gaia_status)
+            ):
+                self.photometry_gaia_available = True
+        except s.CommandError:
+            pass
+
         self.current_working_directory = self.siril.get_siril_wd()
         self.cwd_label_text = ""
 
@@ -1069,8 +1082,13 @@ class PreprocessingInterface(QMainWindow):
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
 
+        # If photometry Gaia is not available, disable SPCC
+        if not self.photometry_gaia_available:
+            self.spcc_checkbox.setChecked(False)
+            self.spcc_checkbox.setEnabled(False)
+            print("diabled")
         # Disable SPCC for Celestron Origin
-        if selected_scope == "Celestron Origin":
+        elif selected_scope == "Celestron Origin":
             self.spcc_checkbox.setChecked(False)
             self.spcc_checkbox.setEnabled(False)
             self.siril.log(
@@ -1128,16 +1146,27 @@ class PreprocessingInterface(QMainWindow):
         main_layout.addWidget(self.cwd_label)
 
         # Catalog section
-        if self.gaia_catalogue_available:
-            gaia_status_label = QLabel("Local Gaia Status: ✓ Available")
+        if self.astrometry_gaia_available:
+            gaia_status_label = QLabel("Local Astrometry Gaia Status: ✓ Available")
             gaia_status_label.setStyleSheet("color: green;")
         else:
             gaia_status_label = QLabel(
-                "Local Gaia Status: ✗ Not available, mosaics will not be generated."
+                "Local Astrometry Gaia Status: ✗ Not available, mosaics will not be generated."
             )
             gaia_status_label.setStyleSheet("color: red;")
         main_layout.addWidget(gaia_status_label)
 
+        if self.photometry_gaia_available:
+            photometry_status_label = QLabel(
+                "Local Photometry Gaia Status: ✓ Available"
+            )
+            photometry_status_label.setStyleSheet("color: green;")
+        else:
+            photometry_status_label = QLabel(
+                "Local Photometry Gaia Status: ✗ Not available, SPCC is disabled."
+            )
+            photometry_status_label.setStyleSheet("color: red;")
+        main_layout.addWidget(photometry_status_label)
         # Telescope section
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
@@ -1430,6 +1459,8 @@ class PreprocessingInterface(QMainWindow):
         spcc_layout.setContentsMargins(10, 15, 10, 10)
 
         spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
+        if not self.photometry_gaia_available:
+            spcc_tooltip += " Disabled because Local Photometry catalog not available."
         self.spcc_checkbox = QCheckBox(
             "Enable Spectrophotometric Color Calibration (SPCC)"
         )
@@ -1452,22 +1483,9 @@ class PreprocessingInterface(QMainWindow):
         )
         spcc_layout.addWidget(self.filter_combo, 1, 1)
 
-        # catalog_label = QLabel("Catalog:")
-        # catalog_label.setFont(title_font)
-        # catalog_tooltip = "Source of star color data. Local Gaia is faster but requires downloaded catalog. Online Gaia works without local catalog but is slower and often crashes."
-        # catalog_label.setToolTip(catalog_tooltip)
-        # spcc_layout.addWidget(catalog_label, 2, 0)
-
-        # self.catalog_combo = QComboBox()
-        # catalog_options = ["localgaia"]
-        # self.catalog_combo.addItems(catalog_options)
-        # self.catalog_combo.setCurrentText("localgaia")
-        # self.catalog_combo.setEnabled(False)
-        # self.catalog_combo.setToolTip(catalog_tooltip)
-        # spcc_layout.addWidget(self.catalog_combo, 2, 1)
-
         # Connect SPCC checkbox to enable/disable filter and catalog combos
         self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
+
         # self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
         self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
@@ -1694,7 +1712,7 @@ class PreprocessingInterface(QMainWindow):
             self.extract_coords_from_fits(prefix=seq_name)
 
         # Only do plate solve if local gaia is available!
-        if not self.gaia_catalogue_available:
+        if not self.astrometry_gaia_available:
             self.siril.log(
                 "Local Gaia catalogue not available, skipping plate solving. Mosaics will NOT be automatically created.",
                 LogColor.SALMON,
