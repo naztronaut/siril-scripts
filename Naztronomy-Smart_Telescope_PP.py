@@ -366,7 +366,7 @@ class PreprocessingInterface(QMainWindow):
 
             # Store fits files count to use later
             self.fits_files_count = len(fits_files)
-            print(f"Found {self.fits_files_count} FITS files in lights directory.")
+            self.siril.log(f"Found {self.fits_files_count} FITS files in lights directory.", LogColor.BLUE)
             # Update the label if it exists
             if hasattr(self, "files_found_label"):
                 self.files_found_label.setText(
@@ -450,8 +450,8 @@ class PreprocessingInterface(QMainWindow):
                     )  # add a TELESCOP header for older FW version
 
                 fits.writeto(os.path.join(dir, file), data, hdr, overwrite=True)
-                print(file)
-        print("Unistellar headers fixed!")
+                # print(file)
+        self.siril.log("Unistellar headers fixed!", LogColor.GREEN)
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -1041,11 +1041,9 @@ class PreprocessingInterface(QMainWindow):
                     or f.startswith("pp_flats_")
                 ):
                     file_path = os.path.join(process_dir, f)
-                    print(f"Attempting to delete file: {file_path}")
                     if os.path.isfile(file_path):
                         try:
                             os.remove(file_path)
-                            print(f"Deleted file: {file_path}")
                         except OSError as e:
                             self.siril.log(f"Failed to delete {file_path}: {e}", LogColor.SALMON)
         except Exception as e:
