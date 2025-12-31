@@ -25,6 +25,10 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.3 - Support for new Unistellar/Evscope telescopes (nicastel)
+      - Compression during processing
+      - Forcing stacking to use -32b to fix Dwarf3's "milky" stacked image
+      - Better error handling with clean_ups
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
@@ -98,8 +102,8 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.2"
-BUILD = "20251218"
+VERSION = "2.0.3"
+BUILD = "20251231"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
