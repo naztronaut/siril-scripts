@@ -29,6 +29,7 @@ CHANGELOG:
       - Compression during processing
       - Forcing stacking to use -32b to fix Dwarf3's "milky" stacked image
       - Better error handling with clean_ups
+      - Force local photometry catalog for SPCC
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
