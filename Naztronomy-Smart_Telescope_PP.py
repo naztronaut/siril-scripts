@@ -30,6 +30,8 @@ CHANGELOG:
       - Forcing stacking to use -32b to fix Dwarf3's "milky" stacked image
       - Better error handling with clean_ups
       - Force local photometry catalog for SPCC
+      - Better gaia status layout in GUI
+      - Updated and more Tooltips
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
