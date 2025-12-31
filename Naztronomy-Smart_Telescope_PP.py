@@ -210,11 +210,11 @@ class PreprocessingInterface(QMainWindow):
 
         self.astrometry_gaia_available = False
         try:
-            astrometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
+            self.astrometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
             if (
-                astrometry_gaia_status
-                and astrometry_gaia_status != "(not set)"
-                and os.path.isfile(astrometry_gaia_status)
+                self.astrometry_gaia_status
+                and self.astrometry_gaia_status != "(not set)"
+                and os.path.isfile(self.astrometry_gaia_status)
             ):
                 self.astrometry_gaia_available = True
         except s.CommandError:
@@ -222,12 +222,11 @@ class PreprocessingInterface(QMainWindow):
             
         self.photometry_gaia_available = False
         try:
-            photometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_photo")
-            print(photometry_gaia_status)
+            self.photometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_photo")
             if (
-                photometry_gaia_status
-                and photometry_gaia_status != "(not set)"
-                and os.path.isdir(photometry_gaia_status)
+                self.photometry_gaia_status
+                and self.photometry_gaia_status != "(not set)"
+                and os.path.isdir(self.photometry_gaia_status)
             ):
                 self.photometry_gaia_available = True
         except s.CommandError:
@@ -1147,27 +1146,55 @@ class PreprocessingInterface(QMainWindow):
         main_layout.addWidget(self.cwd_label)
 
         # Catalog section
+        # if self.astrometry_gaia_available:
+        #     gaia_status_label = QLabel("Local Astrometry Gaia Status: ✓ Available")
+        #     gaia_status_label.setStyleSheet("color: green;")
+        # else:
+        #     gaia_status_label = QLabel(
+        #         "Local Astrometry Gaia Status: ✗ Not available, mosaics will not be generated."
+        #     )
+        #     gaia_status_label.setStyleSheet("color: red;")
+        # main_layout.addWidget(gaia_status_label)
+
+        # if self.photometry_gaia_available:
+        #     photometry_status_label = QLabel(
+        #         "Local Photometry Gaia Status: ✓ Available"
+        #     )
+        #     photometry_status_label.setStyleSheet("color: green;")
+        # else:
+        #     photometry_status_label = QLabel(
+        #         "Local Photometry Gaia Status: ✗ Not available, SPCC is disabled."
+        #     )
+        #     photometry_status_label.setStyleSheet("color: red;")
+        # main_layout.addWidget(photometry_status_label)
+
+        # Catalog status section
+        gaia_status_section = QGroupBox("Local Gaia Catalog Status")
+        gaia_status_layout = QHBoxLayout(gaia_status_section)
+        gaia_status_layout.setSpacing(15)
+
         if self.astrometry_gaia_available:
-            gaia_status_label = QLabel("Local Astrometry Gaia Status: ✓ Available")
-            gaia_status_label.setStyleSheet("color: green;")
+            astrometry_gaia_label = QLabel("✓ Local Astrometry Gaia Available")
+            astrometry_gaia_label.setStyleSheet("color: green;")
+            astrometry_gaia_label.setToolTip(f"Local Astrometry Gaia found at: {self.astrometry_gaia_status}")
         else:
-            gaia_status_label = QLabel(
-                "Local Astrometry Gaia Status: ✗ Not available, mosaics will not be generated."
-            )
-            gaia_status_label.setStyleSheet("color: red;")
-        main_layout.addWidget(gaia_status_label)
+            astrometry_gaia_label = QLabel("✗ Local Astrometry Gaia")
+            astrometry_gaia_label.setStyleSheet("color: red;")
+            astrometry_gaia_label.setToolTip("Local Astrometry Gaia not available - mosaics will not be generated")
+        gaia_status_layout.addWidget(astrometry_gaia_label)
 
         if self.photometry_gaia_available:
-            photometry_status_label = QLabel(
-                "Local Photometry Gaia Status: ✓ Available"
-            )
-            photometry_status_label.setStyleSheet("color: green;")
+            photometry_gaia_label = QLabel("✓ Local Photometry Gaia Available")
+            photometry_gaia_label.setStyleSheet("color: green;")
+            photometry_gaia_label.setToolTip(f"Local Photometry Gaia found at: {self.photometry_gaia_status}")
         else:
-            photometry_status_label = QLabel(
-                "Local Photometry Gaia Status: ✗ Not available, SPCC is disabled."
-            )
-            photometry_status_label.setStyleSheet("color: red;")
-        main_layout.addWidget(photometry_status_label)
+            photometry_gaia_label = QLabel("✗ Local Photometry Gaia")
+            photometry_gaia_label.setStyleSheet("color: red;")
+            photometry_gaia_label.setToolTip("Local Photometry Gaia not available - SPCC is disabled")
+        gaia_status_layout.addWidget(photometry_gaia_label)
+
+        main_layout.addWidget(gaia_status_section)
+
         # Telescope section
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
