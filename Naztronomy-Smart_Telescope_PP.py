@@ -507,12 +507,13 @@ class PreprocessingInterface(QMainWindow):
             )
             return True
         else:
-            self.siril.error_messagebox(f"Directory {directory} does not exist", True)
-            raise NoImageError(
-                (
-                    f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
-                )
-            )
+            # self.siril.error_messagebox(f"Directory {directory} does not exist", True)
+            # raise NoImageError(
+            #     (
+            #         f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
+            #     )
+            # )
+            self.siril.log(f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.', LogColor.SALMON)
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name):
@@ -795,10 +796,21 @@ class PreprocessingInterface(QMainWindow):
         cmd_args = [
             "calibrate",
             f"{seq_name}",
-            "-dark=darks_stacked" if use_darks else "",
-            "-flat=flats_stacked" if use_flats else "",
-            "-cfa -equalize_cfa",
         ]
+        
+        # Check if darks_stacked exists before adding to command
+        if use_darks and os.path.exists(
+            os.path.join(self.current_working_directory, "process", f"darks_stacked{self.fits_extension}")
+        ):
+            cmd_args.append("-dark=darks_stacked")
+            cmd_args.append("-cc=dark")
+        
+        if use_flats and os.path.exists(
+            os.path.join(self.current_working_directory, "process", f"flats_stacked{self.fits_extension}")
+        ):
+            cmd_args.append("-flat=flats_stacked")
+        
+        cmd_args.extend(["-cfa", "-equalize_cfa"])
 
         # Calibrate with -debayer if drizle is not set
         self.siril.log(f"Drizzle status: {self.drizzle_status}", LogColor.BLUE)
@@ -847,6 +859,7 @@ class PreprocessingInterface(QMainWindow):
             "-rgb_equal",
             "-maximize",
             "-filter-included",
+            "-32b",
             f"-out={out}",
         ]
         if feather:
@@ -863,7 +876,11 @@ class PreprocessingInterface(QMainWindow):
         self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
 
         try:
+            # Turn off compression for stacking 
+            self.siril.cmd("setcompress", "0")
             self.siril.cmd(*cmd_args)
+            # Turn comperssion back on after stacking
+            self.siril.cmd("setcompress", "0")
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Stacking failed: {e}", LogColor.RED)
             self.close_dialog()
@@ -1006,22 +1023,33 @@ class PreprocessingInterface(QMainWindow):
             process_dir = os.path.join(self.current_working_directory, "process")
         else:
             process_dir = self.current_working_directory
-        for f in os.listdir(process_dir):
-            # Skip the stacked file
-            name, ext = os.path.splitext(f.lower())
-            if name in (f"{prefix}_stacked", "result") and ext in (self.fits_extension):
-                continue
+        try:
+            if not os.path.isdir(process_dir):
+                self.siril.log(f"Process directory not found: {process_dir}", LogColor.SALMON)
+                return
+            
+            for f in os.listdir(process_dir):
+                # Skip the stacked file
+                name, ext = os.path.splitext(f.lower())
+                if name in (f"{prefix}_stacked", "result") and ext in (self.fits_extension, self.fits_extension + ".fz"):
+                    continue
 
-            # Check if file starts with prefix_ or pp_flats_
-            if (
-                f.startswith(prefix)
-                or f.startswith(f"{prefix}_")
-                or f.startswith("pp_flats_")
-            ):
-                file_path = os.path.join(process_dir, f)
-                if os.path.isfile(file_path):
-                    # print(f"Removing: {file_path}")
-                    os.remove(file_path)
+                # Check if file starts with prefix_ or pp_flats_
+                if (
+                    f.startswith(prefix)
+                    or f.startswith(f"{prefix}_")
+                    or f.startswith("pp_flats_")
+                ):
+                    file_path = os.path.join(process_dir, f)
+                    print(f"Attempting to delete file: {file_path}")
+                    if os.path.isfile(file_path):
+                        try:
+                            os.remove(file_path)
+                            print(f"Deleted file: {file_path}")
+                        except OSError as e:
+                            self.siril.log(f"Failed to delete {file_path}: {e}", LogColor.SALMON)
+        except Exception as e:
+            self.siril.log(f"Error during cleanup: {e}", LogColor.SALMON)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
 
     @Slot(str)
@@ -1723,7 +1751,7 @@ class PreprocessingInterface(QMainWindow):
             )
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(
-                f"Error occurred during stacking: {e.status_code}", LogColor.RED
+                f"Error occurred during stacking: {e}", LogColor.RED
             )
             if feather:
                 QMessageBox.warning(
