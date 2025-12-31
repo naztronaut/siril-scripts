@@ -1269,6 +1269,7 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
         # Files found label
         self.files_found_label = QLabel()
+        self.files_found_label.setToolTip("Number of Fit(s) files found in the lights directory.")
         preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
 
         bg_extract_label = QLabel("Background Extraction:")
@@ -1519,6 +1520,7 @@ class PreprocessingInterface(QMainWindow):
         help_button = QPushButton("Help")
         help_button.setMinimumWidth(50)
         help_button.setMinimumHeight(35)
+        help_button.setToolTip("Show help information and frequently asked questions")
         # help_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
         help_button.clicked.connect(self.show_help)
         button_layout.addWidget(help_button)
@@ -1526,6 +1528,7 @@ class PreprocessingInterface(QMainWindow):
         save_presets_button = QPushButton("Save Presets")
         save_presets_button.setMinimumWidth(80)
         save_presets_button.setMinimumHeight(35)
+        save_presets_button.setToolTip("Save current settings to a \"naztronomy_smart_scope_presets.json\" file in the presets directory")
         # save_presets_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
         save_presets_button.clicked.connect(self.save_presets)
         button_layout.addWidget(save_presets_button)
@@ -1533,6 +1536,7 @@ class PreprocessingInterface(QMainWindow):
         load_presets_button = QPushButton("Load Presets")
         load_presets_button.setMinimumWidth(80)
         load_presets_button.setMinimumHeight(35)
+        load_presets_button.setToolTip("Load previously saved presets. If \"presets/naztronomy_smart_scope_presets.json\" exists, it will load first, otherwise it'll prompt you to find a proper .json file.")
         # load_presets_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
         load_presets_button.clicked.connect(self.load_presets)
         button_layout.addWidget(load_presets_button)
