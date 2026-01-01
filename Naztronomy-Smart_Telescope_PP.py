@@ -424,14 +424,23 @@ class PreprocessingInterface(QMainWindow):
                     if telescope.startswith(telescope_local_name):
                         mapped_telescope = ui_name
                         break
-
-                if header.get("ORIGIN","NULL").startswith("Unistellar"):
-                    if header.get("INSTRUME","NULL").startswith("IMX224"):
-                        mapped_telescope = "Unistellar eVscope 1 / eQuinox 1"
-                    if header.get("INSTRUME","NULL").startswith("IMX347"):
-                        mapped_telescope = "Unistellar eVscope 2 / eQuinox 2"
-                    if header.get("INSTRUME","NULL").startswith("IMX415"):
-                        mapped_telescope = "Unistellar Odyssey / Odyssey Pro"
+                
+                if mapped_telescope == "ZWO Seestar S30":
+                    origin = header.get("ORIGIN", "NULL")
+                    if origin.startswith("Unistellar"):
+                        instrume = header.get("INSTRUME", "NULL")
+                        # Dict for Unistellar
+                        unistellar_instruments = {
+                            "IMX224": "Unistellar eVscope 1 / eQuinox 1",
+                            "IMX347": "Unistellar eVscope 2 / eQuinox 2",
+                            "IMX415": "Unistellar Odyssey / Odyssey Pro",
+                        }
+                        for instrument, name in unistellar_instruments.items():
+                            if instrume.startswith(instrument):
+                                mapped_telescope = name
+                                break
+                    else:
+                        self.siril.log("Couldn't find Telescope info, setting default:", LogColor.BLUE)
 
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
