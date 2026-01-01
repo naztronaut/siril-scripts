@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Smart Telescope Preprocessing script
-Version: 2.0.2
+Version: 2.0.3
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -35,7 +35,6 @@ CHANGELOG:
       - Output stacking details
       - Fixed max frames bug for linux and mac
       - Updated tolerance for BGE 
-
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
@@ -169,6 +168,9 @@ UI_DEFAULTS = {
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
+    "win_max_files_per_batch": 2000,
+    "mac_max_files_per_batch": 25000,
+    "linux_max_files_per_batch": 25000,
     "enable_compression": True,
 }
 
@@ -187,6 +189,17 @@ class PreprocessingInterface(QMainWindow):
         self.drizzle_factor = 0
         self.filters_status = False
         self.initialization_successful = False
+
+        # Detect OS and set appropriate max files per batch
+        self.max_files_per_batch = 2000  # default
+        if sys.platform.startswith("win"):
+            self.max_files_per_batch = UI_DEFAULTS["win_max_files_per_batch"]
+        elif sys.platform.startswith("linux"):
+            self.max_files_per_batch = UI_DEFAULTS["linux_max_files_per_batch"]
+        elif sys.platform.startswith("darwin"):
+            self.max_files_per_batch = UI_DEFAULTS["mac_max_files_per_batch"]
+        else:
+            self.max_files_per_batch = UI_DEFAULTS["max_files_per_batch"]
 
         self.spcc_section = None
         self.spcc_checkbox = None
@@ -1158,7 +1171,7 @@ class PreprocessingInterface(QMainWindow):
             "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
             "3. If only one calibration frame is present, it will be treated as a master frame.\n"
             "4. Local Gaia catalog is required for mosaics!\n"
-            f"5. If on Windows and you have more than the default {UI_DEFAULTS['max_files_per_batch']} files, this script will automatically split them into batches. You can change the batching count from 100 to 2000.\n"
+            f"5. If you have more than the default {self.max_files_per_batch} files, this script will automatically split them into batches. You can change the batching count from 50 to {self.max_files_per_batch}.\n"
             "6. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
             "7. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
             "8. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
@@ -1191,29 +1204,6 @@ class PreprocessingInterface(QMainWindow):
         # Current working directory label
         self.cwd_label = QLabel(self.cwd_label_text)
         main_layout.addWidget(self.cwd_label)
-
-        # Catalog section
-        # if self.astrometry_gaia_available:
-        #     gaia_status_label = QLabel("Local Astrometry Gaia Status: ✓ Available")
-        #     gaia_status_label.setStyleSheet("color: green;")
-        # else:
-        #     gaia_status_label = QLabel(
-        #         "Local Astrometry Gaia Status: ✗ Not available, mosaics will not be generated."
-        #     )
-        #     gaia_status_label.setStyleSheet("color: red;")
-        # main_layout.addWidget(gaia_status_label)
-
-        # if self.photometry_gaia_available:
-        #     photometry_status_label = QLabel(
-        #         "Local Photometry Gaia Status: ✓ Available"
-        #     )
-        #     photometry_status_label.setStyleSheet("color: green;")
-        # else:
-        #     photometry_status_label = QLabel(
-        #         "Local Photometry Gaia Status: ✗ Not available, SPCC is disabled."
-        #     )
-        #     photometry_status_label.setStyleSheet("color: red;")
-        # main_layout.addWidget(photometry_status_label)
 
         # Catalog status section
         gaia_status_section = QGroupBox("Local Gaia Catalog Status")
@@ -1328,17 +1318,9 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout.addWidget(batch_size_label, 0, 0)
 
         self.batch_size_spinbox = QSpinBox()
-        # Set max batch size based on OS
-        if sys.platform.startswith("win"):
-            max_batch = 2000
-        elif sys.platform.startswith("linux"):
-            max_batch = 25000
-        elif sys.platform.startswith("darwin"):
-            max_batch = 25000
-        else:
-            max_batch = UI_DEFAULTS["max_files_per_batch"]  # Default to Windows limit for unknown OS
-        self.batch_size_spinbox.setRange(50, max_batch)  # clamps input based on OS
-        self.batch_size_spinbox.setValue(max_batch)
+        self.batch_size_spinbox.setToolTip(batch_size_tooltip) 
+        self.batch_size_spinbox.setRange(50, self.max_files_per_batch)  # clamps input based on OS
+        self.batch_size_spinbox.setValue(self.max_files_per_batch)
         self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
         # Files found label
@@ -1969,7 +1951,7 @@ class PreprocessingInterface(QMainWindow):
             self.biases_checkbox.setChecked(presets.get("biases", False))
             self.cleanup_files_checkbox.setChecked(presets.get("cleanup", False))
             self.batch_size_spinbox.setValue(
-                presets.get("batch_size", UI_DEFAULTS["max_files_per_batch"])
+                presets.get("batch_size", self.max_files_per_batch)
             )
             self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
             self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
