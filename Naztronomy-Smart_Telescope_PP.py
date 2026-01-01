@@ -165,6 +165,7 @@ UI_DEFAULTS = {
     "drizzle_amount": 1.0,
     "pixel_fraction": 1.0,
     "max_files_per_batch": 2000,
+    "enable_compression": True,
 }
 
 
@@ -203,7 +204,8 @@ class PreprocessingInterface(QMainWindow):
             return
         try:
             self.siril.cmd("requires", "1.3.6")
-            self.siril.cmd("setcompress", "1 -type=rice 16")
+            if UI_DEFAULTS["enable_compression"]:
+                self.siril.cmd("setcompress", "1 -type=rice 16")
         except s.CommandError:
             self.close_dialog()
             return
@@ -588,7 +590,7 @@ class PreprocessingInterface(QMainWindow):
     def seq_bg_extract(self, seq_name):
         """Runs the siril command 'seqsubsky' to extract the background from the plate solved files."""
         try:
-            self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10", )
+            self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10", "-tolerance=2.0")
             self.siril.cmd("cd", ".")  # Refresh current directory
             self.siril.cmd("close")    # Close and reopen to flush cache
             self.siril.cmd("cd", ".")  # Re-establish working directory
@@ -898,8 +900,9 @@ class PreprocessingInterface(QMainWindow):
             # Turn off compression for stacking 
             self.siril.cmd("setcompress", "0")
             self.siril.cmd(*cmd_args)
-            # Turn comperssion back on after stacking
-            self.siril.cmd("setcompress", "0")
+            # Turn compression back on after stacking
+            if UI_DEFAULTS["enable_compression"]:
+                self.siril.cmd("setcompress", "1 -type=rice 16")
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Stacking failed: {e}", LogColor.RED)
             self.close_dialog()
@@ -912,8 +915,8 @@ class PreprocessingInterface(QMainWindow):
         current_datetime = datetime.now().strftime("%Y-%m-%d_%H%M")
 
         # Default filename
-        drizzle_str = str(self.drizzle_factor).replace(".", "-")
-        file_name = f"result__drizzle-{drizzle_str}x__{current_datetime}{suffix}"
+        drizzle_str = str(round(self.drizzle_factor, 2)).replace(".", "-")
+        file_name = f"result_drizzle-{drizzle_str}x_{current_datetime}{suffix}"
 
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
@@ -933,9 +936,9 @@ class PreprocessingInterface(QMainWindow):
 
         file_name = f"{object_name}_{stack_count:03d}x{exptime}sec_{date_obs_str}"
         if self.drizzle_status:
-            file_name += f"__drizzle-{drizzle_str}x"
+            file_name += f"_drizzle-{drizzle_str}x"
 
-        file_name += f"__{current_datetime}{suffix}"
+        file_name += f"_{current_datetime}{suffix}"
 
         try:
             self.siril.cmd("setcompress", "0")
@@ -1012,6 +1015,44 @@ class PreprocessingInterface(QMainWindow):
         img = self.save_image("_spcc")
         self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
         return img
+
+    def stacking_details(self):
+        """Logs stacking details like number of frames, rejection method, feathering, and drizzle."""
+        try:
+            headers = self.siril.get_image_fits_header(return_as="dict")
+            object_name = headers.get("OBJECT", "Unknown")
+            exposure_time = headers.get("EXPTIME", "Unknown")
+            telescope = headers.get("TELESCOP") or headers.get("INSTRUME", "Unknown")
+            total_integration = headers.get("LIVETIME", "Unknown")
+            num_frames = headers.get("STACKCNT", "Unknown")
+            filter = headers.get("FILTER", "Unknown")
+            focallen = headers.get("FOCALLEN", "Unknown")
+            aperture = headers.get("APERTURE", "Unknown")
+            date_obs = headers.get("DATE-OBS", "Unknown")
+            date = headers.get("DATE", "Unknown")
+            pixel_size = headers.get("XPIXSZ", "Unknown")
+            feathering = self.feather_amount_spinbox.value() if self.feather_checkbox.isChecked() else "Off"
+            drizzle = f"{self.drizzle_factor}x" if self.drizzle_status else "Off"
+
+            details_msg = (
+                f"Stacking Details:\n"
+                f"Object: {object_name}\n"
+                f"Telescope: {telescope}\n"
+                f"Observation Date: {date_obs}\n"
+                f"Processing Date: {date}\n"
+                f"Filter: {filter}\n"
+                f"Number of Frames: {num_frames}\n"
+                f"Exposure Time: {exposure_time}s\n"
+                f"Total Integration: {total_integration}s\n"
+                f"Focal Length: {round(focallen, 2)}mm\n"
+                f"Aperture: {aperture}\n"
+                f"Pixel Size: {round(pixel_size, 2)}µm\n"
+                f"Feathering: {feathering}\n"
+                f"Drizzle: {drizzle}"
+            )
+            self.siril.log(details_msg, LogColor.BLUE)
+        except Exception as e:
+            self.siril.log(f"Error retrieving stacking details: {e}", LogColor.SALMON)
 
     def load_image(self, image_name):
         """Loads the result."""
@@ -1291,9 +1332,9 @@ class PreprocessingInterface(QMainWindow):
         elif sys.platform.startswith("darwin"):
             max_batch = 25000
         else:
-            max_batch = 2000  # Default to Windows limit for unknown OS
+            max_batch = UI_DEFAULTS["max_files_per_batch"]  # Default to Windows limit for unknown OS
         self.batch_size_spinbox.setRange(50, max_batch)  # clamps input based on OS
-        self.batch_size_spinbox.setValue(UI_DEFAULTS["max_files_per_batch"])
+        self.batch_size_spinbox.setValue(max_batch)
         self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
         # Files found label
@@ -2251,7 +2292,9 @@ class PreprocessingInterface(QMainWindow):
             self.load_image(
                 image_name=os.path.basename(img)
             )  # Load either og or spcc image
-
+        
+        # Get some stacking deets
+        self.stacking_details()
         # self.clean_up()
 
         self.siril.log(
