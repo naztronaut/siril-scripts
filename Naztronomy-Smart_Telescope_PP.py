@@ -194,10 +194,13 @@ class PreprocessingInterface(QMainWindow):
         self.max_files_per_batch = 2000  # default
         if sys.platform.startswith("win"):
             self.max_files_per_batch = UI_DEFAULTS["win_max_files_per_batch"]
+            self.siril.log("Detected Windows OS", LogColor.BLUE)
         elif sys.platform.startswith("linux"):
             self.max_files_per_batch = UI_DEFAULTS["linux_max_files_per_batch"]
+            self.siril.log("Detected Linux OS", LogColor.BLUE)
         elif sys.platform.startswith("darwin"):
             self.max_files_per_batch = UI_DEFAULTS["mac_max_files_per_batch"]
+            self.siril.log("Detected macOS", LogColor.BLUE)
         else:
             self.max_files_per_batch = UI_DEFAULTS["max_files_per_batch"]
 
