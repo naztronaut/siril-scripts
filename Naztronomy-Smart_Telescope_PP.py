@@ -26,12 +26,16 @@ The following subdirectories are optional:
 CHANGELOG:
 
 2.0.3 - Support for new Unistellar/Evscope telescopes (nicastel)
-      - Compression during processing
+      - Compression during processing (enabled by default and controlled by a flag)
       - Forcing stacking to use -32b to fix Dwarf3's "milky" stacked image
       - Better error handling with clean_ups
       - Force local photometry catalog for SPCC
       - Better gaia status layout in GUI
       - Updated and more Tooltips
+      - Output stacking details
+      - Fixed max frames bug for linux and mac
+      - Updated tolerance for BGE 
+
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
@@ -106,7 +110,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.3"
-BUILD = "20251231"
+BUILD = "20260101"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
