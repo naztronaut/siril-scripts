@@ -35,6 +35,7 @@ CHANGELOG:
       - Output stacking details
       - Fixed max frames bug for linux and mac
       - Updated tolerance for BGE 
+      - Add Dwarf Mini Support
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
@@ -116,6 +117,7 @@ YOUTUBE = "YouTube.com/Naztronomy"
 TELESCOPES = [
     "ZWO Seestar S30",
     "ZWO Seestar S50",
+    "Dwarf Mini",
     "Dwarf 3",
     "Dwarf 2",
     "Celestron Origin",
@@ -127,6 +129,7 @@ TELESCOPES = [
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
+    "Dwarf Mini": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 2": ["Astro filter (UV/IR)"],
     "Celestron Origin": ["No Filter (Broadband)"],
@@ -143,6 +146,18 @@ FILTER_COMMANDS_MAP = {
     "ZWO Seestar S50": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
+    },
+    "Dwarf Mini": {
+        "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
+        "Dual-Band": [
+            "-narrowband",
+            "-rwl=656.28",
+            "-rbw=18",
+            "-gwl=500.70",
+            "-gbw=30",
+            "-bwl=500.70",
+            "-bbw=30",
+        ],
     },
     "Dwarf 3": {
         "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
@@ -382,6 +397,7 @@ class PreprocessingInterface(QMainWindow):
             "Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
             "S50": "ZWO Seestar S50",
+            "DWARF mini": "Dwarf Mini",
             "DWARFIII": "Dwarf 3",
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
@@ -1007,6 +1023,8 @@ class PreprocessingInterface(QMainWindow):
         """SPCC with oscsensor, filter, catalog, and whiteref."""
         if oscsensor in ["Dwarf 3"]:
             recoded_sensor = "Sony IMX678"
+        elif oscsensor in ["Dwarf Mini"]:
+            recoded_sensor = "Sony IMX662"
         elif "eVscope 1" in oscsensor:
             recoded_sensor = "Sony IMX224"
         elif "eVscope 2" in oscsensor:
