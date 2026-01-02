@@ -1677,7 +1677,7 @@ class PreprocessingInterface(QMainWindow):
             max_files_per_batch=self.batch_size_spinbox.value(),
             bg_extract=self.bg_extract_checkbox.isChecked(),
             drizzle=self.drizzle_checkbox.isChecked(),
-            drizzle_amount=self.drizzle_amount_spinbox.value(),
+            drizzle_amount=round(self.drizzle_amount_spinbox.value(), 2),
             pixel_fraction=round(self.pixel_fraction_spinbox.value(), 2),
             filter_roundness=round(self.roundness_spinbox.value(),2),
             filter_fwhm=round(self.fwhm_spinbox.value(), 2),
