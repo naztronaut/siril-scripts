@@ -110,7 +110,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.3"
-BUILD = "20260101"
+BUILD = "20260102"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
