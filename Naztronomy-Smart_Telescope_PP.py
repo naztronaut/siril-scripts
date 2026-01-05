@@ -25,6 +25,16 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.3 - Added DWARF Mini support
+      - Sensor: Sony IMX662 (confirmed by DWARFLAB official specs)
+        Source: https://dwarflab.com/pages/dwarf-mini-smart-telescope
+        Source: https://astrobackyard.com/dwarf-mini/
+      - Uses same Duo-band (Nebula) filter as DWARF 3 (Ha 656.3nm, OIII 500.7nm)
+        Source: https://dwarfvision.substack.com/p/dwarf-3-vs-dwarf-mini-why-the-best
+        "Filter: Both scopes used their internal Duo-band (Nebula) Filter."
+      - Sony IMX662 QE data already in Siril SPCC database (added May 2025)
+        Source: https://gitlab.com/free-astro/siril-spcc-database
+
 2.0.2 - Small Bug fixes
       - Reenable feathering
       - Fixed pixel fraction decimal precision
@@ -108,6 +118,7 @@ TELESCOPES = [
     "ZWO Seestar S50",
     "Dwarf 3",
     "Dwarf 2",
+    "DWARF Mini",
     "Celestron Origin",
 ]
 
@@ -116,6 +127,9 @@ FILTER_OPTIONS_MAP = {
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 2": ["Astro filter (UV/IR)"],
+    # DWARF Mini uses same Duo-band filter as DWARF 3
+    # Source: https://dwarfvision.substack.com/p/dwarf-3-vs-dwarf-mini-why-the-best
+    "DWARF Mini": ["Astro filter (UV/IR)", "Dual-Band"],
     "Celestron Origin": ["No Filter (Broadband)"],
 }
 
@@ -141,6 +155,21 @@ FILTER_COMMANDS_MAP = {
         ],
     },
     "Dwarf 2": {"Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"]},
+    # DWARF Mini: Same dual-band filter specs as DWARF 3 (Ha 656.3nm, OIII 500.7nm)
+    # Source: https://help.dwarflab.com/docs/DWARF-3-Unboxing-and-Quick-Setup
+    # Bandwidth values (18nm/30nm) inherited from Dwarf 3 config (same filter hardware)
+    "DWARF Mini": {
+        "Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"],
+        "Dual-Band": [
+            "-narrowband",
+            "-rwl=656.28",
+            "-rbw=18",
+            "-gwl=500.70",
+            "-gbw=30",
+            "-bwl=500.70",
+            "-bbw=30",
+        ],
+    },
     "Celestron Origin": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
     },
@@ -339,6 +368,8 @@ class PreprocessingInterface(QMainWindow):
             "DWARFIII": "Dwarf 3",
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
+            "DWARF Mini": "DWARF Mini",
+            "DWARFMini": "DWARF Mini",
             "Origin": "Celestron Origin",
         }
 
@@ -864,8 +895,13 @@ class PreprocessingInterface(QMainWindow):
         else:
             recoded_sensor = oscsensor
             """SPCC with oscsensor, filter, catalog, and whiteref."""
-            if oscsensor in ["Dwarf 3"]:
+            if oscsensor == "Dwarf 3":
                 recoded_sensor = "Sony IMX678"
+            # DWARF Mini uses Sony IMX662 sensor
+            # Source: https://dwarflab.com/pages/dwarf-mini-smart-telescope
+            # IMX662 QE data in Siril SPCC database: https://gitlab.com/free-astro/siril-spcc-database
+            elif oscsensor == "DWARF Mini":
+                recoded_sensor = "Sony IMX662"
             else:
                 recoded_sensor = oscsensor
 
