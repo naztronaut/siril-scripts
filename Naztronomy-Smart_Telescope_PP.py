@@ -1170,10 +1170,10 @@ class PreprocessingInterface(QMainWindow):
             self.filter_combo.setCurrentText(new_options[0])
 
         # If photometry Gaia is not available, disable SPCC
-        if not self.photometry_gaia_available:
-            self.spcc_checkbox.setChecked(False)
-            self.spcc_checkbox.setEnabled(False)
-            print("diabled")
+        # if not self.photometry_gaia_available:
+        #     self.spcc_checkbox.setChecked(False)
+        #     self.spcc_checkbox.setEnabled(False)
+        #     print("diabled")
         # Disable SPCC for Celestron Origin
         elif selected_scope == "Celestron Origin":
             self.spcc_checkbox.setChecked(False)
@@ -1253,8 +1253,8 @@ class PreprocessingInterface(QMainWindow):
             photometry_gaia_label.setToolTip(f"Local Photometry Gaia found at: {self.photometry_gaia_status}")
         else:
             photometry_gaia_label = QLabel("✗ Local Photometry Gaia")
-            photometry_gaia_label.setStyleSheet("color: red;")
-            photometry_gaia_label.setToolTip("Local Photometry Gaia not available - SPCC is disabled")
+            photometry_gaia_label.setStyleSheet("color: orange;")
+            photometry_gaia_label.setToolTip("Local Photometry Gaia not available, will default to Online Gaia.")
         gaia_status_layout.addWidget(photometry_gaia_label)
 
         main_layout.addWidget(gaia_status_section)
@@ -1544,8 +1544,8 @@ class PreprocessingInterface(QMainWindow):
         spcc_layout.setContentsMargins(10, 15, 10, 10)
 
         spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
-        if not self.photometry_gaia_available:
-            spcc_tooltip += " Disabled because Local Photometry catalog not available."
+        # if not self.photometry_gaia_available:
+        #     spcc_tooltip += " Disabled because Local Photometry catalog not available."
         self.spcc_checkbox = QCheckBox(
             "Enable Spectrophotometric Color Calibration (SPCC)"
         )
