@@ -8,21 +8,25 @@ A comprehensive Python script that automates the preprocessing workflow for smar
 
 - ZWO Seestar S30
 - ZWO Seestar S50
+- Dwarf Mini
 - Dwarf 2
 - Dwarf 3
 - Celestron Origin
+- Unistellar eVscope 1 / eQuinox 1
+- Unistellar eVscope 2 / eQuinox 2
+- Unistellar Odyssey / Odyssey Pro
 
 **Features:**
 
-- Automatic batching for large datasets (>2000 files on Windows)
+- Allow batching into smaller subset of images to save space and faster processing. Max batch count on Windows is 2,000 and on Mac/Linux is 25,000
 - Optional calibration frame support (darks, flats, biases)
 - Automatic master frame creation from calibration files
 - Drizzle integration for improved resolution
 - Background extraction and filtering options
-- Spectrophotometric Color Calibration (SPCC)
+- Spectrophotometric Color Calibration (SPCC) for supported telescopes
 - Save/Load presets functionality
 
-**Demo Video:** [YouTube - Smart Telescope Processing](https://www.youtube.com/watch?v=6v0SHEe0ZJ8)
+**Demo Video:** [YouTube - Smart Telescope Processing](https://www.youtube.com/watch?v=0RqvX9cR8Eg)
 
 ## Naztronomy-OSC_PP.py
 
@@ -40,14 +44,14 @@ An advanced OSC (One Shot Color) image preprocessing script designed for process
 - Experimental mono camera support (no debayering)
 - Comprehensive filter settings for image quality control
 
-**Demo Video:** [YouTube - OSC Image Processing](https://www.YouTube.com/watch?v=-7XR245DX_Q)
+**Demo Video:** [YouTube - OSC Image Processing](https://www.youtube.com/watch?v=WjabF-bVBmU)
 
 ## Installation
 
 Two ways to install these scripts:
 
-1. Place the Python `.py` files from this repository in your local Siril scripts directory
-2. Install directly through Siril by going to **Scripts >> Get Scripts** in Siril and searching for "Naztronomy"
+1. Manual: Place the Python `.py` files from this repository in your local Siril scripts directory
+2. Automatic: Install directly through Siril by going to **Scripts >> Get Scripts** in Siril and searching for "Naztronomy"
 
 ## System Requirements
 
