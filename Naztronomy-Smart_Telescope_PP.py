@@ -2309,6 +2309,8 @@ class PreprocessingInterface(QMainWindow):
         self.stacking_details()
         # self.clean_up()
 
+        self.siril.cmd("setcompress", "0")  # Disable compression after processing
+
         self.siril.log(
             f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             LogColor.GREEN,
