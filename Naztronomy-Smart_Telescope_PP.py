@@ -110,7 +110,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.3"
-BUILD = "20260102"
+BUILD = "20260106"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -232,13 +232,6 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log("Connected to Siril", LogColor.GREEN)
         except s.SirilConnectionError:
             self.siril.log("Failed to connect to Siril", LogColor.RED)
-            self.close_dialog()
-            return
-        try:
-            self.siril.cmd("requires", "1.3.6")
-            if UI_DEFAULTS["enable_compression"]:
-                self.siril.cmd("setcompress", "1 -type=rice 16")
-        except s.CommandError:
             self.close_dialog()
             return
 
@@ -2052,7 +2045,13 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
         self.siril.cmd("close")
-
+        try:
+            self.siril.cmd("requires", "1.3.6")
+            if UI_DEFAULTS["enable_compression"]:
+                self.siril.cmd("setcompress", "1 -type=rice 16")
+        except s.CommandError:
+            self.close_dialog()
+            return
         if self.fits_files_count == 0:
             QMessageBox.warning(
                 self,
