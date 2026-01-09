@@ -237,6 +237,11 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log("Failed to connect to Siril", LogColor.RED)
             self.close_dialog()
             return
+        try:
+            self.siril.cmd("requires", "1.3.6")
+        except s.CommandError:
+            self.close_dialog()
+            return
 
         self.fits_extension = self.siril.get_siril_config("core", "extension")
 
@@ -524,6 +529,7 @@ class PreprocessingInterface(QMainWindow):
                     if os.path.isfile(os.path.join(directory, name))
                 ]
             )
+            self.siril.log(f"Found {file_count} files in {dir_name} directory.", LogColor.BLUE)
             if file_count == 1:
                 self.siril.log(
                     f"Only one file found in {dir_name} directory. Treating it like a master {dir_name} frame.",
@@ -2093,7 +2099,6 @@ class PreprocessingInterface(QMainWindow):
         )
         self.siril.cmd("close")
         try:
-            self.siril.cmd("requires", "1.3.6")
             if self.compression_checkbox.isChecked():
                 self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
                 self.siril.cmd("setcompress", "1 -type=rice 16")
@@ -2104,8 +2109,8 @@ class PreprocessingInterface(QMainWindow):
             # turn off compression if error (if checked)
             if self.compression_checkbox.isChecked():
                 self.siril.cmd("setcompress", "0")
-            self.close_dialog()
-            return
+                self.siril.log("Disabling compression due to command error", LogColor.SALMON)
+            
         if self.fits_files_count == 0:
             QMessageBox.warning(
                 self,
