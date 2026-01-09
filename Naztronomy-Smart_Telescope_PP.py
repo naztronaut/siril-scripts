@@ -28,6 +28,7 @@ CHANGELOG:
 2.0.4 - Compression is now an optional checkbox
       - Compression is turned off when failed in try/except blocks
       - Compression can still be left on if the script crashes another way or the user ends the script manually
+      - Fix bug: Disable SPCC for Celestron Origin
 2.0.3 - Support for new Unistellar/Evscope telescopes (nicastel)
       - Compression during processing (enabled by default and controlled by a flag)
       - Forcing stacking to use -32b to fix Dwarf3's "milky" stacked image
