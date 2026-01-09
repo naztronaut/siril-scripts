@@ -1200,7 +1200,7 @@ class PreprocessingInterface(QMainWindow):
         #     self.spcc_checkbox.setEnabled(False)
         #     print("diabled")
         # Disable SPCC for Celestron Origin
-        elif selected_scope == "Celestron Origin":
+        if selected_scope == "Celestron Origin":
             self.spcc_checkbox.setChecked(False)
             self.spcc_checkbox.setEnabled(False)
             self.siril.log(
