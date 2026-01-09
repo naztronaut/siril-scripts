@@ -25,6 +25,9 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.4 - Compression is now an optional checkbox
+      - Compression is turned off when failed in try/except blocks
+      - Compression can still be left on if the script crashes another way or the user ends the script manually
 2.0.3 - Support for new Unistellar/Evscope telescopes (nicastel)
       - Compression during processing (enabled by default and controlled by a flag)
       - Forcing stacking to use -32b to fix Dwarf3's "milky" stacked image
@@ -109,8 +112,8 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.3"
-BUILD = "20260106"
+VERSION = "2.0.4"
+BUILD = "20260109"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -186,7 +189,6 @@ UI_DEFAULTS = {
     "win_max_files_per_batch": 2000,
     "mac_max_files_per_batch": 25000,
     "linux_max_files_per_batch": 25000,
-    "enable_compression": True,
 }
 
 
@@ -553,6 +555,9 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
                 self.siril.cmd(*args)
             except (s.DataError, s.CommandError, s.SirilError) as e:
+                # turn off compression if error (if checked)
+                if self.compression_checkbox.isChecked():
+                    self.siril.cmd("setcompress", "0")
                 self.siril.log(f"File conversion failed: {e}", LogColor.RED)
                 self.close_dialog()
 
@@ -618,6 +623,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd(*cmd_args)
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Data error occurred: {e}", LogColor.RED)
 
         self.siril.log("Registered Sequence", LogColor.GREEN)
@@ -631,6 +639,9 @@ class PreprocessingInterface(QMainWindow):
             self.siril.cmd("cd", ".")  # Re-establish working directory
             time.sleep(10)          # Wait for Siril to flush cache
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Seq BG Extraction failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Background extracted from Sequence", LogColor.GREEN)
@@ -878,6 +889,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd(*cmd_args)
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Command execution failed: {e}", LogColor.RED)
             self.close_dialog()
 
@@ -890,6 +904,9 @@ class PreprocessingInterface(QMainWindow):
             try:
                 self.siril.cmd(*cmd_args)
             except (s.DataError, s.CommandError, s.SirilError) as e:
+                # turn off compression if error (if checked)
+                if self.compression_checkbox.isChecked():
+                    self.siril.cmd("setcompress", "0")
                 self.siril.log(f"Command execution failed: {e}", LogColor.RED)
                 self.close_dialog()
 
@@ -936,9 +953,12 @@ class PreprocessingInterface(QMainWindow):
             self.siril.cmd("setcompress", "0")
             self.siril.cmd(*cmd_args)
             # Turn compression back on after stacking
-            if UI_DEFAULTS["enable_compression"]:
+            if self.compression_checkbox.isChecked():
                 self.siril.cmd("setcompress", "1 -type=rice 16")
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Stacking failed: {e}", LogColor.RED)
             self.close_dialog()
 
@@ -983,6 +1003,9 @@ class PreprocessingInterface(QMainWindow):
             )
             return file_name
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Save command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Saved file: {file_name}", LogColor.GREEN)
@@ -1000,6 +1023,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd("platesolve", "-force")
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Plate Solve command execution failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log("Platesolved image", LogColor.GREEN)
@@ -1046,6 +1072,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd("spcc", *quoted_args)
         except (s.CommandError, s.DataError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
             self.close_dialog()
 
@@ -1096,6 +1125,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd("load", image_name)
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.siril.log(f"Load image failed: {e}", LogColor.RED)
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
@@ -1206,7 +1238,7 @@ class PreprocessingInterface(QMainWindow):
         """Creates the UI widgets."""
         # Create main widget and layout
         main_widget = QWidget()
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(700, 750)
         self.setCentralWidget(main_widget)
 
         main_layout = QVBoxLayout(main_widget)
@@ -1314,6 +1346,17 @@ class PreprocessingInterface(QMainWindow):
         self.cleanup_files_checkbox = QCheckBox("")
         self.cleanup_files_checkbox.setToolTip(cleanup_tooltip)
         telescope_layout.addWidget(self.cleanup_files_checkbox, 2, 1)
+        
+        # Use compression checkbox
+        compression_label = QLabel("Use Compression:")
+        compression_label.setFont(title_font)
+        compression_tooltip = "Enable FITS compression to reduce file sizes during processing. Please note that if the script crashes OR you cancel the run, compression may remain on in your Siril settings."
+        compression_label.setToolTip(compression_tooltip)
+        telescope_layout.addWidget(compression_label, 2, 2)
+
+        self.compression_checkbox = QCheckBox("")
+        self.compression_checkbox.setToolTip(compression_tooltip)
+        telescope_layout.addWidget(self.compression_checkbox, 2, 3)
 
         # Optional Preprocessing Steps
         preprocessing_section = QGroupBox("Optional Preprocessing Steps")
@@ -1916,6 +1959,7 @@ class PreprocessingInterface(QMainWindow):
             "feather": self.feather_checkbox.isChecked(),
             "feather_amount": self.feather_amount_spinbox.value(),
             "spcc": self.spcc_checkbox.isChecked(),
+            "compression": self.compression_checkbox.isChecked(),
         }
 
         presets_dir = os.path.join(self.current_working_directory, "presets")
@@ -1993,6 +2037,7 @@ class PreprocessingInterface(QMainWindow):
                 presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
             )
             self.spcc_checkbox.setChecked(presets.get("spcc", False))
+            self.compression_checkbox.setChecked(presets.get("compression", False))
 
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
         except Exception as e:
@@ -2041,15 +2086,23 @@ class PreprocessingInterface(QMainWindow):
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
             f"clean_up_files={clean_up_files}\n"
+            f"compression={self.compression_checkbox.isChecked()}\n"
             f"build={VERSION}-{BUILD}",
             LogColor.BLUE,
         )
         self.siril.cmd("close")
         try:
             self.siril.cmd("requires", "1.3.6")
-            if UI_DEFAULTS["enable_compression"]:
+            if self.compression_checkbox.isChecked():
+                self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
                 self.siril.cmd("setcompress", "1 -type=rice 16")
+            else:
+                self.siril.log("Compression not set, disabling in case it's turned on from a previous run/crash", LogColor.BLUE)
+                self.siril.cmd("setcompress", "0")
         except s.CommandError:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
             self.close_dialog()
             return
         if self.fits_files_count == 0:
