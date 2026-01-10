@@ -1802,6 +1802,20 @@ class PreprocessingInterface(QMainWindow):
     ):
         # If we're batching, force cleanup files so we don't collide with existing files
         self.siril.cmd("close")
+        
+        try:
+            if self.compression_checkbox.isChecked():
+                self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
+                self.siril.cmd("setcompress", "1 -type=rice 16")
+            else:
+                self.siril.log("Compression not set, disabling in case it's turned on from a previous run/crash", LogColor.BLUE)
+                self.siril.cmd("setcompress", "0")
+        except s.CommandError:
+            # turn off compression if error (if checked)
+            if self.compression_checkbox.isChecked():
+                self.siril.cmd("setcompress", "0")
+                self.siril.log("Disabling compression due to command error", LogColor.SALMON)
+            
         if output_name.startswith("batch_lights"):
             clean_up_files = True
 
@@ -2100,19 +2114,7 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
         self.siril.cmd("close")
-        try:
-            if self.compression_checkbox.isChecked():
-                self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
-                self.siril.cmd("setcompress", "1 -type=rice 16")
-            else:
-                self.siril.log("Compression not set, disabling in case it's turned on from a previous run/crash", LogColor.BLUE)
-                self.siril.cmd("setcompress", "0")
-        except s.CommandError:
-            # turn off compression if error (if checked)
-            if self.compression_checkbox.isChecked():
-                self.siril.cmd("setcompress", "0")
-                self.siril.log("Disabling compression due to command error", LogColor.SALMON)
-            
+
         if self.fits_files_count == 0:
             QMessageBox.warning(
                 self,
