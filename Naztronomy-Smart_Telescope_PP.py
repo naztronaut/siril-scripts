@@ -25,7 +25,8 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-2.0.5 - Black Frames Scan now sees both compressed and uncompressed fits
+2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
+      - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
       - Compression is turned off when failed in try/except blocks
       - Compression can still be left on if the script crashes another way or the user ends the script manually
@@ -115,7 +116,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.5"
-BUILD = "20260109"
+BUILD = "20260110"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -1802,7 +1803,7 @@ class PreprocessingInterface(QMainWindow):
     ):
         # If we're batching, force cleanup files so we don't collide with existing files
         self.siril.cmd("close")
-        
+
         try:
             if self.compression_checkbox.isChecked():
                 self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
