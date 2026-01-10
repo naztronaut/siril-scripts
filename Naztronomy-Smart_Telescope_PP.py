@@ -25,6 +25,7 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.5 - Black Frames Scan now sees both compressed and uncompressed fits
 2.0.4 - Compression is now an optional checkbox
       - Compression is turned off when failed in try/except blocks
       - Compression can still be left on if the script crashes another way or the user ends the script manually
@@ -728,7 +729,8 @@ class PreprocessingInterface(QMainWindow):
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and filename.lower().endswith(
-                self.fits_extension + ".fz"
+                self.fits_extension + ".fz" or
+                filename.lower().endswith(self.fits_extension)
             ):
                 filepath = os.path.join(folder, filename)
                 try:
