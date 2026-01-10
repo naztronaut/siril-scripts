@@ -114,7 +114,7 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.4"
+VERSION = "2.0.5"
 BUILD = "20260109"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
