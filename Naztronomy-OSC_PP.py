@@ -83,8 +83,8 @@ import threading
 
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
-VERSION = "2.0.0"
-BUILD = "20251025"
+VERSION = "2.0.1"
+BUILD = "20260116"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
