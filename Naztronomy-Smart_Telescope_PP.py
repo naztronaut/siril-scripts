@@ -411,11 +411,15 @@ class PreprocessingInterface(QMainWindow):
         }
 
         try:
+            def is_fits(f):
+                f = f.lower()
+                return any(map(lambda x: f.endswith(x), ('.fits', '.fit', '.fits.fz', '.fit.fz')))
+
             lights_dir = os.path.join(self.current_working_directory, "lights")
             fits_files = [
                 f
                 for f in os.listdir(lights_dir)
-                if f.lower().endswith(".fits") or f.lower().endswith(".fit")
+                if is_fits(f)
             ]
 
             if not fits_files:
