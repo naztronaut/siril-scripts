@@ -25,6 +25,7 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.6 - Flip image if needed
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -1007,6 +1008,7 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             self.siril.cmd("setcompress", "0")
+            self.siril.cmd("mirrorx", "-bottomup")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
