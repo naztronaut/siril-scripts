@@ -416,7 +416,7 @@ class PreprocessingInterface(QMainWindow):
             fits_files = [
                 f
                 for f in os.listdir(lights_dir)
-                if f.lower().endswith(".fits") or f.lower().endswith(".fit")
+                if f.lower().endswith(('.fits', '.fit', '.fits.fz', '.fit.fz'))
             ]
 
             if not fits_files:
