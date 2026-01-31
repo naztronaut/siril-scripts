@@ -1285,45 +1285,13 @@ class PreprocessingInterface(QMainWindow):
         QMessageBox.information(self, "Help", help_text)
         self.siril.log(help_text, LogColor.BLUE)
 
-    def create_widgets(self):
-        """Creates the UI widgets."""
-        # Create main widget and layout
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
+    def _get_title_font(self):
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
+        return font
 
-        # Set default window size (larger by default)
-        self.resize(950, 850)
-
-        main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # Create scrollable content area
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; }")
-        main_layout.addWidget(scroll_area)
-
-        # Create content widget for scroll area
-        content_widget = QWidget()
-        scroll_area.setWidget(content_widget)
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(12, 8, 12, 12)
-        content_layout.setSpacing(10)
-
-        # Title and version
-        title_label = QLabel(f"{APP_NAME}")
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(10)
-        title_label.setFont(title_font)
-        content_layout.addWidget(title_label)
-
-        # Current working directory label
-        self.cwd_label = QLabel(self.cwd_label_text)
-        content_layout.addWidget(self.cwd_label)
-
-        # Catalog status section
+    def _create_gaia_status_section(self):
         gaia_status_section = QGroupBox("Local Gaia Catalog Status")
         gaia_status_section.setStyleSheet("QGroupBox { font-weight: bold; }")
         gaia_status_layout = QHBoxLayout(gaia_status_section)
@@ -1349,13 +1317,13 @@ class PreprocessingInterface(QMainWindow):
             photometry_gaia_label.setStyleSheet("color: orange;")
             photometry_gaia_label.setToolTip("Local Photometry Gaia not available, will default to Online Gaia.")
         gaia_status_layout.addWidget(photometry_gaia_label)
+        
+        return gaia_status_section
 
-        content_layout.addWidget(gaia_status_section)
-
-        # Telescope section
+    def _create_telescope_section(self):
+        title_font = self._get_title_font()
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        content_layout.addWidget(telescope_section)
         telescope_layout = QGridLayout(telescope_section)
         telescope_layout.setSpacing(8)
         telescope_layout.setContentsMargins(12, 12, 12, 12)
@@ -1363,7 +1331,7 @@ class PreprocessingInterface(QMainWindow):
         telescope_layout.setVerticalSpacing(12)
 
         telescope_label = QLabel("Telescope:")
-        telescope_label.setFont(title_font)  # Bold font
+        telescope_label.setFont(title_font)
         telescope_label.setToolTip(
             "Select your telescope model to ensure proper color calibration and processing settings."
         )
@@ -1424,57 +1392,17 @@ class PreprocessingInterface(QMainWindow):
         self.compression_checkbox = QCheckBox("")
         self.compression_checkbox.setToolTip(compression_tooltip)
         telescope_layout.addWidget(self.compression_checkbox, 2, 3)
+        
+        return telescope_section
 
-        # Optional Preprocessing Steps
-        preprocessing_section = QGroupBox("Optional Preprocessing Steps")
-        preprocessing_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        content_layout.addWidget(preprocessing_section)
-        preprocessing_layout = QGridLayout(preprocessing_section)
-        preprocessing_layout.setSpacing(8)
-        preprocessing_layout.setContentsMargins(12, 12, 12, 12)
-        preprocessing_layout.setHorizontalSpacing(15)  # space between label ↔ widget
-        preprocessing_layout.setVerticalSpacing(12)  # space between rows
-
-        # Batch size spinbox
-        batch_size_label = QLabel("Max Files per Batch:")
-        batch_size_label.setFont(title_font)
-        batch_size_tooltip = (
-            "Maximum number of files to process in each batch. Windows only. This is ignored on Mac/Linux."
-            "This is an advanced option. Only change if you are comfortable with it.\n"
-            "Valid range: 50–2000."
-        )
-        batch_size_label.setToolTip(batch_size_tooltip)
-        preprocessing_layout.addWidget(batch_size_label, 0, 0)
-
-        self.batch_size_spinbox = QSpinBox()
-        self.batch_size_spinbox.setToolTip(batch_size_tooltip) 
-        self.batch_size_spinbox.setRange(50, self.max_files_per_batch)  # clamps input based on OS
-        self.batch_size_spinbox.setValue(self.max_files_per_batch)
-        self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
-        preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
-        # Files found label
-        self.files_found_label = QLabel()
-        self.files_found_label.setToolTip("Number of Fit(s) files found in the lights directory.")
-        preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
-
-        bg_extract_label = QLabel("Background Extraction:")
-        bg_extract_label.setFont(title_font)
-        bg_extract_tooltip = "Removes background gradients from your images before stacking. Uses Polynomial value 1 and 10 samples."
-        bg_extract_label.setToolTip(bg_extract_tooltip)
-        preprocessing_layout.addWidget(bg_extract_label, 1, 0)
-
-        self.bg_extract_checkbox = QCheckBox("")
-        self.bg_extract_checkbox.setToolTip(bg_extract_tooltip)
-        preprocessing_layout.addWidget(self.bg_extract_checkbox, 1, 1)
-
-        # Drizzle section as a checkable group box
+    def _create_drizzle_group(self):
+        title_font = self._get_title_font()
         drizzle_group_tooltip = "Drizzle integration can improve resolution but increases processing time and file size."
         self.drizzle_group = QGroupBox("Drizzle")
         self.drizzle_group.setCheckable(True)
         self.drizzle_group.setChecked(False)
         self.drizzle_group.setStyleSheet("QGroupBox { font-weight: bold; }")
         self.drizzle_group.setToolTip(drizzle_group_tooltip)
-        preprocessing_layout.addWidget(self.drizzle_group, 2, 0, 1, 6)
 
         drizzle_layout = QGridLayout(self.drizzle_group)
         drizzle_layout.setSpacing(8)
@@ -1513,15 +1441,16 @@ class PreprocessingInterface(QMainWindow):
         self.pixel_fraction_spinbox.setSuffix(" px")
         self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
         drizzle_layout.addWidget(self.pixel_fraction_spinbox, 0, 3)
+        return self.drizzle_group
 
-        # Create collapsible Filters group
+    def _create_filters_group(self):
+        title_font = self._get_title_font()
         filters_group_tooltip = "Options for filtering images based on various criteria."
         self.filters_group = QGroupBox("Filters (Optional)")
         self.filters_group.setCheckable(True)
         self.filters_group.setChecked(False)
         self.filters_group.setStyleSheet("QGroupBox { font-weight: bold; }")
         self.filters_group.setToolTip(filters_group_tooltip)
-        preprocessing_layout.addWidget(self.filters_group, 3, 0, 1, 6)
         
         filters_layout = QGridLayout(self.filters_group)
         filters_layout.setSpacing(8)
@@ -1602,15 +1531,16 @@ class PreprocessingInterface(QMainWindow):
         self.filters_group.toggled.connect(self.fwhm_spinbox.setEnabled)
         self.filters_group.toggled.connect(self.bg_filter_spinbox.setEnabled)
         self.filters_group.toggled.connect(self.star_count_filter_spinbox.setEnabled)
+        return self.filters_group
 
-        # Feather section as a checkable group box
+    def _create_feather_group(self):
+        title_font = self._get_title_font()
         feather_group_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
         self.feather_group = QGroupBox("Feather")
         self.feather_group.setCheckable(True)
         self.feather_group.setChecked(False)
         self.feather_group.setStyleSheet("QGroupBox { font-weight: bold; }")
         self.feather_group.setToolTip(feather_group_tooltip)
-        preprocessing_layout.addWidget(self.feather_group, 4, 0, 1, 6)
 
         feather_layout = QGridLayout(self.feather_group)
         feather_layout.setSpacing(8)
@@ -1629,18 +1559,70 @@ class PreprocessingInterface(QMainWindow):
         self.feather_amount_spinbox.setSingleStep(5)
         self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
         self.feather_amount_spinbox.setMinimumWidth(80)
-        # self.feather_amount_spinbox.setMaximumWidth(100)
         self.feather_amount_spinbox.setSuffix(" px")
         self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
         feather_layout.addWidget(self.feather_amount_spinbox, 0, 1)
-        
-        # Add stretch to push spinbox to the left
-        # feather_layout.setColumnStretch(2, 2)
+        return self.feather_group
 
-        # SPCC Section
+    def _create_preprocessing_section(self):
+        title_font = self._get_title_font()
+        preprocessing_section = QGroupBox("Optional Preprocessing Steps")
+        preprocessing_section.setStyleSheet("QGroupBox { font-weight: bold; }")
+        preprocessing_layout = QGridLayout(preprocessing_section)
+        preprocessing_layout.setSpacing(8)
+        preprocessing_layout.setContentsMargins(12, 12, 12, 12)
+        preprocessing_layout.setHorizontalSpacing(15)
+        preprocessing_layout.setVerticalSpacing(12)
+
+        # Batch size spinbox
+        batch_size_label = QLabel("Max Files per Batch:")
+        batch_size_label.setFont(title_font)
+        batch_size_tooltip = (
+            "Maximum number of files to process in each batch. Windows only. This is ignored on Mac/Linux."
+            "This is an advanced option. Only change if you are comfortable with it.\\n"
+            "Valid range: 50–2000."
+        )
+        batch_size_label.setToolTip(batch_size_tooltip)
+        preprocessing_layout.addWidget(batch_size_label, 0, 0)
+
+        self.batch_size_spinbox = QSpinBox()
+        self.batch_size_spinbox.setToolTip(batch_size_tooltip) 
+        self.batch_size_spinbox.setRange(50, self.max_files_per_batch)
+        self.batch_size_spinbox.setValue(self.max_files_per_batch)
+        self.batch_size_spinbox.setSingleStep(50)
+        preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
+        
+        # Files found label
+        self.files_found_label = QLabel()
+        self.files_found_label.setToolTip("Number of Fit(s) files found in the lights directory.")
+        preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
+
+        bg_extract_label = QLabel("Background Extraction:")
+        bg_extract_label.setFont(title_font)
+        bg_extract_tooltip = "Removes background gradients from your images before stacking. Uses Polynomial value 1 and 10 samples."
+        bg_extract_label.setToolTip(bg_extract_tooltip)
+        preprocessing_layout.addWidget(bg_extract_label, 1, 0)
+
+        self.bg_extract_checkbox = QCheckBox("")
+        self.bg_extract_checkbox.setToolTip(bg_extract_tooltip)
+        preprocessing_layout.addWidget(self.bg_extract_checkbox, 1, 1)
+
+        # Add subsections
+        drizzle_group = self._create_drizzle_group()
+        preprocessing_layout.addWidget(drizzle_group, 2, 0, 1, 6)
+
+        filters_group = self._create_filters_group()
+        preprocessing_layout.addWidget(filters_group, 3, 0, 1, 6)
+        
+        feather_group = self._create_feather_group()
+        preprocessing_layout.addWidget(feather_group, 4, 0, 1, 6)
+        
+        return preprocessing_section
+
+    def _create_spcc_section(self):
+        title_font = self._get_title_font()
         self.spcc_section = QGroupBox("Post-Stacking")
         self.spcc_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        content_layout.addWidget(self.spcc_section)
         spcc_layout = QGridLayout(self.spcc_section)
         spcc_layout.setSpacing(8)
         spcc_layout.setContentsMargins(12, 12, 12, 12)
@@ -1648,8 +1630,6 @@ class PreprocessingInterface(QMainWindow):
         spcc_layout.setVerticalSpacing(12)
 
         spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
-        # if not self.photometry_gaia_available:
-        #     spcc_tooltip += " Disabled because Local Photometry catalog not available."
         self.spcc_checkbox = QCheckBox(
             "Enable Spectrophotometric Color Calibration (SPCC)"
         )
@@ -1672,60 +1652,54 @@ class PreprocessingInterface(QMainWindow):
         )
         spcc_layout.addWidget(self.filter_combo, 1, 1)
 
-        # Connect SPCC checkbox to enable/disable filter and catalog combos
         self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
-
-        # self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
         self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
         self.scan_blackframes_checkbox.setToolTip(
             "Enable this option to automatically scan for black frames in your image sequence ONLY If you see black frames as a result of drizzle."
-            "\nWhen the bug is confirmed fixed, this option and check will be removed."
+            "\\nWhen the bug is confirmed fixed, this option and check will be removed."
         )
         spcc_layout.addWidget(self.scan_blackframes_checkbox, 3, 0, 1, 2)
 
-        # Warning message for feather checkbox
         feather_warning = QLabel(
-            "⚠ You enabled feather, this can cause slow processing and memory issues. If you get an error, turn it off and try again.\nSupport will not be provided for feather-related issues. ⚠"
+            "⚠ You enabled feather, this can cause slow processing and memory issues. If you get an error, turn it off and try again.\\nSupport will not be provided for feather-related issues. ⚠"
         )
         feather_warning.setStyleSheet("color: red;")
         feather_warning.setWordWrap(True)
-        feather_warning.setVisible(False)  # Hidden by default
+        feather_warning.setVisible(False)
         spcc_layout.addWidget(feather_warning, 4, 0, 1, 2)
 
-        # Connect feather group to show/hide warning
         self.feather_group.toggled.connect(feather_warning.setVisible)
+        
+        return self.spcc_section
 
-        # Buttons section
+    def _create_buttons_layout(self):
         button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(12, 10, 12, 12)  # Add padding around buttons
+        button_layout.setContentsMargins(12, 10, 12, 12)
         button_layout.setSpacing(8)
 
         help_button = QPushButton("Help")
         help_button.setMinimumWidth(50)
         help_button.setMinimumHeight(35)
         help_button.setToolTip("Show help information and frequently asked questions")
-        # help_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
         help_button.clicked.connect(self.show_help)
         button_layout.addWidget(help_button)
 
         save_presets_button = QPushButton("Save Presets")
         save_presets_button.setMinimumWidth(80)
         save_presets_button.setMinimumHeight(35)
-        save_presets_button.setToolTip("Save current settings to a \"naztronomy_smart_scope_presets.json\" file in the presets directory")
-        # save_presets_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
+        save_presets_button.setToolTip('Save current settings to a "naztronomy_smart_scope_presets.json" file in the presets directory')
         save_presets_button.clicked.connect(self.save_presets)
         button_layout.addWidget(save_presets_button)
 
         load_presets_button = QPushButton("Load Presets")
         load_presets_button.setMinimumWidth(80)
         load_presets_button.setMinimumHeight(35)
-        load_presets_button.setToolTip("Load previously saved presets. If \"presets/naztronomy_smart_scope_presets.json\" exists, it will load first, otherwise it'll prompt you to find a proper .json file.")
-        # load_presets_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
+        load_presets_button.setToolTip('Load previously saved presets. If "presets/naztronomy_smart_scope_presets.json" exists, it will load first, otherwise it\'ll prompt you to find a proper .json file.')
         load_presets_button.clicked.connect(self.load_presets)
         button_layout.addWidget(load_presets_button)
 
-        button_layout.addStretch()  # Add space between buttons
+        button_layout.addStretch()
 
         close_button = QPushButton("Close")
         close_button.setMinimumWidth(100)
@@ -1734,7 +1708,6 @@ class PreprocessingInterface(QMainWindow):
         close_button.clicked.connect(self.close_dialog)
         button_layout.addWidget(close_button)
 
-        # Add small spacing between close and run buttons
         button_layout.addSpacing(10)
 
         run_button = QPushButton("Run")
@@ -1743,6 +1716,59 @@ class PreprocessingInterface(QMainWindow):
         run_button.setStyleSheet("QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }")
         run_button.clicked.connect(self.on_run_clicked)
         button_layout.addWidget(run_button)
+        
+        return button_layout
+
+    def create_widgets(self):
+        """Creates the UI widgets."""
+        # Create main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        # Set default window size (larger by default)
+        self.resize(950, 850)
+
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create scrollable content area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        main_layout.addWidget(scroll_area)
+
+        # Create content widget for scroll area
+        content_widget = QWidget()
+        scroll_area.setWidget(content_widget)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(10)
+
+        # Title and version
+        title_label = QLabel(f"{APP_NAME}")
+        title_font = self._get_title_font()
+        title_label.setFont(title_font)
+        content_layout.addWidget(title_label)
+
+        # Current working directory label
+        self.cwd_label = QLabel(self.cwd_label_text)
+        content_layout.addWidget(self.cwd_label)
+
+        # Catalog status section
+        content_layout.addWidget(self._create_gaia_status_section())
+
+        # Telescope section
+        content_layout.addWidget(self._create_telescope_section())
+
+        # Optional Preprocessing Steps
+        content_layout.addWidget(self._create_preprocessing_section())
+
+        # SPCC Section
+        content_layout.addWidget(self._create_spcc_section())
+
+        # Buttons section
+        button_layout = self._create_buttons_layout()
 
         # Add stretch to content layout to push buttons down
         content_layout.addStretch()
