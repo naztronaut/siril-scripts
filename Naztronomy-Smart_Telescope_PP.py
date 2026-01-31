@@ -26,6 +26,8 @@ The following subdirectories are optional:
 CHANGELOG:
 
 2.0.6 - Flip image if needed
+      - Ignore dot files from macs
+      - PR#75 - support compressed fits in lights dir
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -116,13 +118,14 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.5"
-BUILD = "20260110"
+VERSION = "2.0.6"
+BUILD = "20260131"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
 TELESCOPES = [
     "ZWO Seestar S30",
+    "ZWO Seestar S30 Pro",
     "ZWO Seestar S50",
     "Dwarf Mini",
     "Dwarf 3",
@@ -135,6 +138,7 @@ TELESCOPES = [
 
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
+    "ZWO Seestar S30 Pro": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf Mini": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
@@ -147,6 +151,10 @@ FILTER_OPTIONS_MAP = {
 
 FILTER_COMMANDS_MAP = {
     "ZWO Seestar S30": {
+        "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+        "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
+    },
+    "ZWO Seestar S30 Pro": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
     },
@@ -399,6 +407,7 @@ class PreprocessingInterface(QMainWindow):
         # Mapping from FITS header values to UI telescope names
         telescope_map = {
             "Seestar S30": "ZWO Seestar S30",
+            "Seestar S30 Pro:": "ZWO Seestar S30 Pro",
             "Seestar S50": "ZWO Seestar S50",
             "S50": "ZWO Seestar S50",
             "DWARF mini": "Dwarf Mini",
@@ -529,7 +538,10 @@ class PreprocessingInterface(QMainWindow):
                 [
                     name
                     for name in os.listdir(directory)
-                    if os.path.isfile(os.path.join(directory, name))
+                    if os.path.isfile(os.path.join(directory, name)) 
+                    and not name.startswith('.')
+                    and (name.lower().endswith('.fit') or name.lower().endswith('.fits') 
+                         or name.lower().endswith('.fit.fz') or name.lower().endswith('.fits.fz'))
                 ]
             )
             self.siril.log(f"Found {file_count} files in {dir_name} directory.", LogColor.BLUE)
@@ -606,7 +618,7 @@ class PreprocessingInterface(QMainWindow):
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
 
-        args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4"])
+        args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4", "-radius=25"])
         # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
@@ -737,7 +749,13 @@ class PreprocessingInterface(QMainWindow):
                 filepath = os.path.join(folder, filename)
                 try:
                     with fits.open(filepath) as hdul:
-                        data = hdul[1].data
+                        # Try to get data from HDU 1 for compressed files, fall back to HDU 0
+                        data = None
+                        if len(hdul) > 1:
+                            data = hdul[1].data
+                        else:
+                            data = hdul[0].data
+                        
                         if data is not None and data.ndim >= 2:
                             dynamic_threshold = threshold
                             data_max = np.max(data)
@@ -1008,7 +1026,7 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             self.siril.cmd("setcompress", "0")
-            self.siril.cmd("mirrorx", "-bottomup")
+            self.siril.cmd("rotate", "180")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
@@ -1052,7 +1070,9 @@ class PreprocessingInterface(QMainWindow):
 
         recoded_sensor = oscsensor
         """SPCC with oscsensor, filter, catalog, and whiteref."""
-        if oscsensor in ["Dwarf 3"]:
+        if oscsensor in ["ZWO Seestar S30 Pro"]:
+            recoded_sensor = "Sony IMX585"
+        elif oscsensor in ["Dwarf 3"]:
             recoded_sensor = "Sony IMX678"
         elif oscsensor in ["Dwarf Mini"]:
             recoded_sensor = "Sony IMX662"
