@@ -2133,6 +2133,7 @@ class PreprocessingInterface(QMainWindow):
             f"feather_amount={feather_amount}\n"
             f"clean_up_files={clean_up_files}\n"
             f"compression={self.compression_checkbox.isChecked()}\n"
+            f"black_frames_bug={self.scan_blackframes_checkbox.isChecked()}\n"
             f"build={VERSION}-{BUILD}",
             LogColor.BLUE,
         )
