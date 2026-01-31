@@ -455,18 +455,17 @@ class PreprocessingInterface(QMainWindow):
                 mapped_telescope = "ZWO Seestar S30"  # default
                 found_match = False
                 
-                # Check all three header values against the map
-                for header_value in [telescop, creator, camera]:
-                    if not header_value:
-                        continue
-                    for telescope_local_name, ui_name in telescope_map.items():
-                        if header_value.startswith(telescope_local_name):
-                            mapped_telescope = ui_name
-                            found_match = True
-                            print(f"Matched '{header_value}' to '{mapped_telescope}'")
-                            break
-                    if found_match:
-                        break
+                # Filter out empty header values
+                header_values = [v for v in [telescop, creator, camera] if v]
+
+                # Check map against available headers
+                for telescope_local_name, ui_name in telescope_map.items():
+                    # Check if any of the effective header values start with this key
+                    if any(val.startswith(telescope_local_name) for val in header_values):
+                         mapped_telescope = ui_name
+                         found_match = True
+                        #  print(f"Matched FITS header to '{mapped_telescope}' using key '{telescope_local_name}'")
+                         break
                 
                 if origin.startswith("Unistellar"):
                     instrume = header.get("INSTRUME", "NULL")
@@ -485,8 +484,6 @@ class PreprocessingInterface(QMainWindow):
                 if not found_match:
                     self.siril.log("Couldn't find Telescope info, setting default:", LogColor.BLUE)
                 
-                print(f"Final mapped_telescope: {mapped_telescope}")
-
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
                 self.siril.log(
