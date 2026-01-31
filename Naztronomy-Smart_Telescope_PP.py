@@ -1721,14 +1721,6 @@ class PreprocessingInterface(QMainWindow):
 
         button_layout.addStretch()
 
-        # Add Progress Bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # Indeterminate mode
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setFixedWidth(200)
-        button_layout.addWidget(self.progress_bar)
-
         close_button = QPushButton("Close")
         close_button.setMinimumWidth(100)
         close_button.setMinimumHeight(35)
@@ -1795,14 +1787,26 @@ class PreprocessingInterface(QMainWindow):
         # SPCC Section
         content_layout.addWidget(self._create_spcc_section())
 
-        # Buttons section
-        button_layout = self._create_buttons_layout()
-
         # Add stretch to content layout to push buttons down
         content_layout.addStretch()
+
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFixedHeight(10)  # Make it slim
+        # Remove border and make it span full width
+        main_layout.addWidget(self.progress_bar)
+
+        # Buttons section
+        button_layout = self._create_buttons_layout()
         
+        # Wrap button layout in a widget to easily disable/enable all buttons
+        self.buttons_widget = QWidget()
+        self.buttons_widget.setLayout(button_layout)
         # Add buttons to bottom of main layout (after scrollable area)
-        main_layout.addLayout(button_layout)
+        main_layout.addWidget(self.buttons_widget)
 
     # def setup_shortcuts(self):
     #     """Setup keyboard shortcuts"""
@@ -1824,11 +1828,8 @@ class PreprocessingInterface(QMainWindow):
 
     def on_run_clicked(self):
         """Handle the Run button click"""
-        # Disable run button while processing
-        sender = self.sender()
-        if sender:
-            sender.setEnabled(False)
-            self.run_button = sender # Save reference to re-enable later
+        # Disable all buttons while processing
+        self.buttons_widget.setEnabled(False)
 
         # Show progress
         self.progress_bar.setVisible(True)
@@ -1858,7 +1859,7 @@ class PreprocessingInterface(QMainWindow):
         # Run checks in main thread
         if not self.run_pre_checks():
              # Re-enable if checks fail
-            if sender: sender.setEnabled(True)
+            self.buttons_widget.setEnabled(True)
             self.progress_bar.setVisible(False)
             return
 
@@ -1870,19 +1871,30 @@ class PreprocessingInterface(QMainWindow):
 
     def on_processing_finished(self):
         self.progress_bar.setVisible(False)
-        if hasattr(self, 'run_button'):
-            self.run_button.setEnabled(True)
+        self.buttons_widget.setEnabled(True)
         self.close_dialog()
 
     def on_processing_error(self, error_msg):
         self.progress_bar.setVisible(False)
-        if hasattr(self, 'run_button'):
-            self.run_button.setEnabled(True)
+        self.buttons_widget.setEnabled(True)
         self.siril.log(f"Error during processing: {error_msg}", LogColor.RED)
         QMessageBox.critical(self, "Processing Error", f"An error occurred:\n{error_msg}")
 
+    def closeEvent(self, event):
+        """Handle the window close event (clicking the X button)."""
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "Processing in Progress",
+                "The script is currently processing. Please wait for it to finish. To stop the script, click the 'stop' button under the console and stop the python process",
+            )
+            event.ignore()
+        else:
+            self.siril.disconnect()
+            event.accept()
+
     def run_pre_checks(self):
-        self.siril.log(f"Starting pre-checks...", LogColor.BLUE)
+        self.siril.log("Starting pre-checks...", LogColor.BLUE)
         
         if self.fits_files_count == 0:
             QMessageBox.warning(
