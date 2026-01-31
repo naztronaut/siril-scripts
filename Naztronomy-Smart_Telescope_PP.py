@@ -107,9 +107,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QSpinBox,
-    QScrollArea
+    QScrollArea,
+    QProgressBar,
 )
-from PyQt6.QtCore import pyqtSlot as Slot, Qt
+from PyQt6.QtCore import pyqtSlot as Slot, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
@@ -192,6 +193,25 @@ FILTER_COMMANDS_MAP = {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
     },
 }
+
+
+class WorkerThread(QThread):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            self.fn(*self.args, **self.kwargs)
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            self.finished.emit()
 
 
 UI_DEFAULTS = {
@@ -1701,6 +1721,14 @@ class PreprocessingInterface(QMainWindow):
 
         button_layout.addStretch()
 
+        # Add Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate mode
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFixedWidth(200)
+        button_layout.addWidget(self.progress_bar)
+
         close_button = QPushButton("Close")
         close_button.setMinimumWidth(100)
         close_button.setMinimumHeight(35)
@@ -1796,27 +1824,392 @@ class PreprocessingInterface(QMainWindow):
 
     def on_run_clicked(self):
         """Handle the Run button click"""
-        self.run_script(
-            do_spcc=self.spcc_checkbox.isChecked(),
-            filter=self.filter_combo.currentText(),
-            telescope=self.telescope_combo.currentText(),
-            # catalog=self.catalog_combo.currentText(),
-            use_darks=self.darks_checkbox.isChecked(),
-            use_flats=self.flats_checkbox.isChecked(),
-            use_biases=self.biases_checkbox.isChecked(),
-            max_files_per_batch=self.batch_size_spinbox.value(),
-            bg_extract=self.bg_extract_checkbox.isChecked(),
-            drizzle=self.drizzle_group.isChecked(),
-            drizzle_amount=round(self.drizzle_amount_spinbox.value(), 2),
-            pixel_fraction=round(self.pixel_fraction_spinbox.value(), 2),
-            filter_roundness=round(self.roundness_spinbox.value(),2),
-            filter_fwhm=round(self.fwhm_spinbox.value(), 2),
-            filter_bg=round(self.bg_filter_spinbox.value(), 2),
-            filter_star_count=round(self.star_count_filter_spinbox.value(), 2),
-            feather=self.feather_group.isChecked(),
-            feather_amount=self.feather_amount_spinbox.value(),
-            clean_up_files=self.cleanup_files_checkbox.isChecked(),
+        # Disable run button while processing
+        sender = self.sender()
+        if sender:
+            sender.setEnabled(False)
+            self.run_button = sender # Save reference to re-enable later
+
+        # Show progress
+        self.progress_bar.setVisible(True)
+
+        # Collect parameters
+        params = {
+            "do_spcc": self.spcc_checkbox.isChecked(),
+            "filter": self.filter_combo.currentText(),
+            "telescope": self.telescope_combo.currentText(),
+            "use_darks": self.darks_checkbox.isChecked(),
+            "use_flats": self.flats_checkbox.isChecked(),
+            "use_biases": self.biases_checkbox.isChecked(),
+            "max_files_per_batch": self.batch_size_spinbox.value(),
+            "bg_extract": self.bg_extract_checkbox.isChecked(),
+            "drizzle": self.drizzle_group.isChecked(),
+            "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 2),
+            "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
+            "filter_roundness": round(self.roundness_spinbox.value(), 2),
+            "filter_fwhm": round(self.fwhm_spinbox.value(), 2),
+            "filter_bg": round(self.bg_filter_spinbox.value(), 2),
+            "filter_star_count": round(self.star_count_filter_spinbox.value(), 2),
+            "feather": self.feather_group.isChecked(),
+            "feather_amount": self.feather_amount_spinbox.value(),
+            "clean_up_files": self.cleanup_files_checkbox.isChecked(),
+        }
+
+        # Run checks in main thread
+        if not self.run_pre_checks():
+             # Re-enable if checks fail
+            if sender: sender.setEnabled(True)
+            self.progress_bar.setVisible(False)
+            return
+
+        # Start background thread
+        self.worker = WorkerThread(self.run_processing_logic, **params)
+        self.worker.finished.connect(self.on_processing_finished)
+        self.worker.error.connect(self.on_processing_error)
+        self.worker.start()
+
+    def on_processing_finished(self):
+        self.progress_bar.setVisible(False)
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(True)
+        self.close_dialog()
+
+    def on_processing_error(self, error_msg):
+        self.progress_bar.setVisible(False)
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(True)
+        self.siril.log(f"Error during processing: {error_msg}", LogColor.RED)
+        QMessageBox.critical(self, "Processing Error", f"An error occurred:\n{error_msg}")
+
+    def run_pre_checks(self):
+        self.siril.log(f"Starting pre-checks...", LogColor.BLUE)
+        
+        if self.fits_files_count == 0:
+            QMessageBox.warning(
+                self,
+                "No FITS Files Found",
+                "No FITS files found in the lights directory. Please add files and try again.",
+            )
+            return False
+
+        # Check if old processing directories exist
+        if (
+            os.path.exists("sessions")
+            or os.path.exists("process")
+            or os.path.exists("final_stack")
+        ):
+            msg = "Old processing directories found. Do you want to delete them and start fresh?"
+            answer = QMessageBox.question(
+                self,
+                "Old Processing Files Found",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    if os.path.exists("sessions"):
+                        shutil.rmtree("sessions")
+                        self.siril.log(
+                            "Cleaned up old sessions directories", LogColor.BLUE
+                        )
+                    if os.path.exists("process"):
+                        shutil.rmtree("process")
+                        self.siril.log(
+                            "Cleaned up old process directory", LogColor.BLUE
+                        )
+                    if os.path.exists("final_stack"):
+                        shutil.rmtree("final_stack")
+                        self.siril.log(
+                            "Cleaned up old final_stack directory", LogColor.BLUE
+                        )
+                except Exception as e:
+                    self.siril.log(
+                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.",
+                        LogColor.RED,
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "Error",
+                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.\nPlease remove them manually and try again.\n\n",
+                    )
+                    return False
+            else:
+                self.siril.log(
+                    "User chose to preserve old processing files. Stopping script.",
+                    LogColor.BLUE,
+                )
+                return False
+        return True
+
+    def run_processing_logic(
+        self,
+        do_spcc: bool = False,
+        filter: str = "broadband",
+        telescope: str = "ZWO Seestar S30",
+        catalog: str = "localgaia",
+        use_darks: bool = False,
+        use_flats: bool = False,
+        use_biases: bool = False,
+        max_files_per_batch: float = UI_DEFAULTS["max_files_per_batch"],
+        bg_extract: bool = False,
+        drizzle: bool = False,
+        drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
+        pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
+        filter_roundness: float = 100.0,
+        filter_fwhm: float = 100.0,
+        filter_bg: float = 100.0,
+        filter_star_count: float = 100.0,
+        feather: bool = False,
+        feather_amount: float = UI_DEFAULTS["feather_amount"],
+        clean_up_files: bool = False,
+    ):
+        self.siril.log(
+            f"Running script version {VERSION} with arguments:\n"
+            f"do_spcc={do_spcc}\n"
+            f"filter={filter}\n"
+            f"telescope={telescope}\n"
+            f"catalog={catalog}\n"
+            f"use_darks={use_darks}\n"
+            f"use_flats={use_flats}\n"
+            f"use_biases={use_biases}\n"
+            f"batch_size={max_files_per_batch}\n"
+            f"bg_extract={bg_extract}\n"
+            f"drizzle={drizzle}\n"
+            f"drizzle_amount={drizzle_amount}\n"
+            f"filter_roundness={filter_roundness}\n"
+            f"filter_fwhm={filter_fwhm}\n"
+            f"filter_bg={filter_bg}\n"
+            f"filter_star_count={filter_star_count}\n"
+            f"pixel_fraction={pixel_fraction}\n"
+            f"feather={feather}\n"
+            f"feather_amount={feather_amount}\n"
+            f"clean_up_files={clean_up_files}\n"
+            f"compression={self.compression_checkbox.isChecked()}\n"
+            f"black_frames_bug={self.scan_blackframes_checkbox.isChecked()}\n"
+            f"build={VERSION}-{BUILD}",
+            LogColor.BLUE,
         )
+        self.siril.cmd("close")
+
+        self.drizzle_status = drizzle
+        self.drizzle_factor = drizzle_amount
+
+        # TODO: Stack calibration frames and copy to the various batch dirs
+        if use_biases:
+            converted = self.convert_files("biases")
+            if converted:
+                self.calibration_stack("biases")
+            if clean_up_files:
+                self.clean_up("biases")
+        if use_flats:
+            converted = self.convert_files("flats")
+            if converted:
+                self.calibration_stack("flats")
+            if clean_up_files:
+                self.clean_up("flats")
+        if use_darks:
+            converted = self.convert_files("darks")
+            if converted:
+                self.calibration_stack("darks")
+            if clean_up_files:
+                self.clean_up("darks")
+
+        # Check files in working directory/lights.
+        # create sub folders with more than 2048 divided by equal amounts
+
+        lights_directory = "lights"
+
+        # Get list of all files in the lights directory
+        all_files = [
+            name
+            for name in os.listdir(lights_directory)
+            if os.path.isfile(os.path.join(lights_directory, name))
+        ]
+        num_files = len(all_files)
+
+        # only one batch will be run if less than max_files_per_batch OR not windows.
+        if num_files <= max_files_per_batch:  
+            self.siril.log(
+                f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
+                LogColor.BLUE,
+            )
+            file_name = self.batch(
+                output_name=lights_directory,
+                use_darks=use_darks,
+                use_flats=use_flats,
+                use_biases=use_biases,
+                bg_extract=bg_extract,
+                drizzle=drizzle,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+                filter_roundness=filter_roundness,
+                filter_fwhm=filter_fwhm,
+                feather=feather,
+                feather_amount=feather_amount,
+                clean_up_files=clean_up_files,
+            )
+
+            self.load_image(image_name=file_name)
+        else:
+            num_batches = math.ceil(num_files / max_files_per_batch)
+
+            self.siril.log(
+                f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
+                LogColor.BLUE,
+            )
+
+            # Ensure temp folders exist and are empty
+            for i in range(num_batches):
+                batch_dir = f"batch_lights{i+1}"
+                os.makedirs(batch_dir, exist_ok=True)
+                # Optionally clean out existing files:
+                for f in os.listdir(batch_dir):
+                    os.remove(os.path.join(batch_dir, f))
+
+            # Split and create symlinks/copies of files into batches
+            for i, filename in enumerate(all_files):
+                batch_index = i // max_files_per_batch
+                batch_dir = f"batch_lights{batch_index + 1}"
+                src_path = os.path.join(lights_directory, filename)
+                dest_path = os.path.join(batch_dir, filename)
+
+                # try:
+                #     # Try creating symlink first
+                #     os.symlink(src_path, dest_path)
+                # except (OSError, NotImplementedError):
+                #     # Fall back to copying if symlink fails
+                shutil.copy2(src_path, dest_path)
+
+            # Send each of the new lights dir into batch directory
+            for i in range(num_batches):
+                batch_dir = f"batch_lights{i+1}"
+                self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
+                self.batch(
+                    output_name=batch_dir,
+                    use_darks=use_darks,
+                    use_flats=use_flats,
+                    use_biases=use_biases,
+                    bg_extract=bg_extract,
+                    drizzle=drizzle,
+                    drizzle_amount=drizzle_amount,
+                    pixel_fraction=pixel_fraction,
+                    filter_roundness=filter_roundness,
+                    filter_fwhm=filter_fwhm,
+                    feather=feather,
+                    feather_amount=feather_amount,
+                    clean_up_files=clean_up_files,
+                )
+            self.siril.log("Batching complete.", LogColor.GREEN)
+
+            # Create batched_lights directory
+            final_stack_seq_name = "final_stack"
+            batch_lights = "batch_lights"
+            os.makedirs(final_stack_seq_name, exist_ok=True)
+            source_dir = os.path.join(os.getcwd(), "process")
+            # Move batch result files into batched_lights
+            target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
+
+            # Create the target subdirectory if it doesn't exist
+            os.makedirs(target_subdir, exist_ok=True)
+
+            # Loop through all files in the source directory
+            for filename in os.listdir(source_dir):
+                if f"{batch_lights}" in filename:
+                    full_src_path = os.path.join(source_dir, filename)
+                    full_dst_path = os.path.join(target_subdir, filename)
+
+                # Only move files, skip directories
+                # Should only moved the final batched files
+                if os.path.isfile(full_src_path):
+                    shutil.move(full_src_path, full_dst_path)
+                    self.siril.log(f"Moved: {filename}", LogColor.BLUE)
+
+            # Clean up temp_lightsX directories
+            for i in range(num_batches):
+                batch_dir = f"{batch_lights}{i+1}"
+                shutil.rmtree(batch_dir, ignore_errors=True)
+
+            self.convert_files(final_stack_seq_name)
+            self.seq_plate_solve(seq_name=final_stack_seq_name)
+            # turn off drizzle for this
+            self.drizzle_status = False
+            # Force filters to 3 sigma
+            self.seq_apply_reg(
+                seq_name=final_stack_seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+                filter_roundness=100.0,
+                filter_fwhm=100.0,
+                filter_bg=100.0,
+                filter_star_count=100.0,
+            )
+            self.clean_up(prefix=final_stack_seq_name)
+            registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
+            # final stack needs feathering and amount
+            self.drizzle_status = drizzle  # Turn drizzle back to selected option
+            self.seq_stack(
+                seq_name=registered_final_stack_seq_name,
+                feather=True,
+                rejection=False,
+                feather_amount=100,
+                output_name="final_result",
+                overlap_norm=True,
+            )
+            self.load_image(image_name="final_result")
+
+            # cleanup final_stack directory
+            # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
+            if clean_up_files:
+                self.clean_up(prefix=registered_final_stack_seq_name)
+
+            # Go back to working dir
+            self.siril.cmd("cd", "../")
+
+            # Save og image in WD - might have drizzle factor in name
+            file_name = self.save_image("_batched")
+            self.load_image(image_name=file_name)
+
+        # Spcc as a last step
+        if do_spcc:
+            img = self.spcc(
+                oscsensor=telescope,
+                filter=filter,
+                catalog=catalog,
+                whiteref="Average Spiral Galaxy",
+            )
+
+            # self.autostretch(do_spcc=do_spcc)
+            if drizzle:
+                img = os.path.basename(img) + self.fits_extension
+            else:
+                img = os.path.basename(img)
+            self.load_image(
+                image_name=os.path.basename(img)
+            )  # Load either og or spcc image
+        
+        # Get some stacking deets
+        self.stacking_details()
+        # self.clean_up()
+
+        self.siril.cmd("setcompress", "0")  # Disable compression after processing
+
+        self.siril.log(
+            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            LogColor.GREEN,
+        )
+        self.siril.log(
+            """
+        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
+        The author of this script is Nazmus Nasir (Naztronomy).
+        Website: https://www.Naztronomy.com 
+        YouTube: https://www.YouTube.com/Naztronomy 
+        Discord: https://discord.gg/yXKqrawpjr
+        Patreon: https://www.patreon.com/c/naztronomy
+        Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
+        """,
+            LogColor.BLUE,
+        )
+        # self.close_dialog() # Now handled by on_finished
 
     def close_dialog(self):
         self.siril.disconnect()
@@ -2150,332 +2543,6 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
-
-    def run_script(
-        self,
-        do_spcc: bool = False,
-        filter: str = "broadband",
-        telescope: str = "ZWO Seestar S30",
-        catalog: str = "localgaia",
-        use_darks: bool = False,
-        use_flats: bool = False,
-        use_biases: bool = False,
-        max_files_per_batch: float = UI_DEFAULTS["max_files_per_batch"],
-        bg_extract: bool = False,
-        drizzle: bool = False,
-        drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
-        pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
-        filter_roundness: float = 100.0,
-        filter_fwhm: float = 100.0,
-        filter_bg: float = 100.0,
-        filter_star_count: float = 100.0,
-        feather: bool = False,
-        feather_amount: float = UI_DEFAULTS["feather_amount"],
-        clean_up_files: bool = False,
-    ):
-        self.siril.log(
-            f"Running script version {VERSION} with arguments:\n"
-            f"do_spcc={do_spcc}\n"
-            f"filter={filter}\n"
-            f"telescope={telescope}\n"
-            f"catalog={catalog}\n"
-            f"use_darks={use_darks}\n"
-            f"use_flats={use_flats}\n"
-            f"use_biases={use_biases}\n"
-            f"batch_size={max_files_per_batch}\n"
-            f"bg_extract={bg_extract}\n"
-            f"drizzle={drizzle}\n"
-            f"drizzle_amount={drizzle_amount}\n"
-            f"filter_roundness={filter_roundness}\n"
-            f"filter_fwhm={filter_fwhm}\n"
-            f"filter_bg={filter_bg}\n"
-            f"filter_star_count={filter_star_count}\n"
-            f"pixel_fraction={pixel_fraction}\n"
-            f"feather={feather}\n"
-            f"feather_amount={feather_amount}\n"
-            f"clean_up_files={clean_up_files}\n"
-            f"compression={self.compression_checkbox.isChecked()}\n"
-            f"black_frames_bug={self.scan_blackframes_checkbox.isChecked()}\n"
-            f"build={VERSION}-{BUILD}",
-            LogColor.BLUE,
-        )
-        self.siril.cmd("close")
-
-        if self.fits_files_count == 0:
-            QMessageBox.warning(
-                self,
-                "No FITS Files Found",
-                "No FITS files found in the lights directory. Please add files and try again.",
-            )
-            return
-
-        # Check if old processing directories exist
-        if (
-            os.path.exists("sessions")
-            or os.path.exists("process")
-            or os.path.exists("final_stack")
-        ):
-            msg = "Old processing directories found. Do you want to delete them and start fresh?"
-            answer = QMessageBox.question(
-                self,
-                "Old Processing Files Found",
-                msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                try:
-                    if os.path.exists("sessions"):
-                        shutil.rmtree("sessions")
-                        self.siril.log(
-                            "Cleaned up old sessions directories", LogColor.BLUE
-                        )
-                    if os.path.exists("process"):
-                        shutil.rmtree("process")
-                        self.siril.log(
-                            "Cleaned up old process directory", LogColor.BLUE
-                        )
-                    if os.path.exists("final_stack"):
-                        shutil.rmtree("final_stack")
-                        self.siril.log(
-                            "Cleaned up old final_stack directory", LogColor.BLUE
-                        )
-                except Exception as e:
-                    self.siril.log(
-                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.",
-                        LogColor.RED,
-                    )
-                    QMessageBox.warning(
-                        self,
-                        "Error",
-                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.\nPlease remove them manually and try again.\n\n",
-                    )
-                    return
-            else:
-                self.siril.log(
-                    "User chose to preserve old processing files. Stopping script.",
-                    LogColor.BLUE,
-                )
-                return
-        # Check files - if more than 2048, batch them:
-        self.drizzle_status = drizzle
-        self.drizzle_factor = drizzle_amount
-
-        # TODO: Stack calibration frames and copy to the various batch dirs
-        if use_biases:
-            converted = self.convert_files("biases")
-            if converted:
-                self.calibration_stack("biases")
-            if clean_up_files:
-                self.clean_up("biases")
-        if use_flats:
-            converted = self.convert_files("flats")
-            if converted:
-                self.calibration_stack("flats")
-            if clean_up_files:
-                self.clean_up("flats")
-        if use_darks:
-            converted = self.convert_files("darks")
-            if converted:
-                self.calibration_stack("darks")
-            if clean_up_files:
-                self.clean_up("darks")
-
-        # Check files in working directory/lights.
-        # create sub folders with more than 2048 divided by equal amounts
-
-        lights_directory = "lights"
-
-        # Get list of all files in the lights directory
-        all_files = [
-            name
-            for name in os.listdir(lights_directory)
-            if os.path.isfile(os.path.join(lights_directory, name))
-        ]
-        num_files = len(all_files)
-
-        # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch:  
-            self.siril.log(
-                f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
-                LogColor.BLUE,
-            )
-            file_name = self.batch(
-                output_name=lights_directory,
-                use_darks=use_darks,
-                use_flats=use_flats,
-                use_biases=use_biases,
-                bg_extract=bg_extract,
-                drizzle=drizzle,
-                drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction,
-                filter_roundness=filter_roundness,
-                filter_fwhm=filter_fwhm,
-                feather=feather,
-                feather_amount=feather_amount,
-                clean_up_files=clean_up_files,
-            )
-
-            self.load_image(image_name=file_name)
-        else:
-            num_batches = math.ceil(num_files / max_files_per_batch)
-
-            self.siril.log(
-                f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
-                LogColor.BLUE,
-            )
-
-            # Ensure temp folders exist and are empty
-            for i in range(num_batches):
-                batch_dir = f"batch_lights{i+1}"
-                os.makedirs(batch_dir, exist_ok=True)
-                # Optionally clean out existing files:
-                for f in os.listdir(batch_dir):
-                    os.remove(os.path.join(batch_dir, f))
-
-            # Split and create symlinks/copies of files into batches
-            for i, filename in enumerate(all_files):
-                batch_index = i // max_files_per_batch
-                batch_dir = f"batch_lights{batch_index + 1}"
-                src_path = os.path.join(lights_directory, filename)
-                dest_path = os.path.join(batch_dir, filename)
-
-                # try:
-                #     # Try creating symlink first
-                #     os.symlink(src_path, dest_path)
-                # except (OSError, NotImplementedError):
-                #     # Fall back to copying if symlink fails
-                shutil.copy2(src_path, dest_path)
-
-            # Send each of the new lights dir into batch directory
-            for i in range(num_batches):
-                batch_dir = f"batch_lights{i+1}"
-                self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
-                self.batch(
-                    output_name=batch_dir,
-                    use_darks=use_darks,
-                    use_flats=use_flats,
-                    use_biases=use_biases,
-                    bg_extract=bg_extract,
-                    drizzle=drizzle,
-                    drizzle_amount=drizzle_amount,
-                    pixel_fraction=pixel_fraction,
-                    filter_roundness=filter_roundness,
-                    filter_fwhm=filter_fwhm,
-                    feather=feather,
-                    feather_amount=feather_amount,
-                    clean_up_files=clean_up_files,
-                )
-            self.siril.log("Batching complete.", LogColor.GREEN)
-
-            # Create batched_lights directory
-            final_stack_seq_name = "final_stack"
-            batch_lights = "batch_lights"
-            os.makedirs(final_stack_seq_name, exist_ok=True)
-            source_dir = os.path.join(os.getcwd(), "process")
-            # Move batch result files into batched_lights
-            target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
-
-            # Create the target subdirectory if it doesn't exist
-            os.makedirs(target_subdir, exist_ok=True)
-
-            # Loop through all files in the source directory
-            for filename in os.listdir(source_dir):
-                if f"{batch_lights}" in filename:
-                    full_src_path = os.path.join(source_dir, filename)
-                    full_dst_path = os.path.join(target_subdir, filename)
-
-                # Only move files, skip directories
-                # Should only moved the final batched files
-                if os.path.isfile(full_src_path):
-                    shutil.move(full_src_path, full_dst_path)
-                    self.siril.log(f"Moved: {filename}", LogColor.BLUE)
-
-            # Clean up temp_lightsX directories
-            for i in range(num_batches):
-                batch_dir = f"{batch_lights}{i+1}"
-                shutil.rmtree(batch_dir, ignore_errors=True)
-
-            self.convert_files(final_stack_seq_name)
-            self.seq_plate_solve(seq_name=final_stack_seq_name)
-            # turn off drizzle for this
-            self.drizzle_status = False
-            # Force filters to 3 sigma
-            self.seq_apply_reg(
-                seq_name=final_stack_seq_name,
-                drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction,
-                filter_roundness=100.0,
-                filter_fwhm=100.0,
-                filter_bg=100.0,
-                filter_star_count=100.0,
-            )
-            self.clean_up(prefix=final_stack_seq_name)
-            registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
-            # final stack needs feathering and amount
-            self.drizzle_status = drizzle  # Turn drizzle back to selected option
-            self.seq_stack(
-                seq_name=registered_final_stack_seq_name,
-                feather=True,
-                rejection=False,
-                feather_amount=100,
-                output_name="final_result",
-                overlap_norm=True,
-            )
-            self.load_image(image_name="final_result")
-
-            # cleanup final_stack directory
-            # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
-            if clean_up_files:
-                self.clean_up(prefix=registered_final_stack_seq_name)
-
-            # Go back to working dir
-            self.siril.cmd("cd", "../")
-
-            # Save og image in WD - might have drizzle factor in name
-            file_name = self.save_image("_batched")
-            self.load_image(image_name=file_name)
-
-        # Spcc as a last step
-        if do_spcc:
-            img = self.spcc(
-                oscsensor=telescope,
-                filter=filter,
-                catalog=catalog,
-                whiteref="Average Spiral Galaxy",
-            )
-
-            # self.autostretch(do_spcc=do_spcc)
-            if drizzle:
-                img = os.path.basename(img) + self.fits_extension
-            else:
-                img = os.path.basename(img)
-            self.load_image(
-                image_name=os.path.basename(img)
-            )  # Load either og or spcc image
-        
-        # Get some stacking deets
-        self.stacking_details()
-        # self.clean_up()
-
-        self.siril.cmd("setcompress", "0")  # Disable compression after processing
-
-        self.siril.log(
-            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            LogColor.GREEN,
-        )
-        self.siril.log(
-            """
-        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
-        The author of this script is Nazmus Nasir (Naztronomy).
-        Website: https://www.Naztronomy.com 
-        YouTube: https://www.YouTube.com/Naztronomy 
-        Discord: https://discord.gg/yXKqrawpjr
-        Patreon: https://www.patreon.com/c/naztronomy
-        Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
-        """,
-            LogColor.BLUE,
-        )
-        self.close_dialog()
 
 
 def main():
