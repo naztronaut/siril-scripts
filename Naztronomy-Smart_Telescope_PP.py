@@ -28,6 +28,9 @@ CHANGELOG:
 2.0.6 - Flip image if needed
       - Ignore dot files from macs
       - PR#75 - support compressed fits in lights dir
+      - Refactored UI code for better maintainability
+      - Added non-blocking UI with Progress Bar
+      - Prevent closing window while processing
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
