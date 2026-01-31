@@ -107,6 +107,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QSpinBox,
+    QScrollArea
 )
 from PyQt6.QtCore import pyqtSlot as Slot, Qt
 from PyQt6.QtGui import QFont, QShortcut, QKeySequence
@@ -405,10 +406,12 @@ class PreprocessingInterface(QMainWindow):
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
         # Mapping from FITS header values to UI telescope names
+        # Note: Order matters! Put more specific/longer strings first
         telescope_map = {
-            "Seestar S30": "ZWO Seestar S30",
-            "Seestar S30 Pro:": "ZWO Seestar S30 Pro",
+            "ZWO Seestar S30 Pro": "ZWO Seestar S30 Pro",
+            "ZWO Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
+            "Seestar S30": "ZWO Seestar S30",
             "S50": "ZWO Seestar S50",
             "DWARF mini": "Dwarf Mini",
             "DWARFIII": "Dwarf 3",
@@ -443,33 +446,46 @@ class PreprocessingInterface(QMainWindow):
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
                 header = hdul[0].header
-                telescope = header.get("TELESCOP") or header.get(
-                    "CAMERA", "Seestar S30"
-                )
-
+                telescop = header.get("TELESCOP", "")
+                creator = header.get("CREATOR", "")
+                camera = header.get("CAMERA", "")
+                origin = header.get("ORIGIN", "")
+                
                 # Try to map telescope name, using startswith for partial matches
                 mapped_telescope = "ZWO Seestar S30"  # default
-                for telescope_local_name, ui_name in telescope_map.items():
-                    if telescope.startswith(telescope_local_name):
-                        mapped_telescope = ui_name
+                found_match = False
+                
+                # Check all three header values against the map
+                for header_value in [telescop, creator, camera]:
+                    if not header_value:
+                        continue
+                    for telescope_local_name, ui_name in telescope_map.items():
+                        if header_value.startswith(telescope_local_name):
+                            mapped_telescope = ui_name
+                            found_match = True
+                            print(f"Matched '{header_value}' to '{mapped_telescope}'")
+                            break
+                    if found_match:
                         break
                 
-                if mapped_telescope == "ZWO Seestar S30":
-                    origin = header.get("ORIGIN", "NULL")
-                    if origin.startswith("Unistellar"):
-                        instrume = header.get("INSTRUME", "NULL")
-                        # Dict for Unistellar
-                        unistellar_instruments = {
-                            "IMX224": "Unistellar eVscope 1 / eQuinox 1",
-                            "IMX347": "Unistellar eVscope 2 / eQuinox 2",
-                            "IMX415": "Unistellar Odyssey / Odyssey Pro",
-                        }
-                        for instrument, name in unistellar_instruments.items():
-                            if instrume.startswith(instrument):
-                                mapped_telescope = name
-                                break
-                    else:
-                        self.siril.log("Couldn't find Telescope info, setting default:", LogColor.BLUE)
+                if origin.startswith("Unistellar"):
+                    instrume = header.get("INSTRUME", "NULL")
+                    # Dict for Unistellar
+                    unistellar_instruments = {
+                        "IMX224": "Unistellar eVscope 1 / eQuinox 1",
+                        "IMX347": "Unistellar eVscope 2 / eQuinox 2",
+                        "IMX415": "Unistellar Odyssey / Odyssey Pro",
+                    }
+                    for instrument, name in unistellar_instruments.items():
+                        if instrume.startswith(instrument):
+                            mapped_telescope = name
+                            found_match = True
+                            break
+                
+                if not found_match:
+                    self.siril.log("Couldn't find Telescope info, setting default:", LogColor.BLUE)
+                
+                print(f"Final mapped_telescope: {mapped_telescope}")
 
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
@@ -686,7 +702,7 @@ class PreprocessingInterface(QMainWindow):
             "-framing=max",
         ]
 
-        if self.filters_checkbox.isChecked():
+        if self.filters_group.isChecked():
             cmd_args.extend(
                 [
                     f"-filter-round={filter_roundness}%",
@@ -1026,7 +1042,7 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             self.siril.cmd("setcompress", "0")
-            self.siril.cmd("rotate", "180")
+            # self.siril.cmd("rotate", "180")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
@@ -1129,7 +1145,7 @@ class PreprocessingInterface(QMainWindow):
             date_obs = headers.get("DATE-OBS", "Unknown")
             date = headers.get("DATE", "Unknown")
             pixel_size = headers.get("XPIXSZ", "Unknown")
-            feathering = self.feather_amount_spinbox.value() if self.feather_checkbox.isChecked() else "Off"
+            feathering = self.feather_amount_spinbox.value() if self.feather_group.isChecked() else "Off"
             drizzle = f"{self.drizzle_factor}x" if self.drizzle_status else "Off"
 
             details_msg = (
@@ -1270,12 +1286,27 @@ class PreprocessingInterface(QMainWindow):
         """Creates the UI widgets."""
         # Create main widget and layout
         main_widget = QWidget()
-        self.setMinimumSize(700, 750)
         self.setCentralWidget(main_widget)
 
+        # Set default window size (larger by default)
+        self.resize(950, 850)
+
         main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(15, 10, 15, 15)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create scrollable content area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        main_layout.addWidget(scroll_area)
+
+        # Create content widget for scroll area
+        content_widget = QWidget()
+        scroll_area.setWidget(content_widget)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(10)
 
         # Title and version
         title_label = QLabel(f"{APP_NAME}")
@@ -1283,16 +1314,18 @@ class PreprocessingInterface(QMainWindow):
         title_font.setBold(True)
         title_font.setPointSize(10)
         title_label.setFont(title_font)
-        main_layout.addWidget(title_label)
+        content_layout.addWidget(title_label)
 
         # Current working directory label
         self.cwd_label = QLabel(self.cwd_label_text)
-        main_layout.addWidget(self.cwd_label)
+        content_layout.addWidget(self.cwd_label)
 
         # Catalog status section
         gaia_status_section = QGroupBox("Local Gaia Catalog Status")
+        gaia_status_section.setStyleSheet("QGroupBox { font-weight: bold; }")
         gaia_status_layout = QHBoxLayout(gaia_status_section)
         gaia_status_layout.setSpacing(15)
+        gaia_status_layout.setContentsMargins(10, 12, 10, 10)
 
         if self.astrometry_gaia_available:
             astrometry_gaia_label = QLabel("✓ Local Astrometry Gaia Available")
@@ -1314,15 +1347,17 @@ class PreprocessingInterface(QMainWindow):
             photometry_gaia_label.setToolTip("Local Photometry Gaia not available, will default to Online Gaia.")
         gaia_status_layout.addWidget(photometry_gaia_label)
 
-        main_layout.addWidget(gaia_status_section)
+        content_layout.addWidget(gaia_status_section)
 
         # Telescope section
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        main_layout.addWidget(telescope_section)
+        content_layout.addWidget(telescope_section)
         telescope_layout = QGridLayout(telescope_section)
-        telescope_layout.setSpacing(3)
-        telescope_layout.setContentsMargins(10, 15, 10, 10)
+        telescope_layout.setSpacing(8)
+        telescope_layout.setContentsMargins(12, 12, 12, 12)
+        telescope_layout.setHorizontalSpacing(12)
+        telescope_layout.setVerticalSpacing(12)
 
         telescope_label = QLabel("Telescope:")
         telescope_label.setFont(title_font)  # Bold font
@@ -1366,9 +1401,6 @@ class PreprocessingInterface(QMainWindow):
         )
         telescope_layout.addWidget(self.biases_checkbox, 1, 3)
 
-        # Add some vertical spacing between calibration and cleanup
-        telescope_layout.setRowMinimumHeight(1, 35)
-
         cleanup_files_label = QLabel("Clean Up Files:")
         cleanup_files_label.setFont(title_font)
         cleanup_tooltip = "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\nNote: If your session is batched, this option is automatically enabled even if it's unchecked!"
@@ -1393,13 +1425,12 @@ class PreprocessingInterface(QMainWindow):
         # Optional Preprocessing Steps
         preprocessing_section = QGroupBox("Optional Preprocessing Steps")
         preprocessing_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        main_layout.addWidget(preprocessing_section)
+        content_layout.addWidget(preprocessing_section)
         preprocessing_layout = QGridLayout(preprocessing_section)
-        preprocessing_layout.setSpacing(5)
-        # preprocessing_layout.setContentsMargins(10, 15, 10, 10)
+        preprocessing_layout.setSpacing(8)
+        preprocessing_layout.setContentsMargins(12, 12, 12, 12)
         preprocessing_layout.setHorizontalSpacing(15)  # space between label ↔ widget
-        preprocessing_layout.setVerticalSpacing(10)  # space between rows
-        preprocessing_layout.setContentsMargins(12, 18, 12, 12)  # outer padding
+        preprocessing_layout.setVerticalSpacing(12)  # space between rows
 
         # Batch size spinbox
         batch_size_label = QLabel("Max Files per Batch:")
@@ -1433,20 +1464,26 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_checkbox.setToolTip(bg_extract_tooltip)
         preprocessing_layout.addWidget(self.bg_extract_checkbox, 1, 1)
 
-        registration_label = QLabel("Registration:")
-        registration_label.setFont(title_font)
-        registration_label.setToolTip("Options for aligning images before stacking.")
-        preprocessing_layout.addWidget(registration_label, 2, 0)
+        # Drizzle section as a checkable group box
+        drizzle_group_tooltip = "Drizzle integration can improve resolution but increases processing time and file size."
+        self.drizzle_group = QGroupBox("Drizzle")
+        self.drizzle_group.setCheckable(True)
+        self.drizzle_group.setChecked(False)
+        self.drizzle_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        self.drizzle_group.setToolTip(drizzle_group_tooltip)
+        preprocessing_layout.addWidget(self.drizzle_group, 2, 0, 1, 6)
 
-        drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
-        self.drizzle_checkbox = QCheckBox("Drizzle?")
-        self.drizzle_checkbox.setToolTip(drizzle_tooltip)
-        preprocessing_layout.addWidget(self.drizzle_checkbox, 2, 1)
+        drizzle_layout = QGridLayout(self.drizzle_group)
+        drizzle_layout.setSpacing(8)
+        drizzle_layout.setContentsMargins(12, 12, 12, 12)
+        drizzle_layout.setHorizontalSpacing(15)
+        drizzle_layout.setVerticalSpacing(12)
 
         drizzle_amount_label_tooltip = "Scale factor for drizzle integration. Values between 1.0 and 3.0 are typical. \nNote: Higher values increase processing time and file size."
         drizzle_amount_label = QLabel("Drizzle amount:")
+        drizzle_amount_label.setFont(title_font)
         drizzle_amount_label.setToolTip(drizzle_amount_label_tooltip)
-        preprocessing_layout.addWidget(drizzle_amount_label, 2, 2)
+        drizzle_layout.addWidget(drizzle_amount_label, 0, 0)
 
         self.drizzle_amount_spinbox = QDoubleSpinBox()
         self.drizzle_amount_spinbox.setRange(0.1, 3.0)
@@ -1455,16 +1492,14 @@ class PreprocessingInterface(QMainWindow):
         self.drizzle_amount_spinbox.setDecimals(1)
         self.drizzle_amount_spinbox.setMinimumWidth(80)
         self.drizzle_amount_spinbox.setSuffix(" x")
-        self.drizzle_amount_spinbox.setEnabled(False)
         self.drizzle_amount_spinbox.setToolTip(drizzle_amount_label_tooltip)
-        preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 2, 3)
-
-        self.drizzle_checkbox.toggled.connect(self.drizzle_amount_spinbox.setEnabled)
+        drizzle_layout.addWidget(self.drizzle_amount_spinbox, 0, 1)
 
         pixel_fraction_label_tooltip = "Controls how much pixels overlap in drizzle integration. Lower values can reduce artifacts but may increase noise."
         pixel_fraction_label = QLabel("Pixel Fraction:")
+        pixel_fraction_label.setFont(title_font)
         pixel_fraction_label.setToolTip(pixel_fraction_label_tooltip)
-        preprocessing_layout.addWidget(pixel_fraction_label, 3, 2)
+        drizzle_layout.addWidget(pixel_fraction_label, 0, 2)
 
         self.pixel_fraction_spinbox = QDoubleSpinBox()
         self.pixel_fraction_spinbox.setDecimals(2)
@@ -1473,32 +1508,30 @@ class PreprocessingInterface(QMainWindow):
         self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
         self.pixel_fraction_spinbox.setMinimumWidth(80)
         self.pixel_fraction_spinbox.setSuffix(" px")
-        self.pixel_fraction_spinbox.setEnabled(False)
         self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
-        preprocessing_layout.addWidget(self.pixel_fraction_spinbox, 3, 3)
+        drizzle_layout.addWidget(self.pixel_fraction_spinbox, 0, 3)
 
-        self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
-
-        # Add spinboxes for roundness and FWHM filters
-
-        filter_label = QLabel("Filters:")
-        filter_label.setFont(title_font)
-        filter_label.setToolTip("Options for filtering images before stacking.")
-        preprocessing_layout.addWidget(filter_label, 4, 0)
-
-        filters_checkbox_tooltip = (
-            "Options for filtering images based on various criteria."
-        )
-        self.filters_checkbox = QCheckBox("Enable")
-        self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
-        preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
+        # Create collapsible Filters group
+        filters_group_tooltip = "Options for filtering images based on various criteria."
+        self.filters_group = QGroupBox("Filters (Optional)")
+        self.filters_group.setCheckable(True)
+        self.filters_group.setChecked(False)
+        self.filters_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        self.filters_group.setToolTip(filters_group_tooltip)
+        preprocessing_layout.addWidget(self.filters_group, 3, 0, 1, 6)
+        
+        filters_layout = QGridLayout(self.filters_group)
+        filters_layout.setSpacing(8)
+        filters_layout.setContentsMargins(12, 12, 12, 12)
+        filters_layout.setHorizontalSpacing(15)
+        filters_layout.setVerticalSpacing(12)
 
         # Roundness Filter
         roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower percentage keeps only frames with more circular stars. Higher percentages allow more variation in star shapes."
         roundness_label = QLabel("Roundness:")
         roundness_label.setFont(title_font)
         roundness_label.setToolTip(roundness_label_tooltip)
-        preprocessing_layout.addWidget(roundness_label, 4, 2)
+        filters_layout.addWidget(roundness_label, 0, 0)
 
         self.roundness_spinbox = QDoubleSpinBox()
         self.roundness_spinbox.setRange(1.0, 100.0)
@@ -1507,18 +1540,15 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox.setValue(100.0)
         self.roundness_spinbox.setMinimumWidth(80)
         self.roundness_spinbox.setSuffix(" %")
-        self.roundness_spinbox.setEnabled(False)
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
-        preprocessing_layout.addWidget(self.roundness_spinbox, 4, 3)
-
-        self.filters_checkbox.toggled.connect(self.roundness_spinbox.setEnabled)
+        filters_layout.addWidget(self.roundness_spinbox, 0, 1)
 
         # FWHM Filter
         fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower percentage keeps only frames with consistent FWHM values. Higher percentages allow more variation."
         fwhm_label = QLabel("FWHM:")
         fwhm_label.setFont(title_font)
         fwhm_label.setToolTip(fwhm_label_tooltip)
-        preprocessing_layout.addWidget(fwhm_label, 4, 4)
+        filters_layout.addWidget(fwhm_label, 0, 2)
 
         self.fwhm_spinbox = QDoubleSpinBox()
         self.fwhm_spinbox.setRange(1.0, 100.0)
@@ -1527,18 +1557,15 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_spinbox.setValue(100.0)
         self.fwhm_spinbox.setMinimumWidth(80)
         self.fwhm_spinbox.setSuffix(" %")
-        self.fwhm_spinbox.setEnabled(False)
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
-        preprocessing_layout.addWidget(self.fwhm_spinbox, 4, 5)
-
-        self.filters_checkbox.toggled.connect(self.fwhm_spinbox.setEnabled)
+        filters_layout.addWidget(self.fwhm_spinbox, 0, 3)
 
         # Background Filter
         bg_filter_label = QLabel("Background:")
         bg_filter_label.setFont(title_font)
         bg_filter_tooltip = "Filter frames by background value. Lower percentages keep frames with lower background levels."
         bg_filter_label.setToolTip(bg_filter_tooltip)
-        preprocessing_layout.addWidget(bg_filter_label, 5, 2)
+        filters_layout.addWidget(bg_filter_label, 1, 0)
 
         self.bg_filter_spinbox = QDoubleSpinBox()
         self.bg_filter_spinbox.setRange(1.0, 100.0)
@@ -1547,16 +1574,15 @@ class PreprocessingInterface(QMainWindow):
         self.bg_filter_spinbox.setValue(100.0)
         self.bg_filter_spinbox.setMinimumWidth(80)
         self.bg_filter_spinbox.setSuffix(" %")
-        self.bg_filter_spinbox.setEnabled(False)
         self.bg_filter_spinbox.setToolTip(bg_filter_tooltip)
-        preprocessing_layout.addWidget(self.bg_filter_spinbox, 5, 3)
+        filters_layout.addWidget(self.bg_filter_spinbox, 1, 1)
 
         # Star Count Filter
         star_count_filter_label = QLabel("Star Count:")
         star_count_filter_label.setFont(title_font)
         star_count_filter_tooltip = "Filter frames by star count. Lower percentages keep frames with fewer stars."
         star_count_filter_label.setToolTip(star_count_filter_tooltip)
-        preprocessing_layout.addWidget(star_count_filter_label, 5, 4)
+        filters_layout.addWidget(star_count_filter_label, 1, 2)
 
         self.star_count_filter_spinbox = QDoubleSpinBox()
         self.star_count_filter_spinbox.setRange(1.0, 100.0)
@@ -1565,51 +1591,58 @@ class PreprocessingInterface(QMainWindow):
         self.star_count_filter_spinbox.setValue(100.0)
         self.star_count_filter_spinbox.setMinimumWidth(80)
         self.star_count_filter_spinbox.setSuffix(" %")
-        self.star_count_filter_spinbox.setEnabled(False)
         self.star_count_filter_spinbox.setToolTip(star_count_filter_tooltip)
-        preprocessing_layout.addWidget(self.star_count_filter_spinbox, 5, 5)
+        filters_layout.addWidget(self.star_count_filter_spinbox, 1, 3)
 
-        # Connect the filters checkbox to enable/disable all filter controls
-        self.filters_checkbox.toggled.connect(self.bg_filter_spinbox.setEnabled)
-        self.filters_checkbox.toggled.connect(self.star_count_filter_spinbox.setEnabled)
+        # Connect the filters group checkbox to enable/disable all filter controls
+        self.filters_group.toggled.connect(self.roundness_spinbox.setEnabled)
+        self.filters_group.toggled.connect(self.fwhm_spinbox.setEnabled)
+        self.filters_group.toggled.connect(self.bg_filter_spinbox.setEnabled)
+        self.filters_group.toggled.connect(self.star_count_filter_spinbox.setEnabled)
 
-        # Stacking options
-        stacking_label = QLabel("Stacking:")
-        stacking_label.setFont(title_font)
-        stacking_label.setToolTip(
-            "Options for combining aligned images into a final stack."
-        )
-        preprocessing_layout.addWidget(stacking_label, 6, 0)
+        # Feather section as a checkable group box
+        feather_group_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
+        self.feather_group = QGroupBox("Feather")
+        self.feather_group.setCheckable(True)
+        self.feather_group.setChecked(False)
+        self.feather_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        self.feather_group.setToolTip(feather_group_tooltip)
+        preprocessing_layout.addWidget(self.feather_group, 4, 0, 1, 6)
 
-        feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
-        self.feather_checkbox = QCheckBox("Feather?")
-        self.feather_checkbox.setToolTip(feather_tooltip)
-        preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
+        feather_layout = QGridLayout(self.feather_group)
+        feather_layout.setSpacing(8)
+        feather_layout.setContentsMargins(12, 12, 12, 12)
+        feather_layout.setHorizontalSpacing(15)
+        feather_layout.setVerticalSpacing(12)
 
         feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
         feather_amount_label = QLabel("Feather amount:")
+        feather_amount_label.setFont(title_font)
         feather_amount_label.setToolTip(feather_amount_label_tooltip)
-        preprocessing_layout.addWidget(feather_amount_label, 6, 2)
+        feather_layout.addWidget(feather_amount_label, 0, 0)
 
         self.feather_amount_spinbox = QSpinBox()
         self.feather_amount_spinbox.setRange(5, 2000)
         self.feather_amount_spinbox.setSingleStep(5)
         self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
         self.feather_amount_spinbox.setMinimumWidth(80)
+        # self.feather_amount_spinbox.setMaximumWidth(100)
         self.feather_amount_spinbox.setSuffix(" px")
-        self.feather_amount_spinbox.setEnabled(False)
         self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
-        preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
-
-        self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
+        feather_layout.addWidget(self.feather_amount_spinbox, 0, 1)
+        
+        # Add stretch to push spinbox to the left
+        # feather_layout.setColumnStretch(2, 2)
 
         # SPCC Section
         self.spcc_section = QGroupBox("Post-Stacking")
         self.spcc_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        main_layout.addWidget(self.spcc_section)
+        content_layout.addWidget(self.spcc_section)
         spcc_layout = QGridLayout(self.spcc_section)
-        spcc_layout.setSpacing(5)
-        spcc_layout.setContentsMargins(10, 15, 10, 10)
+        spcc_layout.setSpacing(8)
+        spcc_layout.setContentsMargins(12, 12, 12, 12)
+        spcc_layout.setHorizontalSpacing(12)
+        spcc_layout.setVerticalSpacing(12)
 
         spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
         # if not self.photometry_gaia_available:
@@ -1657,16 +1690,13 @@ class PreprocessingInterface(QMainWindow):
         feather_warning.setVisible(False)  # Hidden by default
         spcc_layout.addWidget(feather_warning, 4, 0, 1, 2)
 
-        # Connect feather checkbox to show/hide warning
-        self.feather_checkbox.toggled.connect(feather_warning.setVisible)
-        self.feather_checkbox.toggled.connect(self.adjustSize)
+        # Connect feather group to show/hide warning
+        self.feather_group.toggled.connect(feather_warning.setVisible)
 
         # Buttons section
         button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(
-            0, 15, 0, 0
-        )  # Add top margin to separate from content
-        main_layout.addLayout(button_layout)
+        button_layout.setContentsMargins(12, 10, 12, 12)  # Add padding around buttons
+        button_layout.setSpacing(8)
 
         help_button = QPushButton("Help")
         help_button.setMinimumWidth(50)
@@ -1711,8 +1741,11 @@ class PreprocessingInterface(QMainWindow):
         run_button.clicked.connect(self.on_run_clicked)
         button_layout.addWidget(run_button)
 
-        # Add stretch to push everything to the top
-        main_layout.addStretch()
+        # Add stretch to content layout to push buttons down
+        content_layout.addStretch()
+        
+        # Add buttons to bottom of main layout (after scrollable area)
+        main_layout.addLayout(button_layout)
 
     # def setup_shortcuts(self):
     #     """Setup keyboard shortcuts"""
@@ -1744,14 +1777,14 @@ class PreprocessingInterface(QMainWindow):
             use_biases=self.biases_checkbox.isChecked(),
             max_files_per_batch=self.batch_size_spinbox.value(),
             bg_extract=self.bg_extract_checkbox.isChecked(),
-            drizzle=self.drizzle_checkbox.isChecked(),
+            drizzle=self.drizzle_group.isChecked(),
             drizzle_amount=round(self.drizzle_amount_spinbox.value(), 2),
             pixel_fraction=round(self.pixel_fraction_spinbox.value(), 2),
             filter_roundness=round(self.roundness_spinbox.value(),2),
             filter_fwhm=round(self.fwhm_spinbox.value(), 2),
             filter_bg=round(self.bg_filter_spinbox.value(), 2),
             filter_star_count=round(self.star_count_filter_spinbox.value(), 2),
-            feather=self.feather_checkbox.isChecked(),
+            feather=self.feather_group.isChecked(),
             feather_amount=self.feather_amount_spinbox.value(),
             clean_up_files=self.cleanup_files_checkbox.isChecked(),
         )
@@ -1994,15 +2027,15 @@ class PreprocessingInterface(QMainWindow):
             "cleanup": self.cleanup_files_checkbox.isChecked(),
             "batch_size": self.batch_size_spinbox.value(),
             "bg_extract": self.bg_extract_checkbox.isChecked(),
-            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle": self.drizzle_group.isChecked(),
             "drizzle_amount": self.drizzle_amount_spinbox.value(),
             "pixel_fraction": self.pixel_fraction_spinbox.value(),
-            "filters": self.filters_checkbox.isChecked(),
+            "filters": self.filters_group.isChecked(),
             "roundness": self.roundness_spinbox.value(),
             "fwhm": self.fwhm_spinbox.value(),
             "star_count_filter": self.star_count_filter_spinbox.value(),
             "bg_filter": self.bg_filter_spinbox.value(),
-            "feather": self.feather_checkbox.isChecked(),
+            "feather": self.feather_group.isChecked(),
             "feather_amount": self.feather_amount_spinbox.value(),
             "spcc": self.spcc_checkbox.isChecked(),
             "compression": self.compression_checkbox.isChecked(),
@@ -2064,21 +2097,21 @@ class PreprocessingInterface(QMainWindow):
                 presets.get("batch_size", self.max_files_per_batch)
             )
             self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
-            self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+            self.drizzle_group.setChecked(presets.get("drizzle", False))
             self.drizzle_amount_spinbox.setValue(
                 presets.get("drizzle_amount", UI_DEFAULTS["drizzle_amount"])
             )
             self.pixel_fraction_spinbox.setValue(
                 presets.get("pixel_fraction", UI_DEFAULTS["pixel_fraction"])
             )
-            self.filters_checkbox.setChecked(presets.get("filters", False))
+            self.filters_group.setChecked(presets.get("filters", False))
             self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
             self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
             self.star_count_filter_spinbox.setValue(
                 presets.get("star_count_filter", 100.0)
             )
             self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
-            self.feather_checkbox.setChecked(presets.get("feather", False))
+            self.feather_group.setChecked(presets.get("feather", False))
             self.feather_amount_spinbox.setValue(
                 presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
             )
@@ -2230,10 +2263,9 @@ class PreprocessingInterface(QMainWindow):
             if os.path.isfile(os.path.join(lights_directory, name))
         ]
         num_files = len(all_files)
-        is_windows = sys.platform.startswith("win")
 
         # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch:  # or not is_windows:
+        if num_files <= max_files_per_batch:  
             self.siril.log(
                 f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
