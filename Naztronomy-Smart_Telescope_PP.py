@@ -201,6 +201,7 @@ FILTER_COMMANDS_MAP = {
 class WorkerThread(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
+    progress = pyqtSignal(int)
     
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
@@ -210,6 +211,8 @@ class WorkerThread(QThread):
 
     def run(self):
         try:
+            self.kwargs['progress_callback'] = self.progress.emit
+            self.kwargs['check_cancel'] = self.isInterruptionRequested
             self.fn(*self.args, **self.kwargs)
         except Exception as e:
             self.error.emit(str(e))
@@ -1733,12 +1736,12 @@ class PreprocessingInterface(QMainWindow):
 
         button_layout.addSpacing(10)
 
-        run_button = QPushButton("Run")
-        run_button.setMinimumWidth(100)
-        run_button.setMinimumHeight(35)
-        run_button.setStyleSheet("QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }")
-        run_button.clicked.connect(self.on_run_clicked)
-        button_layout.addWidget(run_button)
+        self.run_button = QPushButton("Run")
+        self.run_button.setMinimumWidth(100)
+        self.run_button.setMinimumHeight(35)
+        self.run_button.setStyleSheet("QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }")
+        self.run_button.clicked.connect(self.on_run_clicked)
+        button_layout.addWidget(self.run_button)
         
         return button_layout
 
@@ -1831,11 +1834,45 @@ class PreprocessingInterface(QMainWindow):
 
     def on_run_clicked(self):
         """Handle the Run button click"""
-        # Disable all buttons while processing
-        self.buttons_widget.setEnabled(False)
+        # If currently running, request cancellation
+        if hasattr(self, "worker") and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.run_button.setText("Cancelling...")
+            self.run_button.setEnabled(False) 
+            return
+
+        # Disable all buttons EXCEPT Run (which becomes Cancel)
+        # We need to iterate over buttons because we wrapped them
+        # self.buttons_widget.setEnabled(False) # Don't disable all
+        # Instead disable specifics or just rely on modal-like state
+        
+        # Simpler approach: Keep buttons enabled but handle re-clicks?
+        # No, we want to prevent changing settings while running.
+        # So disable the main content area? 
+        # For now, let's just disable the other buttons and inputs
+        
+        # Disable inputs
+        self.centralWidget().setEnabled(False)
+        # Re-enable the buttons widget so we can click Cancel
+        self.buttons_widget.setEnabled(True)
+        self.buttons_widget.parentWidget().setEnabled(True) # Ensure parent is enabled? (It is central widget)
+        # Ah, centralWidget disables everything including buttons.
+        # We need to selectively disable. 
+        
+        # Let's disable the scroll area content only
+        self.findChild(QScrollArea).widget().setEnabled(False)
+        
+        # Disable other buttons
+        for btn in self.buttons_widget.findChildren(QPushButton):
+            if btn != self.run_button:
+                btn.setEnabled(False)
+
+        self.run_button.setText("Cancel")
 
         # Show progress
         self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        # self.progress_bar.setValue(0) 
 
         # Collect parameters
         params = {
@@ -1862,7 +1899,10 @@ class PreprocessingInterface(QMainWindow):
         # Run checks in main thread
         if not self.run_pre_checks():
              # Re-enable if checks fail
-            self.buttons_widget.setEnabled(True)
+            self.findChild(QScrollArea).widget().setEnabled(True)
+            for btn in self.buttons_widget.findChildren(QPushButton):
+                btn.setEnabled(True)
+            self.run_button.setText("Run")
             self.progress_bar.setVisible(False)
             return
 
@@ -1870,16 +1910,23 @@ class PreprocessingInterface(QMainWindow):
         self.worker = WorkerThread(self.run_processing_logic, **params)
         self.worker.finished.connect(self.on_processing_finished)
         self.worker.error.connect(self.on_processing_error)
+        self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.start()
 
     def on_processing_finished(self):
         self.progress_bar.setVisible(False)
-        self.buttons_widget.setEnabled(True)
+        self.findChild(QScrollArea).widget().setEnabled(True)
+        for btn in self.buttons_widget.findChildren(QPushButton):
+            btn.setEnabled(True)
+        self.run_button.setText("Run")
         self.close_dialog()
 
     def on_processing_error(self, error_msg):
         self.progress_bar.setVisible(False)
-        self.buttons_widget.setEnabled(True)
+        self.findChild(QScrollArea).widget().setEnabled(True)
+        for btn in self.buttons_widget.findChildren(QPushButton):
+            btn.setEnabled(True)
+        self.run_button.setText("Run")
         self.siril.log(f"Error during processing: {error_msg}", LogColor.RED)
         QMessageBox.critical(self, "Processing Error", f"An error occurred:\n{error_msg}")
 
@@ -1958,6 +2005,8 @@ class PreprocessingInterface(QMainWindow):
 
     def run_processing_logic(
         self,
+        progress_callback=None,
+        check_cancel=None,
         do_spcc: bool = False,
         filter: str = "broadband",
         telescope: str = "ZWO Seestar S30",
@@ -2006,6 +2055,12 @@ class PreprocessingInterface(QMainWindow):
         )
         self.siril.cmd("close")
 
+        def check_interruption():
+            if check_cancel and check_cancel():
+                raise Exception("Operation cancelled by user.")
+        
+        check_interruption()
+
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
 
@@ -2016,18 +2071,21 @@ class PreprocessingInterface(QMainWindow):
                 self.calibration_stack("biases")
             if clean_up_files:
                 self.clean_up("biases")
+            check_interruption()
         if use_flats:
             converted = self.convert_files("flats")
             if converted:
                 self.calibration_stack("flats")
             if clean_up_files:
                 self.clean_up("flats")
+            check_interruption()
         if use_darks:
             converted = self.convert_files("darks")
             if converted:
                 self.calibration_stack("darks")
             if clean_up_files:
                 self.clean_up("darks")
+            check_interruption()
 
         # Check files in working directory/lights.
         # create sub folders with more than 2048 divided by equal amounts
@@ -2048,6 +2106,7 @@ class PreprocessingInterface(QMainWindow):
                 f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
             )
+            check_interruption()
             file_name = self.batch(
                 output_name=lights_directory,
                 use_darks=use_darks,
@@ -2097,6 +2156,7 @@ class PreprocessingInterface(QMainWindow):
 
             # Send each of the new lights dir into batch directory
             for i in range(num_batches):
+                check_interruption()
                 batch_dir = f"batch_lights{i+1}"
                 self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
                 self.batch(
@@ -2159,6 +2219,7 @@ class PreprocessingInterface(QMainWindow):
                 filter_star_count=100.0,
             )
             self.clean_up(prefix=final_stack_seq_name)
+            check_interruption()
             registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
             # final stack needs feathering and amount
             self.drizzle_status = drizzle  # Turn drizzle back to selected option
