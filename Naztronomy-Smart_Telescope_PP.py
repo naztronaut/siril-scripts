@@ -2,8 +2,8 @@
 (c) Nazmus Nasir 2025
 SPDX-License-Identifier: GPL-3.0-or-later
 
-Smart Telescope Preprocessing script
-Version: 2.0.5
+Naztronomy - Smart Telescope Preprocessing script
+Version: 2.0.6
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -25,12 +25,12 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-2.0.6 - Flip image if needed
-      - Ignore dot files from macs
+2.0.6 - Ignore dot files from macs
       - PR#75 - support compressed fits in lights dir
       - Refactored UI code for better maintainability
-      - Added non-blocking UI with Progress Bar
-      - Prevent closing window while processing
+      - Allow safe cancellation of processing
+      - Added safe deletes 
+      - Added stack weighting option (Noise, Number of Stars, Weighted FWHM)
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -986,6 +986,8 @@ class PreprocessingInterface(QMainWindow):
         rejection=False,
         output_name=None,
         overlap_norm=False,
+        stack_weighted=False,
+        weighting_method="Noise",
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -1003,7 +1005,16 @@ class PreprocessingInterface(QMainWindow):
             "-32b",
             f"-out={out}",
         ]
-        if feather:
+
+        if stack_weighted:
+            # Map weighting method to siril command option
+            weighting_map = {
+                "Number of Stars": "nbstars",
+                "Weighted FWHM": "wfwhm",
+                "Noise": "noise",
+            }
+            weight_option = weighting_map.get(weighting_method, "nbstars")
+            cmd_args.append(f"-weight={weight_option}")
             cmd_args.append(f"-feather={feather_amount}")
 
         self.siril.log(
@@ -1469,16 +1480,52 @@ class PreprocessingInterface(QMainWindow):
         drizzle_layout.addWidget(self.pixel_fraction_spinbox, 0, 3)
         return self.drizzle_group
 
-    def _create_filters_group(self):
+    def _create_optional_stacking_options_group(self):
         title_font = self._get_title_font()
-        filters_group_tooltip = "Options for filtering images based on various criteria."
-        self.filters_group = QGroupBox("Filters (Optional)")
-        self.filters_group.setCheckable(True)
-        self.filters_group.setChecked(False)
-        self.filters_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        self.filters_group.setToolTip(filters_group_tooltip)
+        stacking_options_group = QGroupBox("Optional Stacking Options")
+        stacking_options_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        stacking_options_layout = QVBoxLayout(stacking_options_group)
+        stacking_options_layout.setSpacing(10)
+        stacking_options_layout.setContentsMargins(12, 12, 12, 12)
         
-        filters_layout = QGridLayout(self.filters_group)
+        # Stack Weighting Subsection
+        stack_weighting_subsection = QGroupBox("Stack Weighting")
+        stack_weighting_subsection.setCheckable(True)
+        stack_weighting_subsection.setChecked(False)
+        stack_weighting_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
+        stack_weighting_subsection_tooltip = "Applies weighting to frames during stacking based on selected criteria."
+        stack_weighting_subsection.setToolTip(stack_weighting_subsection_tooltip)
+
+        stack_weighting_layout = QGridLayout(stack_weighting_subsection)
+        stack_weighting_layout.setSpacing(8)
+        stack_weighting_layout.setContentsMargins(12, 12, 12, 12)
+        stack_weighting_layout.setHorizontalSpacing(15)
+        stack_weighting_layout.setVerticalSpacing(12)
+
+        weighting_method_label = QLabel("Weighting Method:")
+        weighting_method_label.setFont(title_font)
+        weighting_method_tooltip = "Select the criteria to use for weighting frames during stacking."
+        weighting_method_label.setToolTip(weighting_method_tooltip)
+        stack_weighting_layout.addWidget(weighting_method_label, 0, 0)
+
+        self.weighting_method_combo = QComboBox()
+        self.weighting_method_combo.addItems(["Noise", "Number of Stars", "Weighted FWHM"])
+        self.weighting_method_combo.setEnabled(False)
+        self.weighting_method_combo.setToolTip(weighting_method_tooltip)
+        stack_weighting_layout.addWidget(self.weighting_method_combo, 0, 1)
+
+        stack_weighting_subsection.toggled.connect(self.weighting_method_combo.setEnabled)
+        stacking_options_layout.addWidget(stack_weighting_subsection)
+        
+        # Filters Subsection
+        filters_subsection = QGroupBox("Filters (Optional)")
+        filters_subsection.setCheckable(True)
+        filters_subsection.setChecked(False)
+        filters_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
+        filters_subsection_tooltip = "Options for filtering images based on various criteria."
+        filters_subsection.setToolTip(filters_subsection_tooltip)
+        
+        filters_layout = QGridLayout(filters_subsection)
         filters_layout.setSpacing(8)
         filters_layout.setContentsMargins(12, 12, 12, 12)
         filters_layout.setHorizontalSpacing(15)
@@ -1553,22 +1600,21 @@ class PreprocessingInterface(QMainWindow):
         filters_layout.addWidget(self.star_count_filter_spinbox, 1, 3)
 
         # Connect the filters group checkbox to enable/disable all filter controls
-        self.filters_group.toggled.connect(self.roundness_spinbox.setEnabled)
-        self.filters_group.toggled.connect(self.fwhm_spinbox.setEnabled)
-        self.filters_group.toggled.connect(self.bg_filter_spinbox.setEnabled)
-        self.filters_group.toggled.connect(self.star_count_filter_spinbox.setEnabled)
-        return self.filters_group
+        filters_subsection.toggled.connect(self.roundness_spinbox.setEnabled)
+        filters_subsection.toggled.connect(self.fwhm_spinbox.setEnabled)
+        filters_subsection.toggled.connect(self.bg_filter_spinbox.setEnabled)
+        filters_subsection.toggled.connect(self.star_count_filter_spinbox.setEnabled)
+        stacking_options_layout.addWidget(filters_subsection)
+        
+        # Feathering Subsection
+        feather_subsection = QGroupBox("Feather")
+        feather_subsection.setCheckable(True)
+        feather_subsection.setChecked(False)
+        feather_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
+        feather_subsection_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
+        feather_subsection.setToolTip(feather_subsection_tooltip)
 
-    def _create_feather_group(self):
-        title_font = self._get_title_font()
-        feather_group_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
-        self.feather_group = QGroupBox("Feather")
-        self.feather_group.setCheckable(True)
-        self.feather_group.setChecked(False)
-        self.feather_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        self.feather_group.setToolTip(feather_group_tooltip)
-
-        feather_layout = QGridLayout(self.feather_group)
+        feather_layout = QGridLayout(feather_subsection)
         feather_layout.setSpacing(8)
         feather_layout.setContentsMargins(12, 12, 12, 12)
         feather_layout.setHorizontalSpacing(15)
@@ -1588,7 +1634,14 @@ class PreprocessingInterface(QMainWindow):
         self.feather_amount_spinbox.setSuffix(" px")
         self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
         feather_layout.addWidget(self.feather_amount_spinbox, 0, 1)
-        return self.feather_group
+        stacking_options_layout.addWidget(feather_subsection)
+        
+        # Store references to subsections for the feather warning in SPCC section
+        self.feather_group = feather_subsection
+        self.stack_weighting_group = stack_weighting_subsection
+        self.filters_group = filters_subsection
+        
+        return stacking_options_group
 
     def _create_preprocessing_section(self):
         title_font = self._get_title_font()
@@ -1636,12 +1689,6 @@ class PreprocessingInterface(QMainWindow):
         # Add subsections
         drizzle_group = self._create_drizzle_group()
         preprocessing_layout.addWidget(drizzle_group, 2, 0, 1, 6)
-
-        filters_group = self._create_filters_group()
-        preprocessing_layout.addWidget(filters_group, 3, 0, 1, 6)
-        
-        feather_group = self._create_feather_group()
-        preprocessing_layout.addWidget(feather_group, 4, 0, 1, 6)
         
         return preprocessing_section
 
@@ -1790,6 +1837,9 @@ class PreprocessingInterface(QMainWindow):
         # Optional Preprocessing Steps
         content_layout.addWidget(self._create_preprocessing_section())
 
+        # Optional Stacking Options
+        content_layout.addWidget(self._create_optional_stacking_options_group())
+
         # SPCC Section
         content_layout.addWidget(self._create_spcc_section())
 
@@ -1891,6 +1941,8 @@ class PreprocessingInterface(QMainWindow):
             "filter_fwhm": round(self.fwhm_spinbox.value(), 2),
             "filter_bg": round(self.bg_filter_spinbox.value(), 2),
             "filter_star_count": round(self.star_count_filter_spinbox.value(), 2),
+            "stack_weighting": self.stack_weighting_group.isChecked(),
+            "weighting_method": self.weighting_method_combo.currentText(),
             "feather": self.feather_group.isChecked(),
             "feather_amount": self.feather_amount_spinbox.value(),
             "clean_up_files": self.cleanup_files_checkbox.isChecked(),
@@ -2023,6 +2075,8 @@ class PreprocessingInterface(QMainWindow):
         filter_fwhm: float = 100.0,
         filter_bg: float = 100.0,
         filter_star_count: float = 100.0,
+        stack_weighting: bool = False,
+        weighting_method: str = "Noise",
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
         clean_up_files: bool = False,
@@ -2047,6 +2101,8 @@ class PreprocessingInterface(QMainWindow):
             f"pixel_fraction={pixel_fraction}\n"
             f"feather={feather}\n"
             f"feather_amount={feather_amount}\n"
+            f"stack_weighting={stack_weighting}\n"
+            f"weighting_method={weighting_method}\n"
             f"clean_up_files={clean_up_files}\n"
             f"compression={self.compression_checkbox.isChecked()}\n"
             f"black_frames_bug={self.scan_blackframes_checkbox.isChecked()}\n"
@@ -2120,6 +2176,8 @@ class PreprocessingInterface(QMainWindow):
                 filter_fwhm=filter_fwhm,
                 feather=feather,
                 feather_amount=feather_amount,
+                stack_weighting=stack_weighting,
+                weighting_method=weighting_method,
                 clean_up_files=clean_up_files,
             )
 
@@ -2172,6 +2230,8 @@ class PreprocessingInterface(QMainWindow):
                     filter_fwhm=filter_fwhm,
                     feather=feather,
                     feather_amount=feather_amount,
+                    stack_weighting=stack_weighting,
+                    weighting_method=weighting_method,
                     clean_up_files=clean_up_files,
                 )
             self.siril.log("Batching complete.", LogColor.GREEN)
@@ -2230,6 +2290,8 @@ class PreprocessingInterface(QMainWindow):
                 feather_amount=100,
                 output_name="final_result",
                 overlap_norm=True,
+                stack_weighted=stack_weighting,
+                weighting_method=weighting_method,
             )
             self.load_image(image_name="final_result")
 
@@ -2352,6 +2414,8 @@ class PreprocessingInterface(QMainWindow):
         filter_star_count: float = 100.0,
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
+        stack_weighting: bool = False,
+        weighting_method: str = "Noise",
         clean_up_files: bool = False,
     ):
         # If we're batching, force cleanup files so we don't collide with existing files
@@ -2473,6 +2537,8 @@ class PreprocessingInterface(QMainWindow):
                 rejection=True,
                 output_name=output_name,
                 overlap_norm=False,
+                stack_weighted=stack_weighting,
+                weighting_method=weighting_method,
             )
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(
@@ -2535,6 +2601,8 @@ class PreprocessingInterface(QMainWindow):
             "bg_filter": self.bg_filter_spinbox.value(),
             "feather": self.feather_group.isChecked(),
             "feather_amount": self.feather_amount_spinbox.value(),
+            "stack_weighting": self.stack_weighting_group.isChecked(),
+            "weighting_method": self.weighting_method_combo.currentText(),
             "spcc": self.spcc_checkbox.isChecked(),
             "compression": self.compression_checkbox.isChecked(),
         }
@@ -2613,6 +2681,8 @@ class PreprocessingInterface(QMainWindow):
             self.feather_amount_spinbox.setValue(
                 presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
             )
+            self.stack_weighting_group.setChecked(presets.get("stack_weighting", False))
+            self.weighting_method_combo.setCurrentText(presets.get("weighting_method", "Noise"))
             self.spcc_checkbox.setChecked(presets.get("spcc", False))
             self.compression_checkbox.setChecked(presets.get("compression", False))
 
