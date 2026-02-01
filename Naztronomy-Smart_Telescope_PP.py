@@ -124,7 +124,7 @@ import numpy as np
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
 VERSION = "2.0.6"
-BUILD = "20260131"
+BUILD = "20260201"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
@@ -202,7 +202,7 @@ class WorkerThread(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
-    
+
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
         self.fn = fn
@@ -211,8 +211,8 @@ class WorkerThread(QThread):
 
     def run(self):
         try:
-            self.kwargs['progress_callback'] = self.progress.emit
-            self.kwargs['check_cancel'] = self.isInterruptionRequested
+            self.kwargs["progress_callback"] = self.progress.emit
+            self.kwargs["check_cancel"] = self.isInterruptionRequested
             self.fn(*self.args, **self.kwargs)
         except Exception as e:
             self.error.emit(str(e))
@@ -285,7 +285,9 @@ class PreprocessingInterface(QMainWindow):
 
         self.astrometry_gaia_available = False
         try:
-            self.astrometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
+            self.astrometry_gaia_status = self.siril.get_siril_config(
+                "core", "catalogue_gaia_astro"
+            )
             if (
                 self.astrometry_gaia_status
                 and self.astrometry_gaia_status != "(not set)"
@@ -294,10 +296,12 @@ class PreprocessingInterface(QMainWindow):
                 self.astrometry_gaia_available = True
         except s.CommandError:
             pass
-            
+
         self.photometry_gaia_available = False
         try:
-            self.photometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_photo")
+            self.photometry_gaia_status = self.siril.get_siril_config(
+                "core", "catalogue_gaia_photo"
+            )
             if (
                 self.photometry_gaia_status
                 and self.photometry_gaia_status != "(not set)"
@@ -454,7 +458,7 @@ class PreprocessingInterface(QMainWindow):
             fits_files = [
                 f
                 for f in os.listdir(lights_dir)
-                if f.lower().endswith(('.fits', '.fit', '.fits.fz', '.fit.fz'))
+                if f.lower().endswith((".fits", ".fit", ".fits.fz", ".fit.fz"))
             ]
 
             if not fits_files:
@@ -462,7 +466,10 @@ class PreprocessingInterface(QMainWindow):
 
             # Store fits files count to use later
             self.fits_files_count = len(fits_files)
-            self.siril.log(f"Found {self.fits_files_count} FITS files in lights directory.", LogColor.BLUE)
+            self.siril.log(
+                f"Found {self.fits_files_count} FITS files in lights directory.",
+                LogColor.BLUE,
+            )
             # Update the label if it exists
             if hasattr(self, "files_found_label"):
                 self.files_found_label.setText(
@@ -476,23 +483,25 @@ class PreprocessingInterface(QMainWindow):
                 creator = header.get("CREATOR", "")
                 camera = header.get("CAMERA", "")
                 origin = header.get("ORIGIN", "")
-                
+
                 # Try to map telescope name, using startswith for partial matches
                 mapped_telescope = "ZWO Seestar S30"  # default
                 found_match = False
-                
+
                 # Filter out empty header values
                 header_values = [v for v in [telescop, creator, camera] if v]
 
                 # Check map against available headers
                 for telescope_local_name, ui_name in telescope_map.items():
                     # Check if any of the effective header values start with this key
-                    if any(val.startswith(telescope_local_name) for val in header_values):
-                         mapped_telescope = ui_name
-                         found_match = True
+                    if any(
+                        val.startswith(telescope_local_name) for val in header_values
+                    ):
+                        mapped_telescope = ui_name
+                        found_match = True
                         #  print(f"Matched FITS header to '{mapped_telescope}' using key '{telescope_local_name}'")
-                         break
-                
+                        break
+
                 if origin.startswith("Unistellar"):
                     instrume = header.get("INSTRUME", "NULL")
                     # Dict for Unistellar
@@ -506,10 +515,12 @@ class PreprocessingInterface(QMainWindow):
                             mapped_telescope = name
                             found_match = True
                             break
-                
+
                 if not found_match:
-                    self.siril.log("Couldn't find Telescope info, setting default:", LogColor.BLUE)
-                
+                    self.siril.log(
+                        "Couldn't find Telescope info, setting default:", LogColor.BLUE
+                    )
+
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
                 self.siril.log(
@@ -577,13 +588,19 @@ class PreprocessingInterface(QMainWindow):
                 [
                     name
                     for name in os.listdir(directory)
-                    if os.path.isfile(os.path.join(directory, name)) 
-                    and not name.startswith('.')
-                    and (name.lower().endswith('.fit') or name.lower().endswith('.fits') 
-                         or name.lower().endswith('.fit.fz') or name.lower().endswith('.fits.fz'))
+                    if os.path.isfile(os.path.join(directory, name))
+                    and not name.startswith(".")
+                    and (
+                        name.lower().endswith(".fit")
+                        or name.lower().endswith(".fits")
+                        or name.lower().endswith(".fit.fz")
+                        or name.lower().endswith(".fits.fz")
+                    )
                 ]
             )
-            self.siril.log(f"Found {file_count} files in {dir_name} directory.", LogColor.BLUE)
+            self.siril.log(
+                f"Found {file_count} files in {dir_name} directory.", LogColor.BLUE
+            )
             if file_count == 1:
                 self.siril.log(
                     f"Only one file found in {dir_name} directory. Treating it like a master {dir_name} frame.",
@@ -635,7 +652,10 @@ class PreprocessingInterface(QMainWindow):
             #         f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
             #     )
             # )
-            self.siril.log(f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.', LogColor.SALMON)
+            self.siril.log(
+                f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.',
+                LogColor.SALMON,
+            )
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name):
@@ -657,7 +677,9 @@ class PreprocessingInterface(QMainWindow):
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
 
-        args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4", "-radius=25"])
+        args.extend(
+            ["-nocache", "-force", "-disto=ps_distortion", "-order=4", "-radius=25"]
+        )
         # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
@@ -666,7 +688,7 @@ class PreprocessingInterface(QMainWindow):
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
-            return True # TODO: disabling fallback because Siril seems to be throwing a false error 
+            return True  # TODO: disabling fallback because Siril seems to be throwing a false error
 
     # Regular registration if plate solve not available - No Mosaics
     def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
@@ -696,9 +718,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10", "-tolerance=2.0")
             self.siril.cmd("cd", ".")  # Refresh current directory
-            self.siril.cmd("close")    # Close and reopen to flush cache
+            self.siril.cmd("close")  # Close and reopen to flush cache
             self.siril.cmd("cd", ".")  # Re-establish working directory
-            time.sleep(10)          # Wait for Siril to flush cache
+            time.sleep(10)  # Wait for Siril to flush cache
         except (s.DataError, s.CommandError, s.SirilError) as e:
             # turn off compression if error (if checked)
             if self.compression_checkbox.isChecked():
@@ -782,8 +804,8 @@ class PreprocessingInterface(QMainWindow):
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and (
-                filename.lower().endswith(self.fits_extension + ".fz") or
-                filename.lower().endswith(self.fits_extension)
+                filename.lower().endswith(self.fits_extension + ".fz")
+                or filename.lower().endswith(self.fits_extension)
             ):
                 filepath = os.path.join(folder, filename)
                 try:
@@ -794,7 +816,7 @@ class PreprocessingInterface(QMainWindow):
                             data = hdul[1].data
                         else:
                             data = hdul[0].data
-                        
+
                         if data is not None and data.ndim >= 2:
                             dynamic_threshold = threshold
                             data_max = np.max(data)
@@ -932,19 +954,27 @@ class PreprocessingInterface(QMainWindow):
             "calibrate",
             f"{seq_name}",
         ]
-        
+
         # Check if darks_stacked exists before adding to command
         if use_darks and os.path.exists(
-            os.path.join(self.current_working_directory, "process", f"darks_stacked{self.fits_extension}")
+            os.path.join(
+                self.current_working_directory,
+                "process",
+                f"darks_stacked{self.fits_extension}",
+            )
         ):
             cmd_args.append("-dark=darks_stacked")
             cmd_args.append("-cc=dark")
-        
+
         if use_flats and os.path.exists(
-            os.path.join(self.current_working_directory, "process", f"flats_stacked{self.fits_extension}")
+            os.path.join(
+                self.current_working_directory,
+                "process",
+                f"flats_stacked{self.fits_extension}",
+            )
         ):
             cmd_args.append("-flat=flats_stacked")
-        
+
         cmd_args.extend(["-cfa", "-equalize_cfa"])
 
         # Calibrate with -debayer if drizle is not set
@@ -1028,7 +1058,7 @@ class PreprocessingInterface(QMainWindow):
         self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
 
         try:
-            # Turn off compression for stacking 
+            # Turn off compression for stacking
             self.siril.cmd("setcompress", "0")
             self.siril.cmd(*cmd_args)
             # Turn compression back on after stacking
@@ -1129,7 +1159,7 @@ class PreprocessingInterface(QMainWindow):
         elif "eVscope 1" in oscsensor:
             recoded_sensor = "Sony IMX224"
         elif "eVscope 2" in oscsensor:
-            recoded_sensor = "Sony IMX415" # very similar to IMX347
+            recoded_sensor = "Sony IMX415"  # very similar to IMX347
         elif "Odyssey" in oscsensor:
             recoded_sensor = "Sony IMX415"
         else:
@@ -1179,7 +1209,11 @@ class PreprocessingInterface(QMainWindow):
             date_obs = headers.get("DATE-OBS", "Unknown")
             date = headers.get("DATE", "Unknown")
             pixel_size = headers.get("XPIXSZ", "Unknown")
-            feathering = self.feather_amount_spinbox.value() if self.feather_group.isChecked() else "Off"
+            feathering = (
+                self.feather_amount_spinbox.value()
+                if self.feather_group.isChecked()
+                else "Off"
+            )
             drizzle = f"{self.drizzle_factor}x" if self.drizzle_status else "Off"
 
             details_msg = (
@@ -1236,13 +1270,18 @@ class PreprocessingInterface(QMainWindow):
             process_dir = self.current_working_directory
         try:
             if not os.path.isdir(process_dir):
-                self.siril.log(f"Process directory not found: {process_dir}", LogColor.SALMON)
+                self.siril.log(
+                    f"Process directory not found: {process_dir}", LogColor.SALMON
+                )
                 return
-            
+
             for f in os.listdir(process_dir):
                 # Skip the stacked file
                 name, ext = os.path.splitext(f.lower())
-                if name in (f"{prefix}_stacked", "result") and ext in (self.fits_extension, self.fits_extension + ".fz"):
+                if name in (f"{prefix}_stacked", "result") and ext in (
+                    self.fits_extension,
+                    self.fits_extension + ".fz",
+                ):
                     continue
 
                 # Check if file starts with prefix_ or pp_flats_
@@ -1262,7 +1301,9 @@ class PreprocessingInterface(QMainWindow):
                                 time.sleep(0.5)
                         else:
                             # If loop completes without break, deletion failed
-                            self.siril.log(f"Failed to delete {file_path}", LogColor.SALMON)
+                            self.siril.log(
+                                f"Failed to delete {file_path}", LogColor.SALMON
+                            )
         except Exception as e:
             self.siril.log(f"Error during cleanup: {e}", LogColor.SALMON)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
@@ -1338,23 +1379,31 @@ class PreprocessingInterface(QMainWindow):
         if self.astrometry_gaia_available:
             astrometry_gaia_label = QLabel("✓ Local Astrometry Gaia Available")
             astrometry_gaia_label.setStyleSheet("color: green;")
-            astrometry_gaia_label.setToolTip(f"Local Astrometry Gaia found at: {self.astrometry_gaia_status}")
+            astrometry_gaia_label.setToolTip(
+                f"Local Astrometry Gaia found at: {self.astrometry_gaia_status}"
+            )
         else:
             astrometry_gaia_label = QLabel("✗ Local Astrometry Gaia")
             astrometry_gaia_label.setStyleSheet("color: red;")
-            astrometry_gaia_label.setToolTip("Local Astrometry Gaia not available - mosaics will not be generated")
+            astrometry_gaia_label.setToolTip(
+                "Local Astrometry Gaia not available - mosaics will not be generated"
+            )
         gaia_status_layout.addWidget(astrometry_gaia_label)
 
         if self.photometry_gaia_available:
             photometry_gaia_label = QLabel("✓ Local Photometry Gaia Available")
             photometry_gaia_label.setStyleSheet("color: green;")
-            photometry_gaia_label.setToolTip(f"Local Photometry Gaia found at: {self.photometry_gaia_status}")
+            photometry_gaia_label.setToolTip(
+                f"Local Photometry Gaia found at: {self.photometry_gaia_status}"
+            )
         else:
             photometry_gaia_label = QLabel("✗ Local Photometry Gaia")
             photometry_gaia_label.setStyleSheet("color: orange;")
-            photometry_gaia_label.setToolTip("Local Photometry Gaia not available, will default to Online Gaia.")
+            photometry_gaia_label.setToolTip(
+                "Local Photometry Gaia not available, will default to Online Gaia."
+            )
         gaia_status_layout.addWidget(photometry_gaia_label)
-        
+
         return gaia_status_section
 
     def _create_telescope_section(self):
@@ -1418,7 +1467,7 @@ class PreprocessingInterface(QMainWindow):
         self.cleanup_files_checkbox = QCheckBox("")
         self.cleanup_files_checkbox.setToolTip(cleanup_tooltip)
         telescope_layout.addWidget(self.cleanup_files_checkbox, 2, 1)
-        
+
         # Use compression checkbox
         compression_label = QLabel("Use Compression:")
         compression_label.setFont(title_font)
@@ -1429,7 +1478,7 @@ class PreprocessingInterface(QMainWindow):
         self.compression_checkbox = QCheckBox("")
         self.compression_checkbox.setToolTip(compression_tooltip)
         telescope_layout.addWidget(self.compression_checkbox, 2, 3)
-        
+
         return telescope_section
 
     def _create_drizzle_group(self):
@@ -1487,13 +1536,15 @@ class PreprocessingInterface(QMainWindow):
         stacking_options_layout = QVBoxLayout(stacking_options_group)
         stacking_options_layout.setSpacing(10)
         stacking_options_layout.setContentsMargins(12, 12, 12, 12)
-        
+
         # Stack Weighting Subsection
         stack_weighting_subsection = QGroupBox("Stack Weighting")
         stack_weighting_subsection.setCheckable(True)
         stack_weighting_subsection.setChecked(False)
         stack_weighting_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
-        stack_weighting_subsection_tooltip = "Applies weighting to frames during stacking based on selected criteria."
+        stack_weighting_subsection_tooltip = (
+            "Applies weighting to frames during stacking based on selected criteria."
+        )
         stack_weighting_subsection.setToolTip(stack_weighting_subsection_tooltip)
 
         stack_weighting_layout = QGridLayout(stack_weighting_subsection)
@@ -1504,27 +1555,35 @@ class PreprocessingInterface(QMainWindow):
 
         weighting_method_label = QLabel("Weighting Method:")
         weighting_method_label.setFont(title_font)
-        weighting_method_tooltip = "Select the criteria to use for weighting frames during stacking."
+        weighting_method_tooltip = (
+            "Select the criteria to use for weighting frames during stacking."
+        )
         weighting_method_label.setToolTip(weighting_method_tooltip)
         stack_weighting_layout.addWidget(weighting_method_label, 0, 0)
 
         self.weighting_method_combo = QComboBox()
-        self.weighting_method_combo.addItems(["Noise", "Number of Stars", "Weighted FWHM"])
+        self.weighting_method_combo.addItems(
+            ["Noise", "Number of Stars", "Weighted FWHM"]
+        )
         self.weighting_method_combo.setEnabled(False)
         self.weighting_method_combo.setToolTip(weighting_method_tooltip)
         stack_weighting_layout.addWidget(self.weighting_method_combo, 0, 1)
 
-        stack_weighting_subsection.toggled.connect(self.weighting_method_combo.setEnabled)
+        stack_weighting_subsection.toggled.connect(
+            self.weighting_method_combo.setEnabled
+        )
         stacking_options_layout.addWidget(stack_weighting_subsection)
-        
+
         # Filters Subsection
         filters_subsection = QGroupBox("Filters (Optional)")
         filters_subsection.setCheckable(True)
         filters_subsection.setChecked(False)
         filters_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
-        filters_subsection_tooltip = "Options for filtering images based on various criteria."
+        filters_subsection_tooltip = (
+            "Options for filtering images based on various criteria."
+        )
         filters_subsection.setToolTip(filters_subsection_tooltip)
-        
+
         filters_layout = QGridLayout(filters_subsection)
         filters_layout.setSpacing(8)
         filters_layout.setContentsMargins(12, 12, 12, 12)
@@ -1605,7 +1664,7 @@ class PreprocessingInterface(QMainWindow):
         filters_subsection.toggled.connect(self.bg_filter_spinbox.setEnabled)
         filters_subsection.toggled.connect(self.star_count_filter_spinbox.setEnabled)
         stacking_options_layout.addWidget(filters_subsection)
-        
+
         # Feathering Subsection
         feather_subsection = QGroupBox("Feather")
         feather_subsection.setCheckable(True)
@@ -1635,12 +1694,12 @@ class PreprocessingInterface(QMainWindow):
         self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
         feather_layout.addWidget(self.feather_amount_spinbox, 0, 1)
         stacking_options_layout.addWidget(feather_subsection)
-        
+
         # Store references to subsections for the feather warning in SPCC section
         self.feather_group = feather_subsection
         self.stack_weighting_group = stack_weighting_subsection
         self.filters_group = filters_subsection
-        
+
         return stacking_options_group
 
     def _create_preprocessing_section(self):
@@ -1665,15 +1724,17 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_layout.addWidget(batch_size_label, 0, 0)
 
         self.batch_size_spinbox = QSpinBox()
-        self.batch_size_spinbox.setToolTip(batch_size_tooltip) 
+        self.batch_size_spinbox.setToolTip(batch_size_tooltip)
         self.batch_size_spinbox.setRange(50, self.max_files_per_batch)
         self.batch_size_spinbox.setValue(self.max_files_per_batch)
         self.batch_size_spinbox.setSingleStep(50)
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
-        
+
         # Files found label
         self.files_found_label = QLabel()
-        self.files_found_label.setToolTip("Number of Fit(s) files found in the lights directory.")
+        self.files_found_label.setToolTip(
+            "Number of Fit(s) files found in the lights directory."
+        )
         preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
 
         bg_extract_label = QLabel("Background Extraction:")
@@ -1689,7 +1750,7 @@ class PreprocessingInterface(QMainWindow):
         # Add subsections
         drizzle_group = self._create_drizzle_group()
         preprocessing_layout.addWidget(drizzle_group, 2, 0, 1, 6)
-        
+
         return preprocessing_section
 
     def _create_spcc_section(self):
@@ -1743,7 +1804,7 @@ class PreprocessingInterface(QMainWindow):
         spcc_layout.addWidget(feather_warning, 4, 0, 1, 2)
 
         self.feather_group.toggled.connect(feather_warning.setVisible)
-        
+
         return self.spcc_section
 
     def _create_buttons_layout(self):
@@ -1761,14 +1822,18 @@ class PreprocessingInterface(QMainWindow):
         save_presets_button = QPushButton("Save Presets")
         save_presets_button.setMinimumWidth(80)
         save_presets_button.setMinimumHeight(35)
-        save_presets_button.setToolTip('Save current settings to a "naztronomy_smart_scope_presets.json" file in the presets directory')
+        save_presets_button.setToolTip(
+            'Save current settings to a "naztronomy_smart_scope_presets.json" file in the presets directory'
+        )
         save_presets_button.clicked.connect(self.save_presets)
         button_layout.addWidget(save_presets_button)
 
         load_presets_button = QPushButton("Load Presets")
         load_presets_button.setMinimumWidth(80)
         load_presets_button.setMinimumHeight(35)
-        load_presets_button.setToolTip('Load previously saved presets. If "presets/naztronomy_smart_scope_presets.json" exists, it will load first, otherwise it\'ll prompt you to find a proper .json file.')
+        load_presets_button.setToolTip(
+            'Load previously saved presets. If "presets/naztronomy_smart_scope_presets.json" exists, it will load first, otherwise it\'ll prompt you to find a proper .json file.'
+        )
         load_presets_button.clicked.connect(self.load_presets)
         button_layout.addWidget(load_presets_button)
 
@@ -1777,7 +1842,9 @@ class PreprocessingInterface(QMainWindow):
         close_button = QPushButton("Close")
         close_button.setMinimumWidth(100)
         close_button.setMinimumHeight(35)
-        close_button.setStyleSheet("QPushButton { background-color: #c70306; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #fc3437; }")
+        close_button.setStyleSheet(
+            "QPushButton { background-color: #c70306; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #fc3437; }"
+        )
         close_button.clicked.connect(self.close_dialog)
         button_layout.addWidget(close_button)
 
@@ -1786,10 +1853,12 @@ class PreprocessingInterface(QMainWindow):
         self.run_button = QPushButton("Run")
         self.run_button.setMinimumWidth(100)
         self.run_button.setMinimumHeight(35)
-        self.run_button.setStyleSheet("QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }")
+        self.run_button.setStyleSheet(
+            "QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }"
+        )
         self.run_button.clicked.connect(self.on_run_clicked)
         button_layout.addWidget(self.run_button)
-        
+
         return button_layout
 
     def create_widgets(self):
@@ -1857,7 +1926,7 @@ class PreprocessingInterface(QMainWindow):
 
         # Buttons section
         button_layout = self._create_buttons_layout()
-        
+
         # Wrap button layout in a widget to easily disable/enable all buttons
         self.buttons_widget = QWidget()
         self.buttons_widget.setLayout(button_layout)
@@ -1888,30 +1957,32 @@ class PreprocessingInterface(QMainWindow):
         if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.requestInterruption()
             self.run_button.setText("Cancelling...")
-            self.run_button.setEnabled(False) 
+            self.run_button.setEnabled(False)
             return
 
         # Disable all buttons EXCEPT Run (which becomes Cancel)
         # We need to iterate over buttons because we wrapped them
         # self.buttons_widget.setEnabled(False) # Don't disable all
         # Instead disable specifics or just rely on modal-like state
-        
+
         # Simpler approach: Keep buttons enabled but handle re-clicks?
         # No, we want to prevent changing settings while running.
-        # So disable the main content area? 
+        # So disable the main content area?
         # For now, let's just disable the other buttons and inputs
-        
+
         # Disable inputs
         self.centralWidget().setEnabled(False)
         # Re-enable the buttons widget so we can click Cancel
         self.buttons_widget.setEnabled(True)
-        self.buttons_widget.parentWidget().setEnabled(True) # Ensure parent is enabled? (It is central widget)
+        self.buttons_widget.parentWidget().setEnabled(
+            True
+        )  # Ensure parent is enabled? (It is central widget)
         # Ah, centralWidget disables everything including buttons.
-        # We need to selectively disable. 
-        
+        # We need to selectively disable.
+
         # Let's disable the scroll area content only
         self.findChild(QScrollArea).widget().setEnabled(False)
-        
+
         # Disable other buttons
         for btn in self.buttons_widget.findChildren(QPushButton):
             if btn != self.run_button:
@@ -1922,7 +1993,7 @@ class PreprocessingInterface(QMainWindow):
         # Show progress
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        # self.progress_bar.setValue(0) 
+        # self.progress_bar.setValue(0)
 
         # Collect parameters
         params = {
@@ -1950,7 +2021,7 @@ class PreprocessingInterface(QMainWindow):
 
         # Run checks in main thread
         if not self.run_pre_checks():
-             # Re-enable if checks fail
+            # Re-enable if checks fail
             self.findChild(QScrollArea).widget().setEnabled(True)
             for btn in self.buttons_widget.findChildren(QPushButton):
                 btn.setEnabled(True)
@@ -1980,7 +2051,9 @@ class PreprocessingInterface(QMainWindow):
             btn.setEnabled(True)
         self.run_button.setText("Run")
         self.siril.log(f"Error during processing: {error_msg}", LogColor.RED)
-        QMessageBox.critical(self, "Processing Error", f"An error occurred:\n{error_msg}")
+        QMessageBox.critical(
+            self, "Processing Error", f"An error occurred:\n{error_msg}"
+        )
 
     def closeEvent(self, event):
         """Handle the window close event (clicking the X button)."""
@@ -1997,7 +2070,7 @@ class PreprocessingInterface(QMainWindow):
 
     def run_pre_checks(self):
         self.siril.log("Starting pre-checks...", LogColor.BLUE)
-        
+
         if self.fits_files_count == 0:
             QMessageBox.warning(
                 self,
@@ -2114,7 +2187,7 @@ class PreprocessingInterface(QMainWindow):
         def check_interruption():
             if check_cancel and check_cancel():
                 raise Exception("Operation cancelled by user.")
-        
+
         check_interruption()
 
         self.drizzle_status = drizzle
@@ -2157,7 +2230,7 @@ class PreprocessingInterface(QMainWindow):
         num_files = len(all_files)
 
         # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch:  
+        if num_files <= max_files_per_batch:
             self.siril.log(
                 f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
                 LogColor.BLUE,
@@ -2324,7 +2397,7 @@ class PreprocessingInterface(QMainWindow):
             self.load_image(
                 image_name=os.path.basename(img)
             )  # Load either og or spcc image
-        
+
         # Get some stacking deets
         self.stacking_details()
         # self.clean_up()
@@ -2426,14 +2499,19 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
                 self.siril.cmd("setcompress", "1 -type=rice 16")
             else:
-                self.siril.log("Compression not set, disabling in case it's turned on from a previous run/crash", LogColor.BLUE)
+                self.siril.log(
+                    "Compression not set, disabling in case it's turned on from a previous run/crash",
+                    LogColor.BLUE,
+                )
                 self.siril.cmd("setcompress", "0")
         except s.CommandError:
             # turn off compression if error (if checked)
             if self.compression_checkbox.isChecked():
                 self.siril.cmd("setcompress", "0")
-                self.siril.log("Disabling compression due to command error", LogColor.SALMON)
-            
+                self.siril.log(
+                    "Disabling compression due to command error", LogColor.SALMON
+                )
+
         if output_name.startswith("batch_lights"):
             clean_up_files = True
 
@@ -2541,9 +2619,7 @@ class PreprocessingInterface(QMainWindow):
                 weighting_method=weighting_method,
             )
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(
-                f"Error occurred during stacking: {e}", LogColor.RED
-            )
+            self.siril.log(f"Error occurred during stacking: {e}", LogColor.RED)
             if feather:
                 QMessageBox.warning(
                     self,
@@ -2682,7 +2758,9 @@ class PreprocessingInterface(QMainWindow):
                 presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
             )
             self.stack_weighting_group.setChecked(presets.get("stack_weighting", False))
-            self.weighting_method_combo.setCurrentText(presets.get("weighting_method", "Noise"))
+            self.weighting_method_combo.setCurrentText(
+                presets.get("weighting_method", "Noise")
+            )
             self.spcc_checkbox.setChecked(presets.get("spcc", False))
             self.compression_checkbox.setChecked(presets.get("compression", False))
 
