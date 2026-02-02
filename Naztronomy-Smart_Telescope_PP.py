@@ -1362,19 +1362,22 @@ class PreprocessingInterface(QMainWindow):
             "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
-            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
+            "2. For Calibration frames, you can optionally have one or more of the following types: darks, flats, biases.\n"
             "3. If only one calibration frame is present, it will be treated as a master frame.\n"
-            "4. Local Gaia catalog is required for mosaics!\n"
+            "4. Local Astrometry Gaia catalog is required for mosaics!\n"
             f"5. If you have more than the default {self.max_files_per_batch} files, this script will automatically split them into batches. You can change the batching count from 50 to {self.max_files_per_batch}.\n"
             "6. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
             "7. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
             "8. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "9. When asking for help, please have the logs handy."
+            "9. If you get an error with feathering, turn it off and try again.\n"
+            "10. If the logs show a 'normalization' error, please check the 'black frames bug' checkbox and try again.\n"
+            "11. When asking for help, please have the logs handy."
         )
 
         # Show help in Qt message box
         QMessageBox.information(self, "Help", help_text)
-        self.siril.log(help_text, LogColor.BLUE)
+        # self.siril.log(help_text, LogColor.BLUE)
+        self.siril_log_long(help_text, LogColor.BLUE)
 
     def _get_title_font(self):
         font = QFont()
