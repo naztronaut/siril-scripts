@@ -26,6 +26,7 @@ The following subdirectories are optional:
 CHANGELOG:
 
 2.0.6 - Ignore dot files from macs
+      - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
       - Refactored UI code for better maintainability
       - Allow safe cancellation of processing
@@ -431,7 +432,19 @@ class PreprocessingInterface(QMainWindow):
         Q: Where can I find the logs?
         A: You can export logs by clicking the download button on the lower right hand side of the console.\n
         """
-        self.siril.log(msg, LogColor.BLUE)
+        self.siril_log_long(msg, LogColor.BLUE)
+
+    def siril_log_long(self, message: str, color=LogColor.DEFAULT):
+        """
+        Args:
+            message: The message to log (can be longer than 1022 bytes)
+            color: LogColor enum value for text color (default: LogColor.DEFAULT)
+        """
+        lines = message.split("\n")
+        for line in lines:
+            stripped_line = line.lstrip()  # Remove leading whitespace
+            if stripped_line:  # Skip empty lines
+                self.siril.log(stripped_line, color)
 
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
@@ -1961,26 +1974,14 @@ class PreprocessingInterface(QMainWindow):
             return
 
         # Disable all buttons EXCEPT Run (which becomes Cancel)
-        # We need to iterate over buttons because we wrapped them
-        # self.buttons_widget.setEnabled(False) # Don't disable all
-        # Instead disable specifics or just rely on modal-like state
-
-        # Simpler approach: Keep buttons enabled but handle re-clicks?
-        # No, we want to prevent changing settings while running.
-        # So disable the main content area?
-        # For now, let's just disable the other buttons and inputs
 
         # Disable inputs
         self.centralWidget().setEnabled(False)
         # Re-enable the buttons widget so we can click Cancel
         self.buttons_widget.setEnabled(True)
-        self.buttons_widget.parentWidget().setEnabled(
-            True
-        )  # Ensure parent is enabled? (It is central widget)
-        # Ah, centralWidget disables everything including buttons.
-        # We need to selectively disable.
+        self.buttons_widget.parentWidget().setEnabled(True)
 
-        # Let's disable the scroll area content only
+        # disable the scroll area content
         self.findChild(QScrollArea).widget().setEnabled(False)
 
         # Disable other buttons
