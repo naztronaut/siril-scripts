@@ -1055,6 +1055,8 @@ class PreprocessingInterface(QMainWindow):
             }
             weight_option = weighting_map.get(weighting_method, "nbstars")
             cmd_args.append(f"-weight={weight_option}")
+
+        if feather:
             cmd_args.append(f"-feather={feather_amount}")
 
         self.siril.log(
@@ -1118,12 +1120,12 @@ class PreprocessingInterface(QMainWindow):
             self.siril.cmd("setcompress", "0")
             # self.siril.cmd("rotate", "180")
             # MirrorX if Seestar
-            if self.chosen_telescope in [
-                "ZWO Seestar S30",
-                "ZWO Seestar S30 Pro",
-                "ZWO Seestar S50",
-            ]:
-                self.siril.cmd("mirrorx")
+            # if self.chosen_telescope in [
+            #     "ZWO Seestar S30",
+            #     "ZWO Seestar S30 Pro",
+            #     "ZWO Seestar S50",
+            # ] and suffix.endswith(("_og", "_batched")):
+            #     self.siril.cmd("mirrorx")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
@@ -1141,8 +1143,11 @@ class PreprocessingInterface(QMainWindow):
         """Loads the registered image. Currently unused"""
         try:
             self.siril.cmd("load", "result")
+            # Force a plate solve to flip image orientation
+            self.image_plate_solve()
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Load command execution failed: {e}", LogColor.RED)
+
         self.save_image("_og")
 
     def image_plate_solve(self):
