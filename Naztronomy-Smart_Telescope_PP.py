@@ -2514,7 +2514,10 @@ class PreprocessingInterface(QMainWindow):
         # Using calibration frames puts pp_ prefix in process directory
         if True:
             self.calibrate_lights(
-                seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
+                seq_name=seq_name,
+                use_darks=use_darks,
+                use_flats=use_flats,
+                use_biases=use_biases,
             )
             try:
                 if clean_up_files:
