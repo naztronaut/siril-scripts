@@ -1,12 +1,15 @@
 # Naztronomy - Siril Scripts
 
-## Naztronomy-Smart_Telescope_PP.py
+## Naztronomy Smart Telescope Preprocessing Script
+
+#### [Naztronomy-Smart_Telescope_PP.py](Naztronomy-Smart_Telescope_PP.py)
 
 A comprehensive Python script that automates the preprocessing workflow for smart telescopes, including file conversion, registration, stacking, and SPCC color calibration.
 
 **Supported Telescopes:**
 
 - ZWO Seestar S30
+- ZWO Seestar S30 Pro
 - ZWO Seestar S50
 - Dwarf Mini
 - Dwarf 2
@@ -28,7 +31,18 @@ A comprehensive Python script that automates the preprocessing workflow for smar
 
 **Demo Video:** [YouTube - Smart Telescope Processing](https://www.youtube.com/watch?v=0RqvX9cR8Eg)
 
-## Naztronomy-OSC_PP.py
+#### Usage Guidelines
+
+- Must have a `lights` subdirectory in your working directory
+- Calibration frames are optional
+- Supports automatic batching for large datasets
+- Need local Gaia catlog in order to plate solve and stitch mosaics
+- Using compression may make the script run faster and use less space but not guaranteed
+- ~~SPCC requires local Gaia catalog for best results\*~~
+
+## Naztronomy OSC Preprocessing Script
+
+#### [Naztronomy-OSC_PP.py](Naztronomy-OSC_PP.py)
 
 An advanced OSC (One Shot Color) image preprocessing script designed for processing images from multiple sessions with full mosaic and alignment capabilities.
 
@@ -46,6 +60,14 @@ An advanced OSC (One Shot Color) image preprocessing script designed for process
 
 **Demo Video:** [YouTube - OSC Image Processing](https://www.youtube.com/watch?v=WjabF-bVBmU)
 
+#### Usage Guidelines
+
+- Can be run from any directory
+- Supports multiple sessions with different frame types
+- Images are copied/symlinked for processing (requires disk space)
+- Individual sessions can be processed separately or combined
+- Experimental mono mode bypasses debayering for monochrome cameras
+
 ## Installation
 
 Two ways to install these scripts:
@@ -53,28 +75,11 @@ Two ways to install these scripts:
 1. Manual: Place the Python `.py` files from this repository in your local Siril scripts directory
 2. Automatic: Install directly through Siril by going to **Scripts >> Get Scripts** in Siril and searching for "Naztronomy"
 
-## System Requirements
+### System Requirements
 
-- Siril 1.3.6 or later
+- Siril 1.3.6 or later (1.4.1 recommended)
 - Python packages: PyQt6, numpy, astropy (automatically installed by the scripts)
 - Recommended: Blank working directory for clean setup
-
-## Usage Guidelines
-
-### For Smart Telescope Script:
-
-- Must have a `lights` subdirectory in your working directory
-- Calibration frames are optional but recommended
-- Supports automatic batching for large datasets
-- SPCC requires local Gaia catalog for best results
-
-### For OSC Processing Script:
-
-- Can be run from any directory
-- Supports multiple sessions with different frame types
-- Images are copied/symlinked for processing (requires disk space)
-- Individual sessions can be processed separately or combined
-- Experimental mono mode bypasses debayering for monochrome cameras
 
 ## Limitations
 
@@ -89,15 +94,15 @@ Two ways to install these scripts:
 ### Social Media & Support:
 
 - **YouTube** - [YouTube.com/Naztronomy](https://www.youtube.com/naztronomy)
+- **Patreon** - [Become a Patron](https://www.patreon.com/c/naztronomy)
+- **Buy Me a Coffee** - [Become a Supporter](https://www.buymeacoffee.com/naztronomy)
+- **Discord** - [Join our Online community](https://discord.gg/yXKqrawpjr)
 - **Bluesky** - [Bluesky/Naztronomy.com](https://bsky.app/profile/naztronomy.com)
 - **Instagram** - [IG/Naztronomy](https://instagram.com/naztronomy)
-- **Discord** - [Join our community](https://discord.gg/yXKqrawpjr)
-- **Patreon** - [Support development](https://www.patreon.com/c/naztronomy)
-- **Buy Me a Coffee** - [One-time support](https://www.buymeacoffee.com/naztronomy)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details
+This project is licensed under the SPDX-License-Identifier: GPL-3.0-or-later- see the [LICENSE](LICENSE) file for details
 
 ## Support & Questions
 
