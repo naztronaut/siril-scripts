@@ -1117,6 +1117,13 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd("setcompress", "0")
             # self.siril.cmd("rotate", "180")
+            # MirrorX if Seestar
+            if self.chosen_telescope in [
+                "ZWO Seestar S30",
+                "ZWO Seestar S30 Pro",
+                "ZWO Seestar S50",
+            ]:
+                self.siril.cmd("mirrorx")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
