@@ -659,12 +659,6 @@ class PreprocessingInterface(QMainWindow):
             )
             return True
         else:
-            # self.siril.error_messagebox(f"Directory {directory} does not exist", True)
-            # raise NoImageError(
-            #     (
-            #         f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
-            #     )
-            # )
             self.siril.log(
                 f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.',
                 LogColor.SALMON,
@@ -676,13 +670,6 @@ class PreprocessingInterface(QMainWindow):
         # self.siril.cmd("cd", "process")
         args = ["seqplatesolve", seq_name]
 
-        # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
-        # if self.chosen_telescope == "Celestron Origin":
-        #     args.append(self.target_coords)
-        #     focal_len = 335
-        #     pixel_size = 2.4
-        #     args.append(f"-focal={focal_len}")
-        #     args.append(f"-pixelsize={pixel_size}")
         if self.chosen_telescope == "Dwarf 2":
             args.append(self.target_coords)
             focal_len = 100
@@ -693,7 +680,6 @@ class PreprocessingInterface(QMainWindow):
         args.extend(
             ["-nocache", "-force", "-disto=ps_distortion", "-order=4", "-radius=25"]
         )
-        # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
 
         try:
             self.siril.cmd(*args)
@@ -962,7 +948,9 @@ class PreprocessingInterface(QMainWindow):
             )
         self.siril.cmd("cd", "..")
 
-    def calibrate_lights(self, seq_name, use_darks=False, use_flats=False):
+    def calibrate_lights(
+        self, seq_name, use_darks=False, use_flats=False, use_biases=False
+    ):
         cmd_args = [
             "calibrate",
             f"{seq_name}",
@@ -987,6 +975,15 @@ class PreprocessingInterface(QMainWindow):
             )
         ):
             cmd_args.append("-flat=flats_stacked")
+
+        if use_biases and os.path.exists(
+            os.path.join(
+                self.current_working_directory,
+                "process",
+                f"biases_stacked{self.fits_extension}",
+            )
+        ):
+            cmd_args.append("-bias=biases_stacked")
 
         cmd_args.extend(["-cfa", "-equalize_cfa"])
 
@@ -1261,20 +1258,6 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
 
-    def autostretch(self, do_spcc):
-        """Autostretch as a way to preview the final result"""
-        try:
-            self.siril.cmd("autostretch", *(["-linked"] if do_spcc else []))
-        except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"Autostretch command execution failed: {e}", LogColor.RED)
-
-            self.close_dialog()
-        self.siril.log(
-            "Autostretched image."
-            + (" You may want to open the _spcc file instead." if do_spcc else ""),
-            LogColor.GREEN,
-        )
-
     def clean_up(self, prefix=None):
         """Cleans up all files in the process directory."""
         if not self.current_working_directory.endswith("process"):
@@ -1336,11 +1319,6 @@ class PreprocessingInterface(QMainWindow):
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
 
-        # If photometry Gaia is not available, disable SPCC
-        # if not self.photometry_gaia_available:
-        #     self.spcc_checkbox.setChecked(False)
-        #     self.spcc_checkbox.setEnabled(False)
-        #     print("diabled")
         # Disable SPCC for Celestron Origin
         if selected_scope == "Celestron Origin":
             self.spcc_checkbox.setChecked(False)
