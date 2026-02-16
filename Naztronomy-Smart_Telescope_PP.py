@@ -2376,21 +2376,26 @@ class PreprocessingInterface(QMainWindow):
 
         # Spcc as a last step
         if do_spcc:
-            img = self.spcc(
-                oscsensor=telescope,
-                filter=filter,
-                catalog=catalog,
-                whiteref="Average Spiral Galaxy",
-            )
-
-            # self.autostretch(do_spcc=do_spcc)
-            if drizzle:
-                img = os.path.basename(img) + self.fits_extension
-            else:
-                img = os.path.basename(img)
-            self.load_image(
-                image_name=os.path.basename(img)
-            )  # Load either og or spcc image
+            try:
+                img = self.spcc(
+                    oscsensor=telescope,
+                    filter=filter,
+                    catalog=catalog,
+                    whiteref="Average Spiral Galaxy",
+                )
+                # self.autostretch(do_spcc=do_spcc)
+                if drizzle:
+                    img = os.path.basename(img) + self.fits_extension
+                else:
+                    img = os.path.basename(img)
+                self.load_image(
+                    image_name=os.path.basename(img)
+                )  # Load either og or spcc image
+            except Exception as e:
+                self.siril.log(
+                    f"SPCC failed: {e}. Continuing with the rest of the script.",
+                    LogColor.SALMON,
+                )
 
         # Get some stacking deets
         self.stacking_details()
