@@ -32,6 +32,7 @@ CHANGELOG:
       - Allow safe cancellation of processing
       - Added safe deletes 
       - Added stack weighting option (Noise, Number of Stars, Weighted FWHM)
+      - Max batch size of 8100 on Windows but default in UI is still 2000 until version is readable by Python OR feature becomes permanent
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -1731,7 +1732,12 @@ class PreprocessingInterface(QMainWindow):
 
         self.batch_size_spinbox = QSpinBox()
         self.batch_size_spinbox.setToolTip(batch_size_tooltip)
-        self.batch_size_spinbox.setRange(50, self.max_files_per_batch)
+        # TODO: Update when version is readable by python or ucrt64 version is permanent
+        # Set batch size range: 50–8100 on Windows, default UI is still 2000
+        if sys.platform.startswith("win"):
+            self.batch_size_spinbox.setRange(50, 8100)
+        else:
+            self.batch_size_spinbox.setRange(50, self.max_files_per_batch)
         self.batch_size_spinbox.setValue(self.max_files_per_batch)
         self.batch_size_spinbox.setSingleStep(50)
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
