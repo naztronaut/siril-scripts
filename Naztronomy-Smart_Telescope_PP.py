@@ -33,6 +33,7 @@ CHANGELOG:
       - Added safe deletes 
       - Added stack weighting option (Noise, Number of Stars, Weighted FWHM)
       - Max batch size of 8100 on Windows but default in UI is still 2000 until version is readable by Python OR feature becomes permanent
+      - Added Dwarf II in telescope name along with DWARFII. 
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -461,6 +462,7 @@ class PreprocessingInterface(QMainWindow):
             "DWARFIII": "Dwarf 3",
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
+            "DWARF II": "Dwarf 2",
             "Origin": "Celestron Origin",
             "eVscope v1.0": "Unistellar eVscope 1 / eQuinox 1",
             "eVscope v2.0": "Unistellar eVscope 2 / eQuinox 2",
