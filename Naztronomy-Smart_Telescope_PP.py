@@ -2,8 +2,8 @@
 (c) Nazmus Nasir 2025
 SPDX-License-Identifier: GPL-3.0-or-later
 
-Smart Telescope Preprocessing script
-Version: 2.0.5
+Naztronomy - Smart Telescope Preprocessing script
+Version: 2.0.6
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -25,6 +25,15 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.0.6 - Ignore dot files from macs
+      - Fix black frames check bug
+      - PR#75 - support compressed fits in lights dir
+      - Refactored UI code for better maintainability
+      - Allow safe cancellation of processing
+      - Added safe deletes 
+      - Added stack weighting option (Noise, Number of Stars, Weighted FWHM)
+      - Max batch size of 8100 on Windows but default in UI is still 2000 until version is readable by Python OR feature becomes permanent
+      - Added Dwarf II in telescope name along with DWARFII. 
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -104,8 +113,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QSpinBox,
+    QScrollArea,
+    QProgressBar,
 )
-from PyQt6.QtCore import pyqtSlot as Slot, Qt
+from PyQt6.QtCore import pyqtSlot as Slot, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
@@ -115,13 +126,14 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.5"
-BUILD = "20260110"
+VERSION = "2.0.6"
+BUILD = "20260220"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "Naztronomy.com"
 YOUTUBE = "YouTube.com/Naztronomy"
 TELESCOPES = [
     "ZWO Seestar S30",
+    "ZWO Seestar S30 Pro",
     "ZWO Seestar S50",
     "Dwarf Mini",
     "Dwarf 3",
@@ -134,6 +146,7 @@ TELESCOPES = [
 
 FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
+    "ZWO Seestar S30 Pro": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf Mini": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
@@ -146,6 +159,10 @@ FILTER_OPTIONS_MAP = {
 
 FILTER_COMMANDS_MAP = {
     "ZWO Seestar S30": {
+        "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+        "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
+    },
+    "ZWO Seestar S30 Pro": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
     },
@@ -182,6 +199,28 @@ FILTER_COMMANDS_MAP = {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
     },
 }
+
+
+class WorkerThread(QThread):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            self.kwargs["progress_callback"] = self.progress.emit
+            self.kwargs["check_cancel"] = self.isInterruptionRequested
+            self.fn(*self.args, **self.kwargs)
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            self.finished.emit()
 
 
 UI_DEFAULTS = {
@@ -249,7 +288,9 @@ class PreprocessingInterface(QMainWindow):
 
         self.astrometry_gaia_available = False
         try:
-            self.astrometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_astro")
+            self.astrometry_gaia_status = self.siril.get_siril_config(
+                "core", "catalogue_gaia_astro"
+            )
             if (
                 self.astrometry_gaia_status
                 and self.astrometry_gaia_status != "(not set)"
@@ -258,10 +299,12 @@ class PreprocessingInterface(QMainWindow):
                 self.astrometry_gaia_available = True
         except s.CommandError:
             pass
-            
+
         self.photometry_gaia_available = False
         try:
-            self.photometry_gaia_status = self.siril.get_siril_config("core", "catalogue_gaia_photo")
+            self.photometry_gaia_status = self.siril.get_siril_config(
+                "core", "catalogue_gaia_photo"
+            )
             if (
                 self.photometry_gaia_status
                 and self.photometry_gaia_status != "(not set)"
@@ -391,19 +434,35 @@ class PreprocessingInterface(QMainWindow):
         Q: Where can I find the logs?
         A: You can export logs by clicking the download button on the lower right hand side of the console.\n
         """
-        self.siril.log(msg, LogColor.BLUE)
+        self.siril_log_long(msg, LogColor.BLUE)
+
+    def siril_log_long(self, message: str, color=LogColor.DEFAULT):
+        """
+        Args:
+            message: The message to log (can be longer than 1022 bytes)
+            color: LogColor enum value for text color (default: LogColor.DEFAULT)
+        """
+        lines = message.split("\n")
+        for line in lines:
+            stripped_line = line.lstrip()  # Remove leading whitespace
+            if stripped_line:  # Skip empty lines
+                self.siril.log(stripped_line, color)
 
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
         # Mapping from FITS header values to UI telescope names
+        # Note: Order matters! Put more specific/longer strings first
         telescope_map = {
-            "Seestar S30": "ZWO Seestar S30",
+            "ZWO Seestar S30 Pro": "ZWO Seestar S30 Pro",
+            "ZWO Seestar S30": "ZWO Seestar S30",
             "Seestar S50": "ZWO Seestar S50",
+            "Seestar S30": "ZWO Seestar S30",
             "S50": "ZWO Seestar S50",
             "DWARF mini": "Dwarf Mini",
             "DWARFIII": "Dwarf 3",
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
+            "DWARF II": "Dwarf 2",
             "Origin": "Celestron Origin",
             "eVscope v1.0": "Unistellar eVscope 1 / eQuinox 1",
             "eVscope v2.0": "Unistellar eVscope 2 / eQuinox 2",
@@ -415,7 +474,7 @@ class PreprocessingInterface(QMainWindow):
             fits_files = [
                 f
                 for f in os.listdir(lights_dir)
-                if f.lower().endswith(".fits") or f.lower().endswith(".fit")
+                if f.lower().endswith((".fits", ".fit", ".fits.fz", ".fit.fz"))
             ]
 
             if not fits_files:
@@ -423,7 +482,10 @@ class PreprocessingInterface(QMainWindow):
 
             # Store fits files count to use later
             self.fits_files_count = len(fits_files)
-            self.siril.log(f"Found {self.fits_files_count} FITS files in lights directory.", LogColor.BLUE)
+            self.siril.log(
+                f"Found {self.fits_files_count} FITS files in lights directory.",
+                LogColor.BLUE,
+            )
             # Update the label if it exists
             if hasattr(self, "files_found_label"):
                 self.files_found_label.setText(
@@ -433,33 +495,47 @@ class PreprocessingInterface(QMainWindow):
             first_file = os.path.join(lights_dir, fits_files[0])
             with fits.open(first_file) as hdul:
                 header = hdul[0].header
-                telescope = header.get("TELESCOP") or header.get(
-                    "CAMERA", "Seestar S30"
-                )
+                telescop = header.get("TELESCOP", "")
+                creator = header.get("CREATOR", "")
+                camera = header.get("CAMERA", "")
+                origin = header.get("ORIGIN", "")
 
                 # Try to map telescope name, using startswith for partial matches
                 mapped_telescope = "ZWO Seestar S30"  # default
+                found_match = False
+
+                # Filter out empty header values
+                header_values = [v for v in [telescop, creator, camera] if v]
+
+                # Check map against available headers
                 for telescope_local_name, ui_name in telescope_map.items():
-                    if telescope.startswith(telescope_local_name):
+                    # Check if any of the effective header values start with this key
+                    if any(
+                        val.startswith(telescope_local_name) for val in header_values
+                    ):
                         mapped_telescope = ui_name
+                        found_match = True
+                        #  print(f"Matched FITS header to '{mapped_telescope}' using key '{telescope_local_name}'")
                         break
-                
-                if mapped_telescope == "ZWO Seestar S30":
-                    origin = header.get("ORIGIN", "NULL")
-                    if origin.startswith("Unistellar"):
-                        instrume = header.get("INSTRUME", "NULL")
-                        # Dict for Unistellar
-                        unistellar_instruments = {
-                            "IMX224": "Unistellar eVscope 1 / eQuinox 1",
-                            "IMX347": "Unistellar eVscope 2 / eQuinox 2",
-                            "IMX415": "Unistellar Odyssey / Odyssey Pro",
-                        }
-                        for instrument, name in unistellar_instruments.items():
-                            if instrume.startswith(instrument):
-                                mapped_telescope = name
-                                break
-                    else:
-                        self.siril.log("Couldn't find Telescope info, setting default:", LogColor.BLUE)
+
+                if origin.startswith("Unistellar"):
+                    instrume = header.get("INSTRUME", "NULL")
+                    # Dict for Unistellar
+                    unistellar_instruments = {
+                        "IMX224": "Unistellar eVscope 1 / eQuinox 1",
+                        "IMX347": "Unistellar eVscope 2 / eQuinox 2",
+                        "IMX415": "Unistellar Odyssey / Odyssey Pro",
+                    }
+                    for instrument, name in unistellar_instruments.items():
+                        if instrume.startswith(instrument):
+                            mapped_telescope = name
+                            found_match = True
+                            break
+
+                if not found_match:
+                    self.siril.log(
+                        "Couldn't find Telescope info, setting default:", LogColor.BLUE
+                    )
 
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
@@ -529,9 +605,18 @@ class PreprocessingInterface(QMainWindow):
                     name
                     for name in os.listdir(directory)
                     if os.path.isfile(os.path.join(directory, name))
+                    and not name.startswith(".")
+                    and (
+                        name.lower().endswith(".fit")
+                        or name.lower().endswith(".fits")
+                        or name.lower().endswith(".fit.fz")
+                        or name.lower().endswith(".fits.fz")
+                    )
                 ]
             )
-            self.siril.log(f"Found {file_count} files in {dir_name} directory.", LogColor.BLUE)
+            self.siril.log(
+                f"Found {file_count} files in {dir_name} directory.", LogColor.BLUE
+            )
             if file_count == 1:
                 self.siril.log(
                     f"Only one file found in {dir_name} directory. Treating it like a master {dir_name} frame.",
@@ -577,13 +662,10 @@ class PreprocessingInterface(QMainWindow):
             )
             return True
         else:
-            # self.siril.error_messagebox(f"Directory {directory} does not exist", True)
-            # raise NoImageError(
-            #     (
-            #         f'No directory named "{dir_name}" at this location. Make sure the working directory is correct.'
-            #     )
-            # )
-            self.siril.log(f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.', LogColor.SALMON)
+            self.siril.log(
+                f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.',
+                LogColor.SALMON,
+            )
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name):
@@ -591,13 +673,6 @@ class PreprocessingInterface(QMainWindow):
         # self.siril.cmd("cd", "process")
         args = ["seqplatesolve", seq_name]
 
-        # If origin or D2, need to pass in the focal length, pixel size, and target coordinates
-        # if self.chosen_telescope == "Celestron Origin":
-        #     args.append(self.target_coords)
-        #     focal_len = 335
-        #     pixel_size = 2.4
-        #     args.append(f"-focal={focal_len}")
-        #     args.append(f"-pixelsize={pixel_size}")
         if self.chosen_telescope == "Dwarf 2":
             args.append(self.target_coords)
             focal_len = 100
@@ -605,8 +680,9 @@ class PreprocessingInterface(QMainWindow):
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
 
-        args.extend(["-nocache", "-force", "-disto=ps_distortion", "-order=4"])
-        # args = ["platesolve", seq_name, "-disto=ps_distortion", "-force"]
+        args.extend(
+            ["-nocache", "-force", "-disto=ps_distortion", "-order=4", "-radius=25"]
+        )
 
         try:
             self.siril.cmd(*args)
@@ -614,7 +690,7 @@ class PreprocessingInterface(QMainWindow):
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
-            return True # TODO: disabling fallback because Siril seems to be throwing a false error 
+            return True  # TODO: disabling fallback because Siril seems to be throwing a false error
 
     # Regular registration if plate solve not available - No Mosaics
     def regular_register_seq(self, seq_name, drizzle_amount, pixel_fraction):
@@ -644,9 +720,9 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd("seqsubsky", seq_name, "1", "-samples=10", "-tolerance=2.0")
             self.siril.cmd("cd", ".")  # Refresh current directory
-            self.siril.cmd("close")    # Close and reopen to flush cache
+            self.siril.cmd("close")  # Close and reopen to flush cache
             self.siril.cmd("cd", ".")  # Re-establish working directory
-            time.sleep(10)          # Wait for Siril to flush cache
+            time.sleep(10)  # Wait for Siril to flush cache
         except (s.DataError, s.CommandError, s.SirilError) as e:
             # turn off compression if error (if checked)
             if self.compression_checkbox.isChecked():
@@ -673,7 +749,7 @@ class PreprocessingInterface(QMainWindow):
             "-framing=max",
         ]
 
-        if self.filters_checkbox.isChecked():
+        if self.filters_group.isChecked():
             cmd_args.extend(
                 [
                     f"-filter-round={filter_roundness}%",
@@ -730,13 +806,19 @@ class PreprocessingInterface(QMainWindow):
 
         for idx, filename in enumerate(sorted(os.listdir(folder))):
             if filename.startswith(seq_name) and (
-                filename.lower().endswith(self.fits_extension + ".fz") or
-                filename.lower().endswith(self.fits_extension)
+                filename.lower().endswith(self.fits_extension + ".fz")
+                or filename.lower().endswith(self.fits_extension)
             ):
                 filepath = os.path.join(folder, filename)
                 try:
                     with fits.open(filepath) as hdul:
-                        data = hdul[1].data
+                        # Try to get data from HDU 1 for compressed files, fall back to HDU 0
+                        data = None
+                        if len(hdul) > 1:
+                            data = hdul[1].data
+                        else:
+                            data = hdul[0].data
+
                         if data is not None and data.ndim >= 2:
                             dynamic_threshold = threshold
                             data_max = np.max(data)
@@ -869,24 +951,43 @@ class PreprocessingInterface(QMainWindow):
             )
         self.siril.cmd("cd", "..")
 
-    def calibrate_lights(self, seq_name, use_darks=False, use_flats=False):
+    def calibrate_lights(
+        self, seq_name, use_darks=False, use_flats=False, use_biases=False
+    ):
         cmd_args = [
             "calibrate",
             f"{seq_name}",
         ]
-        
+
         # Check if darks_stacked exists before adding to command
         if use_darks and os.path.exists(
-            os.path.join(self.current_working_directory, "process", f"darks_stacked{self.fits_extension}")
+            os.path.join(
+                self.current_working_directory,
+                "process",
+                f"darks_stacked{self.fits_extension}",
+            )
         ):
             cmd_args.append("-dark=darks_stacked")
             cmd_args.append("-cc=dark")
-        
+
         if use_flats and os.path.exists(
-            os.path.join(self.current_working_directory, "process", f"flats_stacked{self.fits_extension}")
+            os.path.join(
+                self.current_working_directory,
+                "process",
+                f"flats_stacked{self.fits_extension}",
+            )
         ):
             cmd_args.append("-flat=flats_stacked")
-        
+
+        if use_biases and os.path.exists(
+            os.path.join(
+                self.current_working_directory,
+                "process",
+                f"biases_stacked{self.fits_extension}",
+            )
+        ):
+            cmd_args.append("-bias=biases_stacked")
+
         cmd_args.extend(["-cfa", "-equalize_cfa"])
 
         # Calibrate with -debayer if drizle is not set
@@ -928,6 +1029,8 @@ class PreprocessingInterface(QMainWindow):
         rejection=False,
         output_name=None,
         overlap_norm=False,
+        stack_weighted=False,
+        weighting_method="Noise",
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
@@ -945,6 +1048,17 @@ class PreprocessingInterface(QMainWindow):
             "-32b",
             f"-out={out}",
         ]
+
+        if stack_weighted:
+            # Map weighting method to siril command option
+            weighting_map = {
+                "Number of Stars": "nbstars",
+                "Weighted FWHM": "wfwhm",
+                "Noise": "noise",
+            }
+            weight_option = weighting_map.get(weighting_method, "nbstars")
+            cmd_args.append(f"-weight={weight_option}")
+
         if feather:
             cmd_args.append(f"-feather={feather_amount}")
 
@@ -959,7 +1073,7 @@ class PreprocessingInterface(QMainWindow):
         self.siril.log(f"Running command: {' '.join(cmd_args)}", LogColor.BLUE)
 
         try:
-            # Turn off compression for stacking 
+            # Turn off compression for stacking
             self.siril.cmd("setcompress", "0")
             self.siril.cmd(*cmd_args)
             # Turn compression back on after stacking
@@ -1007,6 +1121,14 @@ class PreprocessingInterface(QMainWindow):
 
         try:
             self.siril.cmd("setcompress", "0")
+            # self.siril.cmd("rotate", "180")
+            # MirrorX if Seestar
+            # if self.chosen_telescope in [
+            #     "ZWO Seestar S30",
+            #     "ZWO Seestar S30 Pro",
+            #     "ZWO Seestar S50",
+            # ] and suffix.endswith(("_og", "_batched")):
+            #     self.siril.cmd("mirrorx")
             self.siril.cmd(
                 "save",
                 f"{file_name}",
@@ -1024,8 +1146,11 @@ class PreprocessingInterface(QMainWindow):
         """Loads the registered image. Currently unused"""
         try:
             self.siril.cmd("load", "result")
+            # Force a plate solve to flip image orientation
+            self.image_plate_solve()
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Load command execution failed: {e}", LogColor.RED)
+
         self.save_image("_og")
 
     def image_plate_solve(self):
@@ -1050,14 +1175,16 @@ class PreprocessingInterface(QMainWindow):
 
         recoded_sensor = oscsensor
         """SPCC with oscsensor, filter, catalog, and whiteref."""
-        if oscsensor in ["Dwarf 3"]:
+        if oscsensor in ["ZWO Seestar S30 Pro"]:
+            recoded_sensor = "Sony IMX585"
+        elif oscsensor in ["Dwarf 3"]:
             recoded_sensor = "Sony IMX678"
         elif oscsensor in ["Dwarf Mini"]:
             recoded_sensor = "Sony IMX662"
         elif "eVscope 1" in oscsensor:
             recoded_sensor = "Sony IMX224"
         elif "eVscope 2" in oscsensor:
-            recoded_sensor = "Sony IMX415" # very similar to IMX347
+            recoded_sensor = "Sony IMX415"  # very similar to IMX347
         elif "Odyssey" in oscsensor:
             recoded_sensor = "Sony IMX415"
         else:
@@ -1107,7 +1234,11 @@ class PreprocessingInterface(QMainWindow):
             date_obs = headers.get("DATE-OBS", "Unknown")
             date = headers.get("DATE", "Unknown")
             pixel_size = headers.get("XPIXSZ", "Unknown")
-            feathering = self.feather_amount_spinbox.value() if self.feather_checkbox.isChecked() else "Off"
+            feathering = (
+                self.feather_amount_spinbox.value()
+                if self.feather_group.isChecked()
+                else "Off"
+            )
             drizzle = f"{self.drizzle_factor}x" if self.drizzle_status else "Off"
 
             details_msg = (
@@ -1142,20 +1273,6 @@ class PreprocessingInterface(QMainWindow):
             self.close_dialog()
         self.siril.log(f"Loaded image: {image_name}", LogColor.GREEN)
 
-    def autostretch(self, do_spcc):
-        """Autostretch as a way to preview the final result"""
-        try:
-            self.siril.cmd("autostretch", *(["-linked"] if do_spcc else []))
-        except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"Autostretch command execution failed: {e}", LogColor.RED)
-
-            self.close_dialog()
-        self.siril.log(
-            "Autostretched image."
-            + (" You may want to open the _spcc file instead." if do_spcc else ""),
-            LogColor.GREEN,
-        )
-
     def clean_up(self, prefix=None):
         """Cleans up all files in the process directory."""
         if not self.current_working_directory.endswith("process"):
@@ -1164,13 +1281,18 @@ class PreprocessingInterface(QMainWindow):
             process_dir = self.current_working_directory
         try:
             if not os.path.isdir(process_dir):
-                self.siril.log(f"Process directory not found: {process_dir}", LogColor.SALMON)
+                self.siril.log(
+                    f"Process directory not found: {process_dir}", LogColor.SALMON
+                )
                 return
-            
+
             for f in os.listdir(process_dir):
                 # Skip the stacked file
                 name, ext = os.path.splitext(f.lower())
-                if name in (f"{prefix}_stacked", "result") and ext in (self.fits_extension, self.fits_extension + ".fz"):
+                if name in (f"{prefix}_stacked", "result") and ext in (
+                    self.fits_extension,
+                    self.fits_extension + ".fz",
+                ):
                     continue
 
                 # Check if file starts with prefix_ or pp_flats_
@@ -1181,10 +1303,18 @@ class PreprocessingInterface(QMainWindow):
                 ):
                     file_path = os.path.join(process_dir, f)
                     if os.path.isfile(file_path):
-                        try:
-                            os.remove(file_path)
-                        except OSError as e:
-                            self.siril.log(f"Failed to delete {file_path}: {e}", LogColor.SALMON)
+                        # Retry loop for safe deletion
+                        for i in range(3):
+                            try:
+                                os.remove(file_path)
+                                break
+                            except OSError:
+                                time.sleep(0.5)
+                        else:
+                            # If loop completes without break, deletion failed
+                            self.siril.log(
+                                f"Failed to delete {file_path}", LogColor.SALMON
+                            )
         except Exception as e:
             self.siril.log(f"Error during cleanup: {e}", LogColor.SALMON)
         self.siril.log(f"Cleaned up {prefix}", LogColor.BLUE)
@@ -1204,11 +1334,6 @@ class PreprocessingInterface(QMainWindow):
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
 
-        # If photometry Gaia is not available, disable SPCC
-        # if not self.photometry_gaia_available:
-        #     self.spcc_checkbox.setChecked(False)
-        #     self.spcc_checkbox.setEnabled(False)
-        #     print("diabled")
         # Disable SPCC for Celestron Origin
         if selected_scope == "Celestron Origin":
             self.spcc_checkbox.setChecked(False)
@@ -1230,80 +1355,78 @@ class PreprocessingInterface(QMainWindow):
             "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
             "Info:\n"
             '1. Must have a "lights" subdirectory inside of the working directory.\n'
-            "2. For Calibration frames, you can have one or more of the following types: darks, flats, biases.\n"
+            "2. For Calibration frames, you can optionally have one or more of the following types: darks, flats, biases.\n"
             "3. If only one calibration frame is present, it will be treated as a master frame.\n"
-            "4. Local Gaia catalog is required for mosaics!\n"
+            "4. Local Astrometry Gaia catalog is required for mosaics!\n"
             f"5. If you have more than the default {self.max_files_per_batch} files, this script will automatically split them into batches. You can change the batching count from 50 to {self.max_files_per_batch}.\n"
             "6. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
             "7. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
             "8. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "9. When asking for help, please have the logs handy."
+            "9. If you get an error with feathering, turn it off and try again.\n"
+            "10. If the logs show a 'normalization' error, please check the 'black frames bug' checkbox and try again.\n"
+            "11. When asking for help, please have the logs handy."
         )
 
         # Show help in Qt message box
         QMessageBox.information(self, "Help", help_text)
-        self.siril.log(help_text, LogColor.BLUE)
+        # self.siril.log(help_text, LogColor.BLUE)
+        self.siril_log_long(help_text, LogColor.BLUE)
 
-    def create_widgets(self):
-        """Creates the UI widgets."""
-        # Create main widget and layout
-        main_widget = QWidget()
-        self.setMinimumSize(700, 750)
-        self.setCentralWidget(main_widget)
+    def _get_title_font(self):
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
+        return font
 
-        main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(15, 10, 15, 15)
-        main_layout.setSpacing(8)
-
-        # Title and version
-        title_label = QLabel(f"{APP_NAME}")
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(10)
-        title_label.setFont(title_font)
-        main_layout.addWidget(title_label)
-
-        # Current working directory label
-        self.cwd_label = QLabel(self.cwd_label_text)
-        main_layout.addWidget(self.cwd_label)
-
-        # Catalog status section
+    def _create_gaia_status_section(self):
         gaia_status_section = QGroupBox("Local Gaia Catalog Status")
+        gaia_status_section.setStyleSheet("QGroupBox { font-weight: bold; }")
         gaia_status_layout = QHBoxLayout(gaia_status_section)
         gaia_status_layout.setSpacing(15)
+        gaia_status_layout.setContentsMargins(10, 12, 10, 10)
 
         if self.astrometry_gaia_available:
             astrometry_gaia_label = QLabel("✓ Local Astrometry Gaia Available")
             astrometry_gaia_label.setStyleSheet("color: green;")
-            astrometry_gaia_label.setToolTip(f"Local Astrometry Gaia found at: {self.astrometry_gaia_status}")
+            astrometry_gaia_label.setToolTip(
+                f"Local Astrometry Gaia found at: {self.astrometry_gaia_status}"
+            )
         else:
             astrometry_gaia_label = QLabel("✗ Local Astrometry Gaia")
             astrometry_gaia_label.setStyleSheet("color: red;")
-            astrometry_gaia_label.setToolTip("Local Astrometry Gaia not available - mosaics will not be generated")
+            astrometry_gaia_label.setToolTip(
+                "Local Astrometry Gaia not available - mosaics will not be generated"
+            )
         gaia_status_layout.addWidget(astrometry_gaia_label)
 
         if self.photometry_gaia_available:
             photometry_gaia_label = QLabel("✓ Local Photometry Gaia Available")
             photometry_gaia_label.setStyleSheet("color: green;")
-            photometry_gaia_label.setToolTip(f"Local Photometry Gaia found at: {self.photometry_gaia_status}")
+            photometry_gaia_label.setToolTip(
+                f"Local Photometry Gaia found at: {self.photometry_gaia_status}"
+            )
         else:
             photometry_gaia_label = QLabel("✗ Local Photometry Gaia")
             photometry_gaia_label.setStyleSheet("color: orange;")
-            photometry_gaia_label.setToolTip("Local Photometry Gaia not available, will default to Online Gaia.")
+            photometry_gaia_label.setToolTip(
+                "Local Photometry Gaia not available, will default to Online Gaia."
+            )
         gaia_status_layout.addWidget(photometry_gaia_label)
 
-        main_layout.addWidget(gaia_status_section)
+        return gaia_status_section
 
-        # Telescope section
+    def _create_telescope_section(self):
+        title_font = self._get_title_font()
         telescope_section = QGroupBox("Telescope")
         telescope_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        main_layout.addWidget(telescope_section)
         telescope_layout = QGridLayout(telescope_section)
-        telescope_layout.setSpacing(3)
-        telescope_layout.setContentsMargins(10, 15, 10, 10)
+        telescope_layout.setSpacing(8)
+        telescope_layout.setContentsMargins(12, 12, 12, 12)
+        telescope_layout.setHorizontalSpacing(12)
+        telescope_layout.setVerticalSpacing(12)
 
         telescope_label = QLabel("Telescope:")
-        telescope_label.setFont(title_font)  # Bold font
+        telescope_label.setFont(title_font)
         telescope_label.setToolTip(
             "Select your telescope model to ensure proper color calibration and processing settings."
         )
@@ -1344,9 +1467,6 @@ class PreprocessingInterface(QMainWindow):
         )
         telescope_layout.addWidget(self.biases_checkbox, 1, 3)
 
-        # Add some vertical spacing between calibration and cleanup
-        telescope_layout.setRowMinimumHeight(1, 35)
-
         cleanup_files_label = QLabel("Clean Up Files:")
         cleanup_files_label.setFont(title_font)
         cleanup_tooltip = "Enable this option to delete all intermediary files after they are done processing. This saves space on your hard drive.\nNote: If your session is batched, this option is automatically enabled even if it's unchecked!"
@@ -1356,7 +1476,7 @@ class PreprocessingInterface(QMainWindow):
         self.cleanup_files_checkbox = QCheckBox("")
         self.cleanup_files_checkbox.setToolTip(cleanup_tooltip)
         telescope_layout.addWidget(self.cleanup_files_checkbox, 2, 1)
-        
+
         # Use compression checkbox
         compression_label = QLabel("Use Compression:")
         compression_label.setFont(title_font)
@@ -1368,37 +1488,267 @@ class PreprocessingInterface(QMainWindow):
         self.compression_checkbox.setToolTip(compression_tooltip)
         telescope_layout.addWidget(self.compression_checkbox, 2, 3)
 
-        # Optional Preprocessing Steps
+        return telescope_section
+
+    def _create_drizzle_group(self):
+        title_font = self._get_title_font()
+        drizzle_group_tooltip = "Drizzle integration can improve resolution but increases processing time and file size."
+        self.drizzle_group = QGroupBox("Drizzle")
+        self.drizzle_group.setCheckable(True)
+        self.drizzle_group.setChecked(False)
+        self.drizzle_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        self.drizzle_group.setToolTip(drizzle_group_tooltip)
+
+        drizzle_layout = QGridLayout(self.drizzle_group)
+        drizzle_layout.setSpacing(8)
+        drizzle_layout.setContentsMargins(12, 12, 12, 12)
+        drizzle_layout.setHorizontalSpacing(15)
+        drizzle_layout.setVerticalSpacing(12)
+
+        drizzle_amount_label_tooltip = "Scale factor for drizzle integration. Values between 1.0 and 3.0 are typical. \nNote: Higher values increase processing time and file size."
+        drizzle_amount_label = QLabel("Drizzle amount:")
+        drizzle_amount_label.setFont(title_font)
+        drizzle_amount_label.setToolTip(drizzle_amount_label_tooltip)
+        drizzle_layout.addWidget(drizzle_amount_label, 0, 0)
+
+        self.drizzle_amount_spinbox = QDoubleSpinBox()
+        self.drizzle_amount_spinbox.setRange(0.1, 3.0)
+        self.drizzle_amount_spinbox.setSingleStep(0.1)
+        self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
+        self.drizzle_amount_spinbox.setDecimals(1)
+        self.drizzle_amount_spinbox.setMinimumWidth(80)
+        self.drizzle_amount_spinbox.setSuffix(" x")
+        self.drizzle_amount_spinbox.setToolTip(drizzle_amount_label_tooltip)
+        drizzle_layout.addWidget(self.drizzle_amount_spinbox, 0, 1)
+
+        pixel_fraction_label_tooltip = "Controls how much pixels overlap in drizzle integration. Lower values can reduce artifacts but may increase noise."
+        pixel_fraction_label = QLabel("Pixel Fraction:")
+        pixel_fraction_label.setFont(title_font)
+        pixel_fraction_label.setToolTip(pixel_fraction_label_tooltip)
+        drizzle_layout.addWidget(pixel_fraction_label, 0, 2)
+
+        self.pixel_fraction_spinbox = QDoubleSpinBox()
+        self.pixel_fraction_spinbox.setDecimals(2)
+        self.pixel_fraction_spinbox.setRange(0.1, 10.0)
+        self.pixel_fraction_spinbox.setSingleStep(0.01)
+        self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
+        self.pixel_fraction_spinbox.setMinimumWidth(80)
+        self.pixel_fraction_spinbox.setSuffix(" px")
+        self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
+        drizzle_layout.addWidget(self.pixel_fraction_spinbox, 0, 3)
+        return self.drizzle_group
+
+    def _create_optional_stacking_options_group(self):
+        title_font = self._get_title_font()
+        stacking_options_group = QGroupBox("Optional Stacking Options")
+        stacking_options_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        stacking_options_layout = QVBoxLayout(stacking_options_group)
+        stacking_options_layout.setSpacing(10)
+        stacking_options_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Stack Weighting Subsection
+        stack_weighting_subsection = QGroupBox("Stack Weighting")
+        stack_weighting_subsection.setCheckable(True)
+        stack_weighting_subsection.setChecked(False)
+        stack_weighting_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
+        stack_weighting_subsection_tooltip = (
+            "Applies weighting to frames during stacking based on selected criteria."
+        )
+        stack_weighting_subsection.setToolTip(stack_weighting_subsection_tooltip)
+
+        stack_weighting_layout = QGridLayout(stack_weighting_subsection)
+        stack_weighting_layout.setSpacing(8)
+        stack_weighting_layout.setContentsMargins(12, 12, 12, 12)
+        stack_weighting_layout.setHorizontalSpacing(15)
+        stack_weighting_layout.setVerticalSpacing(12)
+
+        weighting_method_label = QLabel("Weighting Method:")
+        weighting_method_label.setFont(title_font)
+        weighting_method_tooltip = (
+            "Select the criteria to use for weighting frames during stacking."
+        )
+        weighting_method_label.setToolTip(weighting_method_tooltip)
+        stack_weighting_layout.addWidget(weighting_method_label, 0, 0)
+
+        self.weighting_method_combo = QComboBox()
+        self.weighting_method_combo.addItems(
+            ["Noise", "Number of Stars", "Weighted FWHM"]
+        )
+        self.weighting_method_combo.setEnabled(False)
+        self.weighting_method_combo.setToolTip(weighting_method_tooltip)
+        stack_weighting_layout.addWidget(self.weighting_method_combo, 0, 1)
+
+        stack_weighting_subsection.toggled.connect(
+            self.weighting_method_combo.setEnabled
+        )
+        stacking_options_layout.addWidget(stack_weighting_subsection)
+
+        # Filters Subsection
+        filters_subsection = QGroupBox("Filters (Optional)")
+        filters_subsection.setCheckable(True)
+        filters_subsection.setChecked(False)
+        filters_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
+        filters_subsection_tooltip = (
+            "Options for filtering images based on various criteria."
+        )
+        filters_subsection.setToolTip(filters_subsection_tooltip)
+
+        filters_layout = QGridLayout(filters_subsection)
+        filters_layout.setSpacing(8)
+        filters_layout.setContentsMargins(12, 12, 12, 12)
+        filters_layout.setHorizontalSpacing(15)
+        filters_layout.setVerticalSpacing(12)
+
+        # Roundness Filter
+        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower percentage keeps only frames with more circular stars. Higher percentages allow more variation in star shapes."
+        roundness_label = QLabel("Roundness:")
+        roundness_label.setFont(title_font)
+        roundness_label.setToolTip(roundness_label_tooltip)
+        filters_layout.addWidget(roundness_label, 0, 0)
+
+        self.roundness_spinbox = QDoubleSpinBox()
+        self.roundness_spinbox.setRange(1.0, 100.0)
+        self.roundness_spinbox.setSingleStep(0.1)
+        self.roundness_spinbox.setDecimals(2)
+        self.roundness_spinbox.setValue(100.0)
+        self.roundness_spinbox.setMinimumWidth(80)
+        self.roundness_spinbox.setSuffix(" %")
+        self.roundness_spinbox.setToolTip(roundness_label_tooltip)
+        filters_layout.addWidget(self.roundness_spinbox, 0, 1)
+
+        # FWHM Filter
+        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower percentage keeps only frames with consistent FWHM values. Higher percentages allow more variation."
+        fwhm_label = QLabel("FWHM:")
+        fwhm_label.setFont(title_font)
+        fwhm_label.setToolTip(fwhm_label_tooltip)
+        filters_layout.addWidget(fwhm_label, 0, 2)
+
+        self.fwhm_spinbox = QDoubleSpinBox()
+        self.fwhm_spinbox.setRange(1.0, 100.0)
+        self.fwhm_spinbox.setSingleStep(0.1)
+        self.fwhm_spinbox.setDecimals(2)
+        self.fwhm_spinbox.setValue(100.0)
+        self.fwhm_spinbox.setMinimumWidth(80)
+        self.fwhm_spinbox.setSuffix(" %")
+        self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
+        filters_layout.addWidget(self.fwhm_spinbox, 0, 3)
+
+        # Background Filter
+        bg_filter_label = QLabel("Background:")
+        bg_filter_label.setFont(title_font)
+        bg_filter_tooltip = "Filter frames by background value. Lower percentages keep frames with lower background levels."
+        bg_filter_label.setToolTip(bg_filter_tooltip)
+        filters_layout.addWidget(bg_filter_label, 1, 0)
+
+        self.bg_filter_spinbox = QDoubleSpinBox()
+        self.bg_filter_spinbox.setRange(1.0, 100.0)
+        self.bg_filter_spinbox.setSingleStep(0.1)
+        self.bg_filter_spinbox.setDecimals(2)
+        self.bg_filter_spinbox.setValue(100.0)
+        self.bg_filter_spinbox.setMinimumWidth(80)
+        self.bg_filter_spinbox.setSuffix(" %")
+        self.bg_filter_spinbox.setToolTip(bg_filter_tooltip)
+        filters_layout.addWidget(self.bg_filter_spinbox, 1, 1)
+
+        # Star Count Filter
+        star_count_filter_label = QLabel("Star Count:")
+        star_count_filter_label.setFont(title_font)
+        star_count_filter_tooltip = "Filter frames by star count. Lower percentages keep frames with fewer stars."
+        star_count_filter_label.setToolTip(star_count_filter_tooltip)
+        filters_layout.addWidget(star_count_filter_label, 1, 2)
+
+        self.star_count_filter_spinbox = QDoubleSpinBox()
+        self.star_count_filter_spinbox.setRange(1.0, 100.0)
+        self.star_count_filter_spinbox.setSingleStep(0.1)
+        self.star_count_filter_spinbox.setDecimals(2)
+        self.star_count_filter_spinbox.setValue(100.0)
+        self.star_count_filter_spinbox.setMinimumWidth(80)
+        self.star_count_filter_spinbox.setSuffix(" %")
+        self.star_count_filter_spinbox.setToolTip(star_count_filter_tooltip)
+        filters_layout.addWidget(self.star_count_filter_spinbox, 1, 3)
+
+        # Connect the filters group checkbox to enable/disable all filter controls
+        filters_subsection.toggled.connect(self.roundness_spinbox.setEnabled)
+        filters_subsection.toggled.connect(self.fwhm_spinbox.setEnabled)
+        filters_subsection.toggled.connect(self.bg_filter_spinbox.setEnabled)
+        filters_subsection.toggled.connect(self.star_count_filter_spinbox.setEnabled)
+        stacking_options_layout.addWidget(filters_subsection)
+
+        # Feathering Subsection
+        feather_subsection = QGroupBox("Feather")
+        feather_subsection.setCheckable(True)
+        feather_subsection.setChecked(False)
+        feather_subsection.setStyleSheet("QGroupBox { font-weight: bold; }")
+        feather_subsection_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
+        feather_subsection.setToolTip(feather_subsection_tooltip)
+
+        feather_layout = QGridLayout(feather_subsection)
+        feather_layout.setSpacing(8)
+        feather_layout.setContentsMargins(12, 12, 12, 12)
+        feather_layout.setHorizontalSpacing(15)
+        feather_layout.setVerticalSpacing(12)
+
+        feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
+        feather_amount_label = QLabel("Feather amount:")
+        feather_amount_label.setFont(title_font)
+        feather_amount_label.setToolTip(feather_amount_label_tooltip)
+        feather_layout.addWidget(feather_amount_label, 0, 0)
+
+        self.feather_amount_spinbox = QSpinBox()
+        self.feather_amount_spinbox.setRange(5, 2000)
+        self.feather_amount_spinbox.setSingleStep(5)
+        self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
+        self.feather_amount_spinbox.setMinimumWidth(80)
+        self.feather_amount_spinbox.setSuffix(" px")
+        self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
+        feather_layout.addWidget(self.feather_amount_spinbox, 0, 1)
+        stacking_options_layout.addWidget(feather_subsection)
+
+        # Store references to subsections for the feather warning in SPCC section
+        self.feather_group = feather_subsection
+        self.stack_weighting_group = stack_weighting_subsection
+        self.filters_group = filters_subsection
+
+        return stacking_options_group
+
+    def _create_preprocessing_section(self):
+        title_font = self._get_title_font()
         preprocessing_section = QGroupBox("Optional Preprocessing Steps")
         preprocessing_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        main_layout.addWidget(preprocessing_section)
         preprocessing_layout = QGridLayout(preprocessing_section)
-        preprocessing_layout.setSpacing(5)
-        # preprocessing_layout.setContentsMargins(10, 15, 10, 10)
-        preprocessing_layout.setHorizontalSpacing(15)  # space between label ↔ widget
-        preprocessing_layout.setVerticalSpacing(10)  # space between rows
-        preprocessing_layout.setContentsMargins(12, 18, 12, 12)  # outer padding
+        preprocessing_layout.setSpacing(8)
+        preprocessing_layout.setContentsMargins(12, 12, 12, 12)
+        preprocessing_layout.setHorizontalSpacing(15)
+        preprocessing_layout.setVerticalSpacing(12)
 
         # Batch size spinbox
         batch_size_label = QLabel("Max Files per Batch:")
         batch_size_label.setFont(title_font)
         batch_size_tooltip = (
             "Maximum number of files to process in each batch. Windows only. This is ignored on Mac/Linux."
-            "This is an advanced option. Only change if you are comfortable with it.\n"
+            "This is an advanced option. Only change if you are comfortable with it.\\n"
             "Valid range: 50–2000."
         )
         batch_size_label.setToolTip(batch_size_tooltip)
         preprocessing_layout.addWidget(batch_size_label, 0, 0)
 
         self.batch_size_spinbox = QSpinBox()
-        self.batch_size_spinbox.setToolTip(batch_size_tooltip) 
-        self.batch_size_spinbox.setRange(50, self.max_files_per_batch)  # clamps input based on OS
+        self.batch_size_spinbox.setToolTip(batch_size_tooltip)
+        # TODO: Update when version is readable by python or ucrt64 version is permanent
+        # Set batch size range: 50–8100 on Windows, default UI is still 2000
+        if sys.platform.startswith("win"):
+            self.batch_size_spinbox.setRange(50, 8100)
+        else:
+            self.batch_size_spinbox.setRange(50, self.max_files_per_batch)
         self.batch_size_spinbox.setValue(self.max_files_per_batch)
-        self.batch_size_spinbox.setSingleStep(50)  # allow picking any integer
+        self.batch_size_spinbox.setSingleStep(50)
         preprocessing_layout.addWidget(self.batch_size_spinbox, 0, 1)
+
         # Files found label
         self.files_found_label = QLabel()
-        self.files_found_label.setToolTip("Number of Fit(s) files found in the lights directory.")
+        self.files_found_label.setToolTip(
+            "Number of Fit(s) files found in the lights directory."
+        )
         preprocessing_layout.addWidget(self.files_found_label, 0, 2, 1, 4)
 
         bg_extract_label = QLabel("Background Extraction:")
@@ -1411,187 +1761,23 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_checkbox.setToolTip(bg_extract_tooltip)
         preprocessing_layout.addWidget(self.bg_extract_checkbox, 1, 1)
 
-        registration_label = QLabel("Registration:")
-        registration_label.setFont(title_font)
-        registration_label.setToolTip("Options for aligning images before stacking.")
-        preprocessing_layout.addWidget(registration_label, 2, 0)
+        # Add subsections
+        drizzle_group = self._create_drizzle_group()
+        preprocessing_layout.addWidget(drizzle_group, 2, 0, 1, 6)
 
-        drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
-        self.drizzle_checkbox = QCheckBox("Drizzle?")
-        self.drizzle_checkbox.setToolTip(drizzle_tooltip)
-        preprocessing_layout.addWidget(self.drizzle_checkbox, 2, 1)
+        return preprocessing_section
 
-        drizzle_amount_label_tooltip = "Scale factor for drizzle integration. Values between 1.0 and 3.0 are typical. \nNote: Higher values increase processing time and file size."
-        drizzle_amount_label = QLabel("Drizzle amount:")
-        drizzle_amount_label.setToolTip(drizzle_amount_label_tooltip)
-        preprocessing_layout.addWidget(drizzle_amount_label, 2, 2)
-
-        self.drizzle_amount_spinbox = QDoubleSpinBox()
-        self.drizzle_amount_spinbox.setRange(0.1, 3.0)
-        self.drizzle_amount_spinbox.setSingleStep(0.1)
-        self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
-        self.drizzle_amount_spinbox.setDecimals(1)
-        self.drizzle_amount_spinbox.setMinimumWidth(80)
-        self.drizzle_amount_spinbox.setSuffix(" x")
-        self.drizzle_amount_spinbox.setEnabled(False)
-        self.drizzle_amount_spinbox.setToolTip(drizzle_amount_label_tooltip)
-        preprocessing_layout.addWidget(self.drizzle_amount_spinbox, 2, 3)
-
-        self.drizzle_checkbox.toggled.connect(self.drizzle_amount_spinbox.setEnabled)
-
-        pixel_fraction_label_tooltip = "Controls how much pixels overlap in drizzle integration. Lower values can reduce artifacts but may increase noise."
-        pixel_fraction_label = QLabel("Pixel Fraction:")
-        pixel_fraction_label.setToolTip(pixel_fraction_label_tooltip)
-        preprocessing_layout.addWidget(pixel_fraction_label, 3, 2)
-
-        self.pixel_fraction_spinbox = QDoubleSpinBox()
-        self.pixel_fraction_spinbox.setDecimals(2)
-        self.pixel_fraction_spinbox.setRange(0.1, 10.0)
-        self.pixel_fraction_spinbox.setSingleStep(0.01)
-        self.pixel_fraction_spinbox.setValue(UI_DEFAULTS["pixel_fraction"])
-        self.pixel_fraction_spinbox.setMinimumWidth(80)
-        self.pixel_fraction_spinbox.setSuffix(" px")
-        self.pixel_fraction_spinbox.setEnabled(False)
-        self.pixel_fraction_spinbox.setToolTip(pixel_fraction_label_tooltip)
-        preprocessing_layout.addWidget(self.pixel_fraction_spinbox, 3, 3)
-
-        self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
-
-        # Add spinboxes for roundness and FWHM filters
-
-        filter_label = QLabel("Filters:")
-        filter_label.setFont(title_font)
-        filter_label.setToolTip("Options for filtering images before stacking.")
-        preprocessing_layout.addWidget(filter_label, 4, 0)
-
-        filters_checkbox_tooltip = (
-            "Options for filtering images based on various criteria."
-        )
-        self.filters_checkbox = QCheckBox("Enable")
-        self.filters_checkbox.setToolTip(filters_checkbox_tooltip)
-        preprocessing_layout.addWidget(self.filters_checkbox, 4, 1)
-
-        # Roundness Filter
-        roundness_label_tooltip = "Filters images by star roundness, calculated using the second moments of detected stars. \nA lower percentage keeps only frames with more circular stars. Higher percentages allow more variation in star shapes."
-        roundness_label = QLabel("Roundness:")
-        roundness_label.setFont(title_font)
-        roundness_label.setToolTip(roundness_label_tooltip)
-        preprocessing_layout.addWidget(roundness_label, 4, 2)
-
-        self.roundness_spinbox = QDoubleSpinBox()
-        self.roundness_spinbox.setRange(1.0, 100.0)
-        self.roundness_spinbox.setSingleStep(0.1)
-        self.roundness_spinbox.setDecimals(2)
-        self.roundness_spinbox.setValue(100.0)
-        self.roundness_spinbox.setMinimumWidth(80)
-        self.roundness_spinbox.setSuffix(" %")
-        self.roundness_spinbox.setEnabled(False)
-        self.roundness_spinbox.setToolTip(roundness_label_tooltip)
-        preprocessing_layout.addWidget(self.roundness_spinbox, 4, 3)
-
-        self.filters_checkbox.toggled.connect(self.roundness_spinbox.setEnabled)
-
-        # FWHM Filter
-        fwhm_label_tooltip = "Filters images by weighted Full Width at Half Maximum (FWHM), calculated using star sharpness. \nA lower percentage keeps only frames with consistent FWHM values. Higher percentages allow more variation."
-        fwhm_label = QLabel("FWHM:")
-        fwhm_label.setFont(title_font)
-        fwhm_label.setToolTip(fwhm_label_tooltip)
-        preprocessing_layout.addWidget(fwhm_label, 4, 4)
-
-        self.fwhm_spinbox = QDoubleSpinBox()
-        self.fwhm_spinbox.setRange(1.0, 100.0)
-        self.fwhm_spinbox.setSingleStep(0.1)
-        self.fwhm_spinbox.setDecimals(2)
-        self.fwhm_spinbox.setValue(100.0)
-        self.fwhm_spinbox.setMinimumWidth(80)
-        self.fwhm_spinbox.setSuffix(" %")
-        self.fwhm_spinbox.setEnabled(False)
-        self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
-        preprocessing_layout.addWidget(self.fwhm_spinbox, 4, 5)
-
-        self.filters_checkbox.toggled.connect(self.fwhm_spinbox.setEnabled)
-
-        # Background Filter
-        bg_filter_label = QLabel("Background:")
-        bg_filter_label.setFont(title_font)
-        bg_filter_tooltip = "Filter frames by background value. Lower percentages keep frames with lower background levels."
-        bg_filter_label.setToolTip(bg_filter_tooltip)
-        preprocessing_layout.addWidget(bg_filter_label, 5, 2)
-
-        self.bg_filter_spinbox = QDoubleSpinBox()
-        self.bg_filter_spinbox.setRange(1.0, 100.0)
-        self.bg_filter_spinbox.setSingleStep(0.1)
-        self.bg_filter_spinbox.setDecimals(2)
-        self.bg_filter_spinbox.setValue(100.0)
-        self.bg_filter_spinbox.setMinimumWidth(80)
-        self.bg_filter_spinbox.setSuffix(" %")
-        self.bg_filter_spinbox.setEnabled(False)
-        self.bg_filter_spinbox.setToolTip(bg_filter_tooltip)
-        preprocessing_layout.addWidget(self.bg_filter_spinbox, 5, 3)
-
-        # Star Count Filter
-        star_count_filter_label = QLabel("Star Count:")
-        star_count_filter_label.setFont(title_font)
-        star_count_filter_tooltip = "Filter frames by star count. Lower percentages keep frames with fewer stars."
-        star_count_filter_label.setToolTip(star_count_filter_tooltip)
-        preprocessing_layout.addWidget(star_count_filter_label, 5, 4)
-
-        self.star_count_filter_spinbox = QDoubleSpinBox()
-        self.star_count_filter_spinbox.setRange(1.0, 100.0)
-        self.star_count_filter_spinbox.setSingleStep(0.1)
-        self.star_count_filter_spinbox.setDecimals(2)
-        self.star_count_filter_spinbox.setValue(100.0)
-        self.star_count_filter_spinbox.setMinimumWidth(80)
-        self.star_count_filter_spinbox.setSuffix(" %")
-        self.star_count_filter_spinbox.setEnabled(False)
-        self.star_count_filter_spinbox.setToolTip(star_count_filter_tooltip)
-        preprocessing_layout.addWidget(self.star_count_filter_spinbox, 5, 5)
-
-        # Connect the filters checkbox to enable/disable all filter controls
-        self.filters_checkbox.toggled.connect(self.bg_filter_spinbox.setEnabled)
-        self.filters_checkbox.toggled.connect(self.star_count_filter_spinbox.setEnabled)
-
-        # Stacking options
-        stacking_label = QLabel("Stacking:")
-        stacking_label.setFont(title_font)
-        stacking_label.setToolTip(
-            "Options for combining aligned images into a final stack."
-        )
-        preprocessing_layout.addWidget(stacking_label, 6, 0)
-
-        feather_tooltip = "Blends the edges of stacked frames to reduce edge artifacts in the final image."
-        self.feather_checkbox = QCheckBox("Feather?")
-        self.feather_checkbox.setToolTip(feather_tooltip)
-        preprocessing_layout.addWidget(self.feather_checkbox, 6, 1)
-
-        feather_amount_label_tooltip = "Size of the feathering blend in pixels. Larger values create smoother transitions but may affect more of the image edge."
-        feather_amount_label = QLabel("Feather amount:")
-        feather_amount_label.setToolTip(feather_amount_label_tooltip)
-        preprocessing_layout.addWidget(feather_amount_label, 6, 2)
-
-        self.feather_amount_spinbox = QSpinBox()
-        self.feather_amount_spinbox.setRange(5, 2000)
-        self.feather_amount_spinbox.setSingleStep(5)
-        self.feather_amount_spinbox.setValue(UI_DEFAULTS["feather_amount"])
-        self.feather_amount_spinbox.setMinimumWidth(80)
-        self.feather_amount_spinbox.setSuffix(" px")
-        self.feather_amount_spinbox.setEnabled(False)
-        self.feather_amount_spinbox.setToolTip(feather_amount_label_tooltip)
-        preprocessing_layout.addWidget(self.feather_amount_spinbox, 6, 3)
-
-        self.feather_checkbox.toggled.connect(self.feather_amount_spinbox.setEnabled)
-
-        # SPCC Section
+    def _create_spcc_section(self):
+        title_font = self._get_title_font()
         self.spcc_section = QGroupBox("Post-Stacking")
         self.spcc_section.setStyleSheet("QGroupBox { font-weight: bold; }")
-        main_layout.addWidget(self.spcc_section)
         spcc_layout = QGridLayout(self.spcc_section)
-        spcc_layout.setSpacing(5)
-        spcc_layout.setContentsMargins(10, 15, 10, 10)
+        spcc_layout.setSpacing(8)
+        spcc_layout.setContentsMargins(12, 12, 12, 12)
+        spcc_layout.setHorizontalSpacing(12)
+        spcc_layout.setVerticalSpacing(12)
 
         spcc_tooltip = "SPCC uses star colors to calibrate the image colors. Recommended for accurate color reproduction."
-        # if not self.photometry_gaia_available:
-        #     spcc_tooltip += " Disabled because Local Photometry catalog not available."
         self.spcc_checkbox = QCheckBox(
             "Enable Spectrophotometric Color Calibration (SPCC)"
         )
@@ -1614,83 +1800,152 @@ class PreprocessingInterface(QMainWindow):
         )
         spcc_layout.addWidget(self.filter_combo, 1, 1)
 
-        # Connect SPCC checkbox to enable/disable filter and catalog combos
         self.spcc_checkbox.toggled.connect(self.filter_combo.setEnabled)
-
-        # self.spcc_checkbox.toggled.connect(self.catalog_combo.setEnabled)
 
         self.scan_blackframes_checkbox = QCheckBox("Black Frames Bug?")
         self.scan_blackframes_checkbox.setToolTip(
             "Enable this option to automatically scan for black frames in your image sequence ONLY If you see black frames as a result of drizzle."
-            "\nWhen the bug is confirmed fixed, this option and check will be removed."
+            "\\nWhen the bug is confirmed fixed, this option and check will be removed."
         )
         spcc_layout.addWidget(self.scan_blackframes_checkbox, 3, 0, 1, 2)
 
-        # Warning message for feather checkbox
         feather_warning = QLabel(
-            "⚠ You enabled feather, this can cause slow processing and memory issues. If you get an error, turn it off and try again.\nSupport will not be provided for feather-related issues. ⚠"
+            "⚠ You enabled feather, this can cause slow processing and memory issues. If you get an error, turn it off and try again.\\nSupport will not be provided for feather-related issues. ⚠"
         )
         feather_warning.setStyleSheet("color: red;")
         feather_warning.setWordWrap(True)
-        feather_warning.setVisible(False)  # Hidden by default
+        feather_warning.setVisible(False)
         spcc_layout.addWidget(feather_warning, 4, 0, 1, 2)
 
-        # Connect feather checkbox to show/hide warning
-        self.feather_checkbox.toggled.connect(feather_warning.setVisible)
-        self.feather_checkbox.toggled.connect(self.adjustSize)
+        self.feather_group.toggled.connect(feather_warning.setVisible)
 
-        # Buttons section
+        return self.spcc_section
+
+    def _create_buttons_layout(self):
         button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(
-            0, 15, 0, 0
-        )  # Add top margin to separate from content
-        main_layout.addLayout(button_layout)
+        button_layout.setContentsMargins(12, 10, 12, 12)
+        button_layout.setSpacing(8)
 
         help_button = QPushButton("Help")
         help_button.setMinimumWidth(50)
         help_button.setMinimumHeight(35)
         help_button.setToolTip("Show help information and frequently asked questions")
-        # help_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
         help_button.clicked.connect(self.show_help)
         button_layout.addWidget(help_button)
 
         save_presets_button = QPushButton("Save Presets")
         save_presets_button.setMinimumWidth(80)
         save_presets_button.setMinimumHeight(35)
-        save_presets_button.setToolTip("Save current settings to a \"naztronomy_smart_scope_presets.json\" file in the presets directory")
-        # save_presets_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
+        save_presets_button.setToolTip(
+            'Save current settings to a "naztronomy_smart_scope_presets.json" file in the presets directory'
+        )
         save_presets_button.clicked.connect(self.save_presets)
         button_layout.addWidget(save_presets_button)
 
         load_presets_button = QPushButton("Load Presets")
         load_presets_button.setMinimumWidth(80)
         load_presets_button.setMinimumHeight(35)
-        load_presets_button.setToolTip("Load previously saved presets. If \"presets/naztronomy_smart_scope_presets.json\" exists, it will load first, otherwise it'll prompt you to find a proper .json file.")
-        # load_presets_button.setStyleSheet("QPushButton { background-color: #6103c7; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #9434fc; }")
+        load_presets_button.setToolTip(
+            'Load previously saved presets. If "presets/naztronomy_smart_scope_presets.json" exists, it will load first, otherwise it\'ll prompt you to find a proper .json file.'
+        )
         load_presets_button.clicked.connect(self.load_presets)
         button_layout.addWidget(load_presets_button)
 
-        button_layout.addStretch()  # Add space between buttons
+        button_layout.addStretch()
 
         close_button = QPushButton("Close")
         close_button.setMinimumWidth(100)
         close_button.setMinimumHeight(35)
-        close_button.setStyleSheet("QPushButton { background-color: #c70306; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #fc3437; }")
+        close_button.setStyleSheet(
+            "QPushButton { background-color: #c70306; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #fc3437; }"
+        )
         close_button.clicked.connect(self.close_dialog)
         button_layout.addWidget(close_button)
 
-        # Add small spacing between close and run buttons
         button_layout.addSpacing(10)
 
-        run_button = QPushButton("Run")
-        run_button.setMinimumWidth(100)
-        run_button.setMinimumHeight(35)
-        run_button.setStyleSheet("QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }")
-        run_button.clicked.connect(self.on_run_clicked)
-        button_layout.addWidget(run_button)
+        self.run_button = QPushButton("Run")
+        self.run_button.setMinimumWidth(100)
+        self.run_button.setMinimumHeight(35)
+        self.run_button.setStyleSheet(
+            "QPushButton { background-color: #0078cc; color: white; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #33abff; }"
+        )
+        self.run_button.clicked.connect(self.on_run_clicked)
+        button_layout.addWidget(self.run_button)
 
-        # Add stretch to push everything to the top
-        main_layout.addStretch()
+        return button_layout
+
+    def create_widgets(self):
+        """Creates the UI widgets."""
+        # Create main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        # Set default window size (larger by default)
+        self.resize(950, 850)
+
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create scrollable content area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        main_layout.addWidget(scroll_area)
+
+        # Create content widget for scroll area
+        content_widget = QWidget()
+        scroll_area.setWidget(content_widget)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(10)
+
+        # Title and version
+        title_label = QLabel(f"{APP_NAME}")
+        title_font = self._get_title_font()
+        title_label.setFont(title_font)
+        content_layout.addWidget(title_label)
+
+        # Current working directory label
+        self.cwd_label = QLabel(self.cwd_label_text)
+        content_layout.addWidget(self.cwd_label)
+
+        # Catalog status section
+        content_layout.addWidget(self._create_gaia_status_section())
+
+        # Telescope section
+        content_layout.addWidget(self._create_telescope_section())
+
+        # Optional Preprocessing Steps
+        content_layout.addWidget(self._create_preprocessing_section())
+
+        # Optional Stacking Options
+        content_layout.addWidget(self._create_optional_stacking_options_group())
+
+        # SPCC Section
+        content_layout.addWidget(self._create_spcc_section())
+
+        # Add stretch to content layout to push buttons down
+        content_layout.addStretch()
+
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFixedHeight(10)  # Make it slim
+        # Remove border and make it span full width
+        main_layout.addWidget(self.progress_bar)
+
+        # Buttons section
+        button_layout = self._create_buttons_layout()
+
+        # Wrap button layout in a widget to easily disable/enable all buttons
+        self.buttons_widget = QWidget()
+        self.buttons_widget.setLayout(button_layout)
+        # Add buttons to bottom of main layout (after scrollable area)
+        main_layout.addWidget(self.buttons_widget)
 
     # def setup_shortcuts(self):
     #     """Setup keyboard shortcuts"""
@@ -1712,27 +1967,467 @@ class PreprocessingInterface(QMainWindow):
 
     def on_run_clicked(self):
         """Handle the Run button click"""
-        self.run_script(
-            do_spcc=self.spcc_checkbox.isChecked(),
-            filter=self.filter_combo.currentText(),
-            telescope=self.telescope_combo.currentText(),
-            # catalog=self.catalog_combo.currentText(),
-            use_darks=self.darks_checkbox.isChecked(),
-            use_flats=self.flats_checkbox.isChecked(),
-            use_biases=self.biases_checkbox.isChecked(),
-            max_files_per_batch=self.batch_size_spinbox.value(),
-            bg_extract=self.bg_extract_checkbox.isChecked(),
-            drizzle=self.drizzle_checkbox.isChecked(),
-            drizzle_amount=round(self.drizzle_amount_spinbox.value(), 2),
-            pixel_fraction=round(self.pixel_fraction_spinbox.value(), 2),
-            filter_roundness=round(self.roundness_spinbox.value(),2),
-            filter_fwhm=round(self.fwhm_spinbox.value(), 2),
-            filter_bg=round(self.bg_filter_spinbox.value(), 2),
-            filter_star_count=round(self.star_count_filter_spinbox.value(), 2),
-            feather=self.feather_checkbox.isChecked(),
-            feather_amount=self.feather_amount_spinbox.value(),
-            clean_up_files=self.cleanup_files_checkbox.isChecked(),
+        # If currently running, request cancellation
+        if hasattr(self, "worker") and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.run_button.setText("Cancelling...")
+            self.run_button.setEnabled(False)
+            return
+
+        # Disable all buttons EXCEPT Run (which becomes Cancel)
+
+        # Disable inputs
+        self.centralWidget().setEnabled(False)
+        # Re-enable the buttons widget so we can click Cancel
+        self.buttons_widget.setEnabled(True)
+        self.buttons_widget.parentWidget().setEnabled(True)
+
+        # disable the scroll area content
+        self.findChild(QScrollArea).widget().setEnabled(False)
+
+        # Disable other buttons
+        for btn in self.buttons_widget.findChildren(QPushButton):
+            if btn != self.run_button:
+                btn.setEnabled(False)
+
+        self.run_button.setText("Cancel")
+
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        # self.progress_bar.setValue(0)
+
+        # Collect parameters
+        params = {
+            "do_spcc": self.spcc_checkbox.isChecked(),
+            "filter": self.filter_combo.currentText(),
+            "telescope": self.telescope_combo.currentText(),
+            "use_darks": self.darks_checkbox.isChecked(),
+            "use_flats": self.flats_checkbox.isChecked(),
+            "use_biases": self.biases_checkbox.isChecked(),
+            "max_files_per_batch": self.batch_size_spinbox.value(),
+            "bg_extract": self.bg_extract_checkbox.isChecked(),
+            "drizzle": self.drizzle_group.isChecked(),
+            "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 2),
+            "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
+            "filter_roundness": round(self.roundness_spinbox.value(), 2),
+            "filter_fwhm": round(self.fwhm_spinbox.value(), 2),
+            "filter_bg": round(self.bg_filter_spinbox.value(), 2),
+            "filter_star_count": round(self.star_count_filter_spinbox.value(), 2),
+            "stack_weighting": self.stack_weighting_group.isChecked(),
+            "weighting_method": self.weighting_method_combo.currentText(),
+            "feather": self.feather_group.isChecked(),
+            "feather_amount": self.feather_amount_spinbox.value(),
+            "clean_up_files": self.cleanup_files_checkbox.isChecked(),
+        }
+
+        # Run checks in main thread
+        if not self.run_pre_checks():
+            # Re-enable if checks fail
+            self.findChild(QScrollArea).widget().setEnabled(True)
+            for btn in self.buttons_widget.findChildren(QPushButton):
+                btn.setEnabled(True)
+            self.run_button.setText("Run")
+            self.progress_bar.setVisible(False)
+            return
+
+        # Start background thread
+        self.worker = WorkerThread(self.run_processing_logic, **params)
+        self.worker.finished.connect(self.on_processing_finished)
+        self.worker.error.connect(self.on_processing_error)
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.start()
+
+    def on_processing_finished(self):
+        self.progress_bar.setVisible(False)
+        self.findChild(QScrollArea).widget().setEnabled(True)
+        for btn in self.buttons_widget.findChildren(QPushButton):
+            btn.setEnabled(True)
+        self.run_button.setText("Run")
+        self.close_dialog()
+
+    def on_processing_error(self, error_msg):
+        self.progress_bar.setVisible(False)
+        self.findChild(QScrollArea).widget().setEnabled(True)
+        for btn in self.buttons_widget.findChildren(QPushButton):
+            btn.setEnabled(True)
+        self.run_button.setText("Run")
+        self.siril.log(f"Error during processing: {error_msg}", LogColor.RED)
+        QMessageBox.critical(
+            self, "Processing Error", f"An error occurred:\n{error_msg}"
         )
+
+    def closeEvent(self, event):
+        """Handle the window close event (clicking the X button)."""
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "Processing in Progress",
+                "The script is currently processing. Please wait for it to finish. To stop the script, click the 'stop' button under the console and stop the python process",
+            )
+            event.ignore()
+        else:
+            self.siril.disconnect()
+            event.accept()
+
+    def run_pre_checks(self):
+        self.siril.log("Starting pre-checks...", LogColor.BLUE)
+
+        if self.fits_files_count == 0:
+            QMessageBox.warning(
+                self,
+                "No FITS Files Found",
+                "No FITS files found in the lights directory. Please add files and try again.",
+            )
+            return False
+
+        # Check if old processing directories exist
+        if (
+            os.path.exists("sessions")
+            or os.path.exists("process")
+            or os.path.exists("final_stack")
+        ):
+            msg = "Old processing directories found. Do you want to delete them and start fresh?"
+            answer = QMessageBox.question(
+                self,
+                "Old Processing Files Found",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    if os.path.exists("sessions"):
+                        shutil.rmtree("sessions")
+                        self.siril.log(
+                            "Cleaned up old sessions directories", LogColor.BLUE
+                        )
+                    if os.path.exists("process"):
+                        shutil.rmtree("process")
+                        self.siril.log(
+                            "Cleaned up old process directory", LogColor.BLUE
+                        )
+                    if os.path.exists("final_stack"):
+                        shutil.rmtree("final_stack")
+                        self.siril.log(
+                            "Cleaned up old final_stack directory", LogColor.BLUE
+                        )
+                except Exception as e:
+                    self.siril.log(
+                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.",
+                        LogColor.RED,
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "Error",
+                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.\nPlease remove them manually and try again.\n\n",
+                    )
+                    return False
+            else:
+                self.siril.log(
+                    "User chose to preserve old processing files. Stopping script.",
+                    LogColor.BLUE,
+                )
+                return False
+        return True
+
+    def run_processing_logic(
+        self,
+        progress_callback=None,
+        check_cancel=None,
+        do_spcc: bool = False,
+        filter: str = "broadband",
+        telescope: str = "ZWO Seestar S30",
+        catalog: str = "localgaia",
+        use_darks: bool = False,
+        use_flats: bool = False,
+        use_biases: bool = False,
+        max_files_per_batch: float = UI_DEFAULTS["max_files_per_batch"],
+        bg_extract: bool = False,
+        drizzle: bool = False,
+        drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
+        pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
+        filter_roundness: float = 100.0,
+        filter_fwhm: float = 100.0,
+        filter_bg: float = 100.0,
+        filter_star_count: float = 100.0,
+        stack_weighting: bool = False,
+        weighting_method: str = "Noise",
+        feather: bool = False,
+        feather_amount: float = UI_DEFAULTS["feather_amount"],
+        clean_up_files: bool = False,
+    ):
+        self.siril.log(
+            f"Running script version {VERSION} with arguments:\n"
+            f"do_spcc={do_spcc}\n"
+            f"filter={filter}\n"
+            f"telescope={telescope}\n"
+            f"catalog={catalog}\n"
+            f"use_darks={use_darks}\n"
+            f"use_flats={use_flats}\n"
+            f"use_biases={use_biases}\n"
+            f"batch_size={max_files_per_batch}\n"
+            f"bg_extract={bg_extract}\n"
+            f"drizzle={drizzle}\n"
+            f"drizzle_amount={drizzle_amount}\n"
+            f"filter_roundness={filter_roundness}\n"
+            f"filter_fwhm={filter_fwhm}\n"
+            f"filter_bg={filter_bg}\n"
+            f"filter_star_count={filter_star_count}\n"
+            f"pixel_fraction={pixel_fraction}\n"
+            f"feather={feather}\n"
+            f"feather_amount={feather_amount}\n"
+            f"stack_weighting={stack_weighting}\n"
+            f"weighting_method={weighting_method}\n"
+            f"clean_up_files={clean_up_files}\n"
+            f"compression={self.compression_checkbox.isChecked()}\n"
+            f"black_frames_bug={self.scan_blackframes_checkbox.isChecked()}\n"
+            f"build={VERSION}-{BUILD}",
+            LogColor.BLUE,
+        )
+        self.siril.cmd("close")
+
+        def check_interruption():
+            if check_cancel and check_cancel():
+                raise Exception("Operation cancelled by user.")
+
+        check_interruption()
+
+        self.drizzle_status = drizzle
+        self.drizzle_factor = drizzle_amount
+
+        # TODO: Stack calibration frames and copy to the various batch dirs
+        if use_biases:
+            converted = self.convert_files("biases")
+            if converted:
+                self.calibration_stack("biases")
+            if clean_up_files:
+                self.clean_up("biases")
+            check_interruption()
+        if use_flats:
+            converted = self.convert_files("flats")
+            if converted:
+                self.calibration_stack("flats")
+            if clean_up_files:
+                self.clean_up("flats")
+            check_interruption()
+        if use_darks:
+            converted = self.convert_files("darks")
+            if converted:
+                self.calibration_stack("darks")
+            if clean_up_files:
+                self.clean_up("darks")
+            check_interruption()
+
+        # Check files in working directory/lights.
+        # create sub folders with more than 2048 divided by equal amounts
+
+        lights_directory = "lights"
+
+        # Get list of all files in the lights directory
+        all_files = [
+            name
+            for name in os.listdir(lights_directory)
+            if os.path.isfile(os.path.join(lights_directory, name))
+        ]
+        num_files = len(all_files)
+
+        # only one batch will be run if less than max_files_per_batch OR not windows.
+        if num_files <= max_files_per_batch:
+            self.siril.log(
+                f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
+                LogColor.BLUE,
+            )
+            check_interruption()
+            file_name = self.batch(
+                output_name=lights_directory,
+                use_darks=use_darks,
+                use_flats=use_flats,
+                use_biases=use_biases,
+                bg_extract=bg_extract,
+                drizzle=drizzle,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+                filter_roundness=filter_roundness,
+                filter_fwhm=filter_fwhm,
+                feather=feather,
+                feather_amount=feather_amount,
+                stack_weighting=stack_weighting,
+                weighting_method=weighting_method,
+                clean_up_files=clean_up_files,
+            )
+
+            self.load_image(image_name=file_name)
+        else:
+            num_batches = math.ceil(num_files / max_files_per_batch)
+
+            self.siril.log(
+                f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
+                LogColor.BLUE,
+            )
+
+            # Ensure temp folders exist and are empty
+            for i in range(num_batches):
+                batch_dir = f"batch_lights{i+1}"
+                os.makedirs(batch_dir, exist_ok=True)
+                # Optionally clean out existing files:
+                for f in os.listdir(batch_dir):
+                    os.remove(os.path.join(batch_dir, f))
+
+            # Split and create symlinks/copies of files into batches
+            for i, filename in enumerate(all_files):
+                batch_index = i // max_files_per_batch
+                batch_dir = f"batch_lights{batch_index + 1}"
+                src_path = os.path.join(lights_directory, filename)
+                dest_path = os.path.join(batch_dir, filename)
+
+                # try:
+                #     # Try creating symlink first
+                #     os.symlink(src_path, dest_path)
+                # except (OSError, NotImplementedError):
+                #     # Fall back to copying if symlink fails
+                shutil.copy2(src_path, dest_path)
+
+            # Send each of the new lights dir into batch directory
+            for i in range(num_batches):
+                check_interruption()
+                batch_dir = f"batch_lights{i+1}"
+                self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
+                self.batch(
+                    output_name=batch_dir,
+                    use_darks=use_darks,
+                    use_flats=use_flats,
+                    use_biases=use_biases,
+                    bg_extract=bg_extract,
+                    drizzle=drizzle,
+                    drizzle_amount=drizzle_amount,
+                    pixel_fraction=pixel_fraction,
+                    filter_roundness=filter_roundness,
+                    filter_fwhm=filter_fwhm,
+                    feather=feather,
+                    feather_amount=feather_amount,
+                    stack_weighting=stack_weighting,
+                    weighting_method=weighting_method,
+                    clean_up_files=clean_up_files,
+                )
+            self.siril.log("Batching complete.", LogColor.GREEN)
+
+            # Create batched_lights directory
+            final_stack_seq_name = "final_stack"
+            batch_lights = "batch_lights"
+            os.makedirs(final_stack_seq_name, exist_ok=True)
+            source_dir = os.path.join(os.getcwd(), "process")
+            # Move batch result files into batched_lights
+            target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
+
+            # Create the target subdirectory if it doesn't exist
+            os.makedirs(target_subdir, exist_ok=True)
+
+            # Loop through all files in the source directory
+            for filename in os.listdir(source_dir):
+                if f"{batch_lights}" in filename:
+                    full_src_path = os.path.join(source_dir, filename)
+                    full_dst_path = os.path.join(target_subdir, filename)
+
+                # Only move files, skip directories
+                # Should only moved the final batched files
+                if os.path.isfile(full_src_path):
+                    shutil.move(full_src_path, full_dst_path)
+                    self.siril.log(f"Moved: {filename}", LogColor.BLUE)
+
+            # Clean up temp_lightsX directories
+            for i in range(num_batches):
+                batch_dir = f"{batch_lights}{i+1}"
+                shutil.rmtree(batch_dir, ignore_errors=True)
+
+            self.convert_files(final_stack_seq_name)
+            self.seq_plate_solve(seq_name=final_stack_seq_name)
+            # turn off drizzle for this
+            self.drizzle_status = False
+            # Force filters to 3 sigma
+            self.seq_apply_reg(
+                seq_name=final_stack_seq_name,
+                drizzle_amount=drizzle_amount,
+                pixel_fraction=pixel_fraction,
+                filter_roundness=100.0,
+                filter_fwhm=100.0,
+                filter_bg=100.0,
+                filter_star_count=100.0,
+            )
+            self.clean_up(prefix=final_stack_seq_name)
+            check_interruption()
+            registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
+            # final stack needs feathering and amount
+            self.drizzle_status = drizzle  # Turn drizzle back to selected option
+            self.seq_stack(
+                seq_name=registered_final_stack_seq_name,
+                feather=True,
+                rejection=False,
+                feather_amount=100,
+                output_name="final_result",
+                overlap_norm=True,
+                stack_weighted=stack_weighting,
+                weighting_method=weighting_method,
+            )
+            self.load_image(image_name="final_result")
+
+            # cleanup final_stack directory
+            # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
+            if clean_up_files:
+                self.clean_up(prefix=registered_final_stack_seq_name)
+
+            # Go back to working dir
+            self.siril.cmd("cd", "../")
+
+            # Save og image in WD - might have drizzle factor in name
+            file_name = self.save_image("_batched")
+            self.load_image(image_name=file_name)
+
+        # Spcc as a last step
+        if do_spcc:
+            try:
+                img = self.spcc(
+                    oscsensor=telescope,
+                    filter=filter,
+                    catalog=catalog,
+                    whiteref="Average Spiral Galaxy",
+                )
+                # self.autostretch(do_spcc=do_spcc)
+                if drizzle:
+                    img = os.path.basename(img) + self.fits_extension
+                else:
+                    img = os.path.basename(img)
+                self.load_image(
+                    image_name=os.path.basename(img)
+                )  # Load either og or spcc image
+            except Exception as e:
+                self.siril.log(
+                    f"SPCC failed: {e}. Continuing with the rest of the script.",
+                    LogColor.SALMON,
+                )
+
+        # Get some stacking deets
+        self.stacking_details()
+        # self.clean_up()
+
+        self.siril.cmd("setcompress", "0")  # Disable compression after processing
+
+        self.siril.log(
+            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            LogColor.GREEN,
+        )
+        self.siril.log(
+            """
+        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
+        The author of this script is Nazmus Nasir (Naztronomy).
+        Website: https://www.Naztronomy.com 
+        YouTube: https://www.YouTube.com/Naztronomy 
+        Discord: https://discord.gg/yXKqrawpjr
+        Patreon: https://www.patreon.com/c/naztronomy
+        Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
+        """,
+            LogColor.BLUE,
+        )
+        # self.close_dialog() # Now handled by on_finished
 
     def close_dialog(self):
         self.siril.disconnect()
@@ -1799,6 +2494,8 @@ class PreprocessingInterface(QMainWindow):
         filter_star_count: float = 100.0,
         feather: bool = False,
         feather_amount: float = UI_DEFAULTS["feather_amount"],
+        stack_weighting: bool = False,
+        weighting_method: str = "Noise",
         clean_up_files: bool = False,
     ):
         # If we're batching, force cleanup files so we don't collide with existing files
@@ -1809,14 +2506,19 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log("Enabling FITS compression (Rice 16-bit)", LogColor.BLUE)
                 self.siril.cmd("setcompress", "1 -type=rice 16")
             else:
-                self.siril.log("Compression not set, disabling in case it's turned on from a previous run/crash", LogColor.BLUE)
+                self.siril.log(
+                    "Compression not set, disabling in case it's turned on from a previous run/crash",
+                    LogColor.BLUE,
+                )
                 self.siril.cmd("setcompress", "0")
         except s.CommandError:
             # turn off compression if error (if checked)
             if self.compression_checkbox.isChecked():
                 self.siril.cmd("setcompress", "0")
-                self.siril.log("Disabling compression due to command error", LogColor.SALMON)
-            
+                self.siril.log(
+                    "Disabling compression due to command error", LogColor.SALMON
+                )
+
         if output_name.startswith("batch_lights"):
             clean_up_files = True
 
@@ -1837,7 +2539,10 @@ class PreprocessingInterface(QMainWindow):
         # Using calibration frames puts pp_ prefix in process directory
         if True:
             self.calibrate_lights(
-                seq_name=seq_name, use_darks=use_darks, use_flats=use_flats
+                seq_name=seq_name,
+                use_darks=use_darks,
+                use_flats=use_flats,
+                use_biases=use_biases,
             )
             try:
                 if clean_up_files:
@@ -1920,11 +2625,11 @@ class PreprocessingInterface(QMainWindow):
                 rejection=True,
                 output_name=output_name,
                 overlap_norm=False,
+                stack_weighted=stack_weighting,
+                weighting_method=weighting_method,
             )
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(
-                f"Error occurred during stacking: {e}", LogColor.RED
-            )
+            self.siril.log(f"Error occurred during stacking: {e}", LogColor.RED)
             if feather:
                 QMessageBox.warning(
                     self,
@@ -1972,16 +2677,18 @@ class PreprocessingInterface(QMainWindow):
             "cleanup": self.cleanup_files_checkbox.isChecked(),
             "batch_size": self.batch_size_spinbox.value(),
             "bg_extract": self.bg_extract_checkbox.isChecked(),
-            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle": self.drizzle_group.isChecked(),
             "drizzle_amount": self.drizzle_amount_spinbox.value(),
             "pixel_fraction": self.pixel_fraction_spinbox.value(),
-            "filters": self.filters_checkbox.isChecked(),
+            "filters": self.filters_group.isChecked(),
             "roundness": self.roundness_spinbox.value(),
             "fwhm": self.fwhm_spinbox.value(),
             "star_count_filter": self.star_count_filter_spinbox.value(),
             "bg_filter": self.bg_filter_spinbox.value(),
-            "feather": self.feather_checkbox.isChecked(),
+            "feather": self.feather_group.isChecked(),
             "feather_amount": self.feather_amount_spinbox.value(),
+            "stack_weighting": self.stack_weighting_group.isChecked(),
+            "weighting_method": self.weighting_method_combo.currentText(),
             "spcc": self.spcc_checkbox.isChecked(),
             "compression": self.compression_checkbox.isChecked(),
         }
@@ -2042,23 +2749,27 @@ class PreprocessingInterface(QMainWindow):
                 presets.get("batch_size", self.max_files_per_batch)
             )
             self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
-            self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+            self.drizzle_group.setChecked(presets.get("drizzle", False))
             self.drizzle_amount_spinbox.setValue(
                 presets.get("drizzle_amount", UI_DEFAULTS["drizzle_amount"])
             )
             self.pixel_fraction_spinbox.setValue(
                 presets.get("pixel_fraction", UI_DEFAULTS["pixel_fraction"])
             )
-            self.filters_checkbox.setChecked(presets.get("filters", False))
+            self.filters_group.setChecked(presets.get("filters", False))
             self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
             self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
             self.star_count_filter_spinbox.setValue(
                 presets.get("star_count_filter", 100.0)
             )
             self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
-            self.feather_checkbox.setChecked(presets.get("feather", False))
+            self.feather_group.setChecked(presets.get("feather", False))
             self.feather_amount_spinbox.setValue(
                 presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
+            )
+            self.stack_weighting_group.setChecked(presets.get("stack_weighting", False))
+            self.weighting_method_combo.setCurrentText(
+                presets.get("weighting_method", "Noise")
             )
             self.spcc_checkbox.setChecked(presets.get("spcc", False))
             self.compression_checkbox.setChecked(presets.get("compression", False))
@@ -2066,332 +2777,6 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
-
-    def run_script(
-        self,
-        do_spcc: bool = False,
-        filter: str = "broadband",
-        telescope: str = "ZWO Seestar S30",
-        catalog: str = "localgaia",
-        use_darks: bool = False,
-        use_flats: bool = False,
-        use_biases: bool = False,
-        max_files_per_batch: float = UI_DEFAULTS["max_files_per_batch"],
-        bg_extract: bool = False,
-        drizzle: bool = False,
-        drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
-        pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
-        filter_roundness: float = 100.0,
-        filter_fwhm: float = 100.0,
-        filter_bg: float = 100.0,
-        filter_star_count: float = 100.0,
-        feather: bool = False,
-        feather_amount: float = UI_DEFAULTS["feather_amount"],
-        clean_up_files: bool = False,
-    ):
-        self.siril.log(
-            f"Running script version {VERSION} with arguments:\n"
-            f"do_spcc={do_spcc}\n"
-            f"filter={filter}\n"
-            f"telescope={telescope}\n"
-            f"catalog={catalog}\n"
-            f"use_darks={use_darks}\n"
-            f"use_flats={use_flats}\n"
-            f"use_biases={use_biases}\n"
-            f"batch_size={max_files_per_batch}\n"
-            f"bg_extract={bg_extract}\n"
-            f"drizzle={drizzle}\n"
-            f"drizzle_amount={drizzle_amount}\n"
-            f"filter_roundness={filter_roundness}\n"
-            f"filter_fwhm={filter_fwhm}\n"
-            f"filter_bg={filter_bg}\n"
-            f"filter_star_count={filter_star_count}\n"
-            f"pixel_fraction={pixel_fraction}\n"
-            f"feather={feather}\n"
-            f"feather_amount={feather_amount}\n"
-            f"clean_up_files={clean_up_files}\n"
-            f"compression={self.compression_checkbox.isChecked()}\n"
-            f"build={VERSION}-{BUILD}",
-            LogColor.BLUE,
-        )
-        self.siril.cmd("close")
-
-        if self.fits_files_count == 0:
-            QMessageBox.warning(
-                self,
-                "No FITS Files Found",
-                "No FITS files found in the lights directory. Please add files and try again.",
-            )
-            return
-
-        # Check if old processing directories exist
-        if (
-            os.path.exists("sessions")
-            or os.path.exists("process")
-            or os.path.exists("final_stack")
-        ):
-            msg = "Old processing directories found. Do you want to delete them and start fresh?"
-            answer = QMessageBox.question(
-                self,
-                "Old Processing Files Found",
-                msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                try:
-                    if os.path.exists("sessions"):
-                        shutil.rmtree("sessions")
-                        self.siril.log(
-                            "Cleaned up old sessions directories", LogColor.BLUE
-                        )
-                    if os.path.exists("process"):
-                        shutil.rmtree("process")
-                        self.siril.log(
-                            "Cleaned up old process directory", LogColor.BLUE
-                        )
-                    if os.path.exists("final_stack"):
-                        shutil.rmtree("final_stack")
-                        self.siril.log(
-                            "Cleaned up old final_stack directory", LogColor.BLUE
-                        )
-                except Exception as e:
-                    self.siril.log(
-                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.",
-                        LogColor.RED,
-                    )
-                    QMessageBox.warning(
-                        self,
-                        "Error",
-                        "Error cleaning up old processing files in one or more of these directories: sessions, process, final_stack.\nPlease remove them manually and try again.\n\n",
-                    )
-                    return
-            else:
-                self.siril.log(
-                    "User chose to preserve old processing files. Stopping script.",
-                    LogColor.BLUE,
-                )
-                return
-        # Check files - if more than 2048, batch them:
-        self.drizzle_status = drizzle
-        self.drizzle_factor = drizzle_amount
-
-        # TODO: Stack calibration frames and copy to the various batch dirs
-        if use_biases:
-            converted = self.convert_files("biases")
-            if converted:
-                self.calibration_stack("biases")
-            if clean_up_files:
-                self.clean_up("biases")
-        if use_flats:
-            converted = self.convert_files("flats")
-            if converted:
-                self.calibration_stack("flats")
-            if clean_up_files:
-                self.clean_up("flats")
-        if use_darks:
-            converted = self.convert_files("darks")
-            if converted:
-                self.calibration_stack("darks")
-            if clean_up_files:
-                self.clean_up("darks")
-
-        # Check files in working directory/lights.
-        # create sub folders with more than 2048 divided by equal amounts
-
-        lights_directory = "lights"
-
-        # Get list of all files in the lights directory
-        all_files = [
-            name
-            for name in os.listdir(lights_directory)
-            if os.path.isfile(os.path.join(lights_directory, name))
-        ]
-        num_files = len(all_files)
-        is_windows = sys.platform.startswith("win")
-
-        # only one batch will be run if less than max_files_per_batch OR not windows.
-        if num_files <= max_files_per_batch:  # or not is_windows:
-            self.siril.log(
-                f"{num_files} files found in the lights directory which is less than or equal to {max_files_per_batch} files allowed per batch - no batching needed.",
-                LogColor.BLUE,
-            )
-            file_name = self.batch(
-                output_name=lights_directory,
-                use_darks=use_darks,
-                use_flats=use_flats,
-                use_biases=use_biases,
-                bg_extract=bg_extract,
-                drizzle=drizzle,
-                drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction,
-                filter_roundness=filter_roundness,
-                filter_fwhm=filter_fwhm,
-                feather=feather,
-                feather_amount=feather_amount,
-                clean_up_files=clean_up_files,
-            )
-
-            self.load_image(image_name=file_name)
-        else:
-            num_batches = math.ceil(num_files / max_files_per_batch)
-
-            self.siril.log(
-                f"{num_files} files found in the lights directory, splitting into {num_batches} batches...",
-                LogColor.BLUE,
-            )
-
-            # Ensure temp folders exist and are empty
-            for i in range(num_batches):
-                batch_dir = f"batch_lights{i+1}"
-                os.makedirs(batch_dir, exist_ok=True)
-                # Optionally clean out existing files:
-                for f in os.listdir(batch_dir):
-                    os.remove(os.path.join(batch_dir, f))
-
-            # Split and create symlinks/copies of files into batches
-            for i, filename in enumerate(all_files):
-                batch_index = i // max_files_per_batch
-                batch_dir = f"batch_lights{batch_index + 1}"
-                src_path = os.path.join(lights_directory, filename)
-                dest_path = os.path.join(batch_dir, filename)
-
-                # try:
-                #     # Try creating symlink first
-                #     os.symlink(src_path, dest_path)
-                # except (OSError, NotImplementedError):
-                #     # Fall back to copying if symlink fails
-                shutil.copy2(src_path, dest_path)
-
-            # Send each of the new lights dir into batch directory
-            for i in range(num_batches):
-                batch_dir = f"batch_lights{i+1}"
-                self.siril.log(f"Processing batch: {batch_dir}", LogColor.BLUE)
-                self.batch(
-                    output_name=batch_dir,
-                    use_darks=use_darks,
-                    use_flats=use_flats,
-                    use_biases=use_biases,
-                    bg_extract=bg_extract,
-                    drizzle=drizzle,
-                    drizzle_amount=drizzle_amount,
-                    pixel_fraction=pixel_fraction,
-                    filter_roundness=filter_roundness,
-                    filter_fwhm=filter_fwhm,
-                    feather=feather,
-                    feather_amount=feather_amount,
-                    clean_up_files=clean_up_files,
-                )
-            self.siril.log("Batching complete.", LogColor.GREEN)
-
-            # Create batched_lights directory
-            final_stack_seq_name = "final_stack"
-            batch_lights = "batch_lights"
-            os.makedirs(final_stack_seq_name, exist_ok=True)
-            source_dir = os.path.join(os.getcwd(), "process")
-            # Move batch result files into batched_lights
-            target_subdir = os.path.join(os.getcwd(), final_stack_seq_name)
-
-            # Create the target subdirectory if it doesn't exist
-            os.makedirs(target_subdir, exist_ok=True)
-
-            # Loop through all files in the source directory
-            for filename in os.listdir(source_dir):
-                if f"{batch_lights}" in filename:
-                    full_src_path = os.path.join(source_dir, filename)
-                    full_dst_path = os.path.join(target_subdir, filename)
-
-                # Only move files, skip directories
-                # Should only moved the final batched files
-                if os.path.isfile(full_src_path):
-                    shutil.move(full_src_path, full_dst_path)
-                    self.siril.log(f"Moved: {filename}", LogColor.BLUE)
-
-            # Clean up temp_lightsX directories
-            for i in range(num_batches):
-                batch_dir = f"{batch_lights}{i+1}"
-                shutil.rmtree(batch_dir, ignore_errors=True)
-
-            self.convert_files(final_stack_seq_name)
-            self.seq_plate_solve(seq_name=final_stack_seq_name)
-            # turn off drizzle for this
-            self.drizzle_status = False
-            # Force filters to 3 sigma
-            self.seq_apply_reg(
-                seq_name=final_stack_seq_name,
-                drizzle_amount=drizzle_amount,
-                pixel_fraction=pixel_fraction,
-                filter_roundness=100.0,
-                filter_fwhm=100.0,
-                filter_bg=100.0,
-                filter_star_count=100.0,
-            )
-            self.clean_up(prefix=final_stack_seq_name)
-            registered_final_stack_seq_name = f"r_{final_stack_seq_name}"
-            # final stack needs feathering and amount
-            self.drizzle_status = drizzle  # Turn drizzle back to selected option
-            self.seq_stack(
-                seq_name=registered_final_stack_seq_name,
-                feather=True,
-                rejection=False,
-                feather_amount=100,
-                output_name="final_result",
-                overlap_norm=True,
-            )
-            self.load_image(image_name="final_result")
-
-            # cleanup final_stack directory
-            # shutil.rmtree(final_stack_seq_name, ignore_errors=True)
-            if clean_up_files:
-                self.clean_up(prefix=registered_final_stack_seq_name)
-
-            # Go back to working dir
-            self.siril.cmd("cd", "../")
-
-            # Save og image in WD - might have drizzle factor in name
-            file_name = self.save_image("_batched")
-            self.load_image(image_name=file_name)
-
-        # Spcc as a last step
-        if do_spcc:
-            img = self.spcc(
-                oscsensor=telescope,
-                filter=filter,
-                catalog=catalog,
-                whiteref="Average Spiral Galaxy",
-            )
-
-            # self.autostretch(do_spcc=do_spcc)
-            if drizzle:
-                img = os.path.basename(img) + self.fits_extension
-            else:
-                img = os.path.basename(img)
-            self.load_image(
-                image_name=os.path.basename(img)
-            )  # Load either og or spcc image
-        
-        # Get some stacking deets
-        self.stacking_details()
-        # self.clean_up()
-
-        self.siril.cmd("setcompress", "0")  # Disable compression after processing
-
-        self.siril.log(
-            f"Finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            LogColor.GREEN,
-        )
-        self.siril.log(
-            """
-        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
-        The author of this script is Nazmus Nasir (Naztronomy).
-        Website: https://www.Naztronomy.com 
-        YouTube: https://www.YouTube.com/Naztronomy 
-        Discord: https://discord.gg/yXKqrawpjr
-        Patreon: https://www.patreon.com/c/naztronomy
-        Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
-        """,
-            LogColor.BLUE,
-        )
-        self.close_dialog()
 
 
 def main():
