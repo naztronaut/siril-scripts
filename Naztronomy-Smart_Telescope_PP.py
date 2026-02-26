@@ -94,7 +94,7 @@ import time
 import sirilpy as s
 from datetime import datetime
 import json
-
+import re
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
 from PyQt6.QtWidgets import (
@@ -142,6 +142,7 @@ TELESCOPES = [
     "Unistellar eVscope 1 / eQuinox 1",
     "Unistellar eVscope 2 / eQuinox 2",
     "Unistellar Odyssey / Odyssey Pro",
+    "Vespera Pro"
 ]
 
 FILTER_OPTIONS_MAP = {
@@ -155,6 +156,7 @@ FILTER_OPTIONS_MAP = {
     "Unistellar eVscope 1 / eQuinox 1": ["No Filter (Broadband)"],
     "Unistellar eVscope 2 / eQuinox 2": ["No Filter (Broadband)"],
     "Unistellar Odyssey / Odyssey Pro": ["No Filter (Broadband)"],
+    "Vespera Pro": ["No Filter", "CLS", "Dual-Band"],
 }
 
 FILTER_COMMANDS_MAP = {
@@ -198,6 +200,21 @@ FILTER_COMMANDS_MAP = {
     "Celestron Origin": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
     },
+
+    "Vespera Pro": {
+        "No Filter": ["-oscfilter=UV/IR Block"],
+        "CLS": ["-oscfilter=Vaonis CLS"],
+        "Dual-Band": [
+            "-narrowband",
+            "-rwl=656.3",
+            "-rbw=13",
+            "-gwl=500.70",
+            "-gbw=12",
+            "-bwl=500.70",
+            "-bbw=12",
+        ],
+    },
+
 }
 
 
@@ -467,6 +484,7 @@ class PreprocessingInterface(QMainWindow):
             "eVscope v1.0": "Unistellar eVscope 1 / eQuinox 1",
             "eVscope v2.0": "Unistellar eVscope 2 / eQuinox 2",
             "odyssey": "Unistellar Odyssey / Odyssey Pro",
+            "Vespera Pro": "Vespera Pro",
         }
 
         try:
@@ -594,6 +612,112 @@ class PreprocessingInterface(QMainWindow):
                 fits.writeto(os.path.join(dir, file), data, hdr, overwrite=True)
                 # print(file)
         self.siril.log("Unistellar headers fixed!", LogColor.GREEN)
+
+    def query_simbad_coordinates(self, dso_name):
+        """
+        Query SIMBAD for the target name and return RA/DEC in decimal degrees.
+        """
+        import urllib.parse, urllib.request
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+
+        try:
+            base_url = "https://simbad.cds.unistra.fr/simbad/sim-id"
+            params = {"output.format": "ASCII", "Ident": dso_name}
+            url = f"{base_url}?{urllib.parse.urlencode(params)}"
+
+            #self.siril.log(f"SIMABA IRL:{url}", LogColor.BLUE)
+
+            with urllib.request.urlopen(url, timeout=30) as response:
+                data = response.read().decode("utf-8")
+
+            ra_deg = dec_deg = None
+            for line in data.splitlines():
+                if line.startswith("Coordinates(ICRS,ep=J2000,eq=2000):"):
+                    _, coord_part = line.split(":", 1)        
+                    parts = coord_part.strip().split()
+
+                    m = re.search(r"(\d+)\s+(\d+)\s+([\d.]+)\s+([+-]?\d+)\s+(\d+)\s+([\d.]+)", coord_part)
+                    if not m:
+                        raise ValueError("Could not find six numeric parts in the ICRS line")
+
+                    ra_h, ra_m, ra_s, dec_d, dec_m, dec_s = m.groups()
+
+                    # 3. Convert to decimal degrees
+                    ra_deg = 15.0 * (float(ra_h) + float(ra_m)/60.0 + float(ra_s)/3600.0)
+
+                    sign = -1 if dec_d.strip().startswith('-') else 1
+                    dec_deg = sign * (abs(float(dec_d)) + float(dec_m)/60.0 + float(dec_s)/3600.0)
+
+                    return ra_deg, dec_deg
+
+            if ra_deg is None or dec_deg is None:
+                self.siril.log(f"SIMBAD did not return coordinates for {dso_name}",
+                            LogColor.SALMON)
+                return None
+
+            self.siril.log(f"SIMBAD coordinates for {dso_name}: "
+                        f"RA={ra_deg:.12f} DEC={dec_deg:.12f}",
+                        LogColor.GREEN)
+            return ra_deg, dec_deg
+
+        except Exception as e:
+            self.siril.log(f"SIMBAD query error: {e}", LogColor.SALMON)
+            return None
+        
+    def fixVesperaProHeaders(self, dir_name):
+        """
+        Enrich every FITS file in the given directory with:
+            * RA and DEC (decimal degrees) from SIMBAD
+            * TELESCOP = "Vespera Pro"
+        """
+        self.siril.log("Fixing Vespera Pro headers", LogColor.BLUE)
+
+        dir_path = os.path.join(self.current_working_directory, dir_name)
+        if not os.path.isdir(dir_path):
+            self.siril.log(f"Directory {dir_path} does not exist", LogColor.SALMON)
+            return
+
+        for file_name in os.listdir(dir_path):
+            if not (file_name.upper().endswith(".FITS") or file_name.upper().endswith(".FIT")):
+                continue
+
+            file_path = os.path.join(dir_path, file_name)
+
+            try:
+                with fits.open(file_path) as hdul:
+                    hdr = hdul[0].header
+
+                    # ---- 1. Get the DSO name ------------------------------------
+                    dso_name = hdr.get("OBJECT", "").strip()
+
+                    # ---- 2. Query SIMBAD for coordinates -----------------------
+                    ra_deg, dec_deg = None, None
+                    if dso_name:
+                        coords = self.query_simbad_coordinates(dso_name)
+                        if coords:
+                            ra_deg, dec_deg = coords
+
+                    # ---- 3. Update header ---------------------------------------
+                    if ra_deg is not None and dec_deg is not None:
+                        hdr.set("RA", ra_deg,
+                                comment="Image center Right Ascension / [deg]")
+                        hdr.set("DEC", dec_deg,
+                                comment="Image center Declination / [deg]")
+                    hdr.set("FOCALLEN", 250.0)  # add a FOCALLEN header
+                    hdr.set("XPIXSZ", 2.0)  # add a XPIXSZ header
+                    hdr.set("YPIXSZ", 2.0)  # add a YPIXSZ header
+
+                    # Ensure telescope header is present
+                    hdr.set("TELESCOP", "Vespera Pro")
+
+                    # Write back the updated header (keeping data unchanged)
+                    fits.writeto(file_path, hdul[0].data, hdr, overwrite=True)
+
+            except Exception as e:
+                self.siril.log(f"Failed to update {file_name}: {e}", LogColor.SALMON)
+
+        self.siril.log("Vespera Pro headers fixed!", LogColor.GREEN)
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -1187,6 +1311,8 @@ class PreprocessingInterface(QMainWindow):
             recoded_sensor = "Sony IMX415"  # very similar to IMX347
         elif "Odyssey" in oscsensor:
             recoded_sensor = "Sony IMX415"
+        elif "Vespera Pro" in oscsensor:
+            recoded_sensor = "Sony IMX676"
         else:
             recoded_sensor = oscsensor
 
@@ -1335,7 +1461,7 @@ class PreprocessingInterface(QMainWindow):
             self.filter_combo.setCurrentText(new_options[0])
 
         # Disable SPCC for Celestron Origin
-        if selected_scope == "Celestron Origin":
+        if selected_scope in ("Celestron Origin"):
             self.spcc_checkbox.setChecked(False)
             self.spcc_checkbox.setEnabled(False)
             self.siril.log(
@@ -2527,6 +2653,9 @@ class PreprocessingInterface(QMainWindow):
 
         if self.chosen_telescope.startswith("Unistellar"):
             self.fixUnistellarHeaders(dir_name=output_name)
+
+        if self.chosen_telescope.startswith("Vespera Pro"):
+            self.fixVesperaProHeaders(dir_name=output_name)
 
         # Output name is actually the name of the batched working directory
         self.convert_files(dir_name=output_name)
