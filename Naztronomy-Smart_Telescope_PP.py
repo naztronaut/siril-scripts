@@ -626,8 +626,6 @@ class PreprocessingInterface(QMainWindow):
             params = {"output.format": "ASCII", "Ident": dso_name}
             url = f"{base_url}?{urllib.parse.urlencode(params)}"
 
-            #self.siril.log(f"SIMABA IRL:{url}", LogColor.BLUE)
-
             with urllib.request.urlopen(url, timeout=30) as response:
                 data = response.read().decode("utf-8")
 
@@ -643,7 +641,7 @@ class PreprocessingInterface(QMainWindow):
 
                     ra_h, ra_m, ra_s, dec_d, dec_m, dec_s = m.groups()
 
-                    # 3. Convert to decimal degrees
+                    # Convert to decimal degrees
                     ra_deg = 15.0 * (float(ra_h) + float(ra_m)/60.0 + float(ra_s)/3600.0)
 
                     sign = -1 if dec_d.strip().startswith('-') else 1
