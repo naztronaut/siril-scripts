@@ -517,6 +517,7 @@ class PreprocessingInterface(QMainWindow):
                 creator = header.get("CREATOR", "")
                 camera = header.get("CAMERA", "")
                 origin = header.get("ORIGIN", "")
+                instrume = header.get("INSTRUME", "NULL")
 
                 # Try to map telescope name, using startswith for partial matches
                 mapped_telescope = "ZWO Seestar S30"  # default
@@ -536,25 +537,23 @@ class PreprocessingInterface(QMainWindow):
                         #  print(f"Matched FITS header to '{mapped_telescope}' using key '{telescope_local_name}'")
                         break
 
-                if origin.startswith("Unistellar"):
-                    instrume = header.get("INSTRUME", "NULL")
-
-                    # New rule for Vespera Pro
-                    if instrume.lower().startswith("vesperapro"):
+                # New rule for Vespera Pro
+                if instrume.lower().startswith("vesperapro"):
                         mapped_telescope = "Vespera Pro"
                         found_match = True
-                    else:
-                        # Existing Unistellar instruments mapping
-                        unistellar_instruments = {
-                            "IMX224": "Unistellar eVscope 1 / eQuinox 1",
-                            "IMX347": "Unistellar eVscope 2 / eQuinox 2",
-                            "IMX415": "Unistellar Odyssey / Odyssey Pro",
-                        }
-                        for instrument, name in unistellar_instruments.items():
-                            if instrume.startswith(instrument):
-                                mapped_telescope = name
-                                found_match = True
-                                break
+
+                if origin.startswith("Unistellar"):
+                    # Dict for Unistellar
+                    unistellar_instruments = {
+                        "IMX224": "Unistellar eVscope 1 / eQuinox 1",
+                        "IMX347": "Unistellar eVscope 2 / eQuinox 2",
+                        "IMX415": "Unistellar Odyssey / Odyssey Pro",
+                    }
+                    for instrument, name in unistellar_instruments.items():
+                        if instrume.startswith(instrument):
+                            mapped_telescope = name
+                            found_match = True
+                            break
 
                 if not found_match:
                     self.siril.log(
@@ -624,15 +623,11 @@ class PreprocessingInterface(QMainWindow):
         Query SIMBAD for the target name and return RA/DEC in decimal degrees.
         """
         import urllib.parse, urllib.request
-        from astropy.coordinates import SkyCoord
-        import astropy.units as u
 
         try:
             base_url = "https://simbad.cds.unistra.fr/simbad/sim-id"
             params = {"output.format": "ASCII", "Ident": dso_name}
             url = f"{base_url}?{urllib.parse.urlencode(params)}"
-
-            #self.siril.log(f"SIMABA IRL:{url}", LogColor.BLUE)
 
             with urllib.request.urlopen(url, timeout=30) as response:
                 data = response.read().decode("utf-8")
@@ -649,11 +644,15 @@ class PreprocessingInterface(QMainWindow):
 
                     ra_h, ra_m, ra_s, dec_d, dec_m, dec_s = m.groups()
 
-                    # 3. Convert to decimal degrees
+                    # Convert to decimal degrees
                     ra_deg = 15.0 * (float(ra_h) + float(ra_m)/60.0 + float(ra_s)/3600.0)
 
                     sign = -1 if dec_d.strip().startswith('-') else 1
                     dec_deg = sign * (abs(float(dec_d)) + float(dec_m)/60.0 + float(dec_s)/3600.0)
+                    
+                    self.siril.log(f"SIMBAD coordinates for {dso_name}: "
+                        f"RA={ra_deg:.12f} DEC={dec_deg:.12f}",
+                        LogColor.BLUE)
 
                     return ra_deg, dec_deg
 
@@ -661,11 +660,6 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(f"SIMBAD did not return coordinates for {dso_name}",
                             LogColor.SALMON)
                 return None
-
-            self.siril.log(f"SIMBAD coordinates for {dso_name}: "
-                        f"RA={ra_deg:.12f} DEC={dec_deg:.12f}",
-                        LogColor.GREEN)
-            return ra_deg, dec_deg
 
         except Exception as e:
             self.siril.log(f"SIMBAD query error: {e}", LogColor.SALMON)
@@ -684,6 +678,36 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Directory {dir_path} does not exist", LogColor.SALMON)
             return
 
+        # Find the OBJECT value (all files are assumed to have the same one)
+        object_name = None
+        for file_name in os.listdir(dir_path):
+            if not (file_name.upper().endswith(".FITS") or file_name.upper().endswith(".FIT")):
+                continue
+            file_path = os.path.join(dir_path, file_name)
+            try:
+                with fits.open(file_path) as hdul:
+                    object_name = hdul[0].header.get("OBJECT", "").strip()
+                if object_name:
+                    break          # we found the common OBJECT; stop searching
+            except Exception as e:
+                self.siril.log(f"Failed to read {file_name} header: {e}", LogColor.SALMON)
+
+        if not object_name:
+            self.siril.log("No OBJECT header found in any FITS file.", LogColor.SALMON)
+            return
+
+        # Query SIMBAD once for the coordinates
+        try:
+            ra_deg, dec_deg = self.query_simbad_coordinates(object_name)
+        except Exception as e:
+            self.siril.log(f"SIMBAD query failed for '{object_name}': {e}", LogColor.SALMON)
+            return
+
+        if ra_deg is None or dec_deg is None:
+            self.siril.log(f"SIMBAD returned no coordinates for '{object_name}'.", LogColor.SALMON)
+            return
+
+        # Update every FITS file with the cached coordinates
         for file_name in os.listdir(dir_path):
             if not (file_name.upper().endswith(".FITS") or file_name.upper().endswith(".FIT")):
                 continue
@@ -694,30 +718,19 @@ class PreprocessingInterface(QMainWindow):
                 with fits.open(file_path) as hdul:
                     hdr = hdul[0].header
 
-                    # ---- 1. Get the DSO name ------------------------------------
-                    dso_name = hdr.get("OBJECT", "").strip()
+                    # Update RA / DEC
+                    hdr.set("RA", ra_deg,
+                            comment="Image center Right Ascension / [deg]")
+                    hdr.set("DEC", dec_deg,
+                            comment="Image center Declination / [deg]")
 
-                    # ---- 2. Query SIMBAD for coordinates -----------------------
-                    ra_deg, dec_deg = None, None
-                    if dso_name:
-                        coords = self.query_simbad_coordinates(dso_name)
-                        if coords:
-                            ra_deg, dec_deg = coords
-
-                    # ---- 3. Update header ---------------------------------------
-                    if ra_deg is not None and dec_deg is not None:
-                        hdr.set("RA", ra_deg,
-                                comment="Image center Right Ascension / [deg]")
-                        hdr.set("DEC", dec_deg,
-                                comment="Image center Declination / [deg]")
-                    hdr.set("FOCALLEN", 250.0)  # add a FOCALLEN header
-                    hdr.set("XPIXSZ", 2.0)  # add a XPIXSZ header
-                    hdr.set("YPIXSZ", 2.0)  # add a YPIXSZ header
-
-                    # Ensure telescope header is present
+                    # Common header additions
+                    hdr.set("FOCALLEN", 250.0)
+                    hdr.set("XPIXSZ", 2.0)
+                    hdr.set("YPIXSZ", 2.0)
                     hdr.set("TELESCOP", "Vespera Pro")
 
-                    # Write back the updated header (keeping data unchanged)
+                    # Write back the updated header (data unchanged)
                     fits.writeto(file_path, hdul[0].data, hdr, overwrite=True)
 
             except Exception as e:
