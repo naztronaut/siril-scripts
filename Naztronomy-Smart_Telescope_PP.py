@@ -91,6 +91,9 @@ import sys
 import math
 import shutil
 import time
+import glob
+import urllib.parse
+import urllib.request
 import sirilpy as s
 from datetime import datetime
 import json
@@ -142,6 +145,7 @@ TELESCOPES = [
     "Unistellar eVscope 1 / eQuinox 1",
     "Unistellar eVscope 2 / eQuinox 2",
     "Unistellar Odyssey / Odyssey Pro",
+    "Vespera II",
     "Vespera Pro"
 ]
 
@@ -156,6 +160,7 @@ FILTER_OPTIONS_MAP = {
     "Unistellar eVscope 1 / eQuinox 1": ["No Filter (Broadband)"],
     "Unistellar eVscope 2 / eQuinox 2": ["No Filter (Broadband)"],
     "Unistellar Odyssey / Odyssey Pro": ["No Filter (Broadband)"],
+    "Vespera II": ["No Filter", "CLS", "Dual-Band"],
     "Vespera Pro": ["No Filter", "CLS", "Dual-Band"],
 }
 
@@ -199,6 +204,20 @@ FILTER_COMMANDS_MAP = {
     "Dwarf 2": {"Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"]},
     "Celestron Origin": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+    },
+
+    "Vespera II": {
+        "No Filter": ["-oscfilter=UV/IR Block"],
+        "CLS": ["-oscfilter=Vaonis CLS"],
+        "Dual-Band": [
+            "-narrowband",
+            "-rwl=656.3",
+            "-rbw=13",
+            "-gwl=500.70",
+            "-gbw=12",
+            "-bwl=500.70",
+            "-bbw=12",
+        ],
     },
 
     "Vespera Pro": {
@@ -465,6 +484,21 @@ class PreprocessingInterface(QMainWindow):
             if stripped_line:  # Skip empty lines
                 self.siril.log(stripped_line, color)
 
+    def detect_vespera_model_from_naxis(self, fits_path: str):
+        """Return 'Vespera II' or 'Vespera Pro' by reading NAXIS dimensions, or None."""
+        try:
+            with fits.open(fits_path) as hdul:
+                header = hdul[0].header
+                naxis1 = header.get("NAXIS1", 0)
+                naxis2 = header.get("NAXIS2", 0)
+            if naxis1 == 3840 and naxis2 == 2160:
+                return "Vespera II"
+            if naxis1 == 3536 and naxis2 == 3536:
+                return "Vespera Pro"
+        except Exception as e:
+            self.siril.log(f"Could not read NAXIS for Vespera detection: {e}", LogColor.SALMON)
+        return None
+
     def set_telescope_from_fits(self):
         """Reads the first FITS file in lights directory and sets telescope based on TELESCOP header."""
         # Mapping from FITS header values to UI telescope names
@@ -536,11 +570,14 @@ class PreprocessingInterface(QMainWindow):
                         found_match = True
                         #  print(f"Matched FITS header to '{mapped_telescope}' using key '{telescope_local_name}'")
                         break
-
-                # New rule for Vespera Pro
-                if instrume.lower().startswith("vesperapro"):
-                        mapped_telescope = "Vespera Pro"
-                        found_match = True
+                
+                # Vespera INSTRUME detection (takes priority over telescope_map)
+                if instrume.lower().startswith("vesperaII") or instrume.lower().startswith("vespera2"):
+                    mapped_telescope = "Vespera II"
+                    found_match = True
+                elif instrume.lower().startswith("vesperapro"):
+                    mapped_telescope = "Vespera Pro"
+                    found_match = True
 
                 if origin.startswith("Unistellar"):
                     # Dict for Unistellar
@@ -556,9 +593,15 @@ class PreprocessingInterface(QMainWindow):
                             break
 
                 if not found_match:
-                    self.siril.log(
-                        "Couldn't find Telescope info, setting default:", LogColor.BLUE
-                    )
+                    # Last resort: try to identify Vespera model by sensor dimensions
+                    vespera_model = self.detect_vespera_model_from_naxis(first_file)
+                    if vespera_model:
+                        mapped_telescope = vespera_model
+                        found_match = True
+                    else:
+                        self.siril.log(
+                            "Couldn't find Telescope info, setting default:", LogColor.BLUE
+                        )
 
                 self.telescope_combo.setCurrentText(mapped_telescope)
                 self.chosen_telescope = mapped_telescope
@@ -618,125 +661,246 @@ class PreprocessingInterface(QMainWindow):
                 # print(file)
         self.siril.log("Unistellar headers fixed!", LogColor.GREEN)
 
-    def query_simbad_coordinates(self, dso_name):
+    def blind_solve(self, file_path: str):
+        """Load file_path into Siril, run blind plate-solve, return (ra_deg, dec_deg) or None."""
+        try:
+            self.siril.cmd("load", f'"{file_path}"')
+            self.siril.cmd("platesolve", "-localasnet", "-blindpos")
+        except Exception as e:
+            self.siril.log(f"Could not plate solve the image: {e}", LogColor.SALMON)
+            return None
+        try:
+            header = self.siril.get_image_fits_header(return_as="dict")
+            if isinstance(header, dict):
+                ra  = header.get("RA",  0)
+                dec = header.get("DEC", 0)
+                return float(ra), float(dec)
+        except Exception as e:
+            self.siril.log(f"Could not read RA/DEC from header: {e}", LogColor.SALMON)
+        return None
+
+    def find_best_frame(self, seq_name: str, process_dir: str):
+        """Return the path of the frame with the most detected stars, or None."""
+        self.siril.log("Running SEQFINDSTAR to identify best frame...", LogColor.BLUE)
+        try:
+            self.siril.cmd("seqfindstar", seq_name, "-maxstars=100")
+        except Exception as e:
+            self.siril.log(f"SEQFINDSTAR failed: {e} — skipping best-frame selection",
+                           LogColor.SALMON)
+            return None
+
+        lst_files = sorted(glob.glob(os.path.join(process_dir, "cache", f"{seq_name}*.lst")))
+        if not lst_files:
+            self.siril.log("No .lst files found after SEQFINDSTAR — skipping best-frame selection",
+                           LogColor.SALMON)
+            return None
+
+        best_lst   = None
+        best_count = -1
+
+        for lst_path in lst_files:
+            try:
+                with open(lst_path, "r", encoding="utf-8", errors="replace") as fh:
+                    lines = fh.readlines()
+                star_count = sum(
+                    1 for ln in lines
+                    if ln.strip() and not ln.strip().startswith("#")
+                )
+                if star_count > best_count:
+                    best_count = star_count
+                    best_lst   = lst_path
+            except OSError as e:
+                self.siril.log(f"Could not read {lst_path}: {e}", LogColor.SALMON)
+
+        if best_lst is None or best_count <= 0:
+            self.siril.log("All .lst files empty — skipping best-frame selection", LogColor.SALMON)
+            return None
+
+        lst_stem  = os.path.splitext(os.path.basename(best_lst))[0]
+        fits_path = os.path.join(process_dir, f"{lst_stem}.fits")
+        if not os.path.exists(fits_path):
+            fits_path = os.path.join(process_dir, f"{lst_stem}.fit")
+        if not os.path.exists(fits_path):
+            self.siril.log(f"Best frame FITS not found for {lst_stem} — skipping best-frame selection",
+                           LogColor.SALMON)
+            return None
+
+        self.siril.log(f"Best frame: {lst_stem}.fits  ({best_count} stars detected)", LogColor.BLUE)
+        return fits_path
+
+    def get_coordinates(self, lights_dir: str, seq_name: str = None, process_dir: str = None):
+        """Return (ra_deg, dec_deg) via blind solve → SEQFINDSTAR best frame → SIMBAD cascade.
+        Blind solve steps are skipped when the local Gaia astrometry catalogue is unavailable.
         """
-        Query SIMBAD for the target name and return RA/DEC in decimal degrees.
-        """
-        import urllib.parse, urllib.request
+        light_files = sorted(
+            f for f in os.listdir(lights_dir)
+            if f.lower().endswith((".fits", ".fit"))
+        )
+
+        if self.astrometry_gaia_available:
+            # Step 1 — blind solve on first raw light
+            if light_files:
+                first_light = os.path.join(lights_dir, light_files[0])
+                self.siril.log(f"Blind solving first raw light: {light_files[0]}", LogColor.BLUE)
+                coords = self.blind_solve(first_light)
+                if coords:
+                    self.siril.log(f"Blind solve succeeded: RA={coords[0]:.6f}  DEC={coords[1]:.6f}",
+                                   LogColor.BLUE)
+                    return coords
+                self.siril.log("Blind solve failed — trying best frame", LogColor.SALMON)
+            else:
+                self.siril.log("No light files found — skipping blind solve", LogColor.SALMON)
+
+            # Step 2 — blind solve on best frame via SEQFINDSTAR
+            if seq_name and process_dir:
+                best_frame = self.find_best_frame(seq_name, process_dir)
+                if best_frame:
+                    self.siril.log(f"Blind solving best frame: {os.path.basename(best_frame)}",
+                                   LogColor.BLUE)
+                    coords = self.blind_solve(best_frame)
+                    if coords:
+                        self.siril.log(f"Blind solve succeeded: RA={coords[0]:.6f}  DEC={coords[1]:.6f}",
+                                       LogColor.BLUE)
+                        return coords
+                    self.siril.log("Blind solve failed on best frame — trying SIMBAD", LogColor.SALMON)
+                else:
+                    self.siril.log("Best-frame selection unavailable — trying SIMBAD", LogColor.SALMON)
+        else:
+            self.siril.log("Local Gaia catalogue not available — skipping blind solve, trying SIMBAD",
+                           LogColor.SALMON)
+
+        # Step 3 — SIMBAD via OBJECT header
+        if not light_files:
+            self.siril.log("Could not determine coordinates — plate solving will be skipped",
+                           LogColor.SALMON)
+            return None
+
+        try:
+            with fits.open(os.path.join(lights_dir, light_files[0])) as hdul:
+                obj_name = hdul[0].header.get("OBJECT", "").strip()
+        except Exception as e:
+            self.siril.log(f"Could not read OBJECT header: {e}", LogColor.SALMON)
+            return None
+
+        if not obj_name:
+            self.siril.log("No OBJECT header — cannot query SIMBAD", LogColor.SALMON)
+            return None
 
         try:
             base_url = "https://simbad.cds.unistra.fr/simbad/sim-id"
-            params = {"output.format": "ASCII", "Ident": dso_name}
-            url = f"{base_url}?{urllib.parse.urlencode(params)}"
-
+            url = f"{base_url}?{urllib.parse.urlencode({'output.format': 'ASCII', 'Ident': obj_name})}"
             with urllib.request.urlopen(url, timeout=30) as response:
                 data = response.read().decode("utf-8")
 
-            ra_deg = dec_deg = None
             for line in data.splitlines():
                 if line.startswith("Coordinates(ICRS,ep=J2000,eq=2000):"):
-                    _, coord_part = line.split(":", 1)        
-                    parts = coord_part.strip().split()
-
-                    m = re.search(r"(\d+)\s+(\d+)\s+([\d.]+)\s+([+-]?\d+)\s+(\d+)\s+([\d.]+)", coord_part)
+                    _, coord_part = line.split(":", 1)
+                    m = re.search(
+                        r"(\d+)\s+(\d+)\s+([\d.]+)\s+([+-]?\d+)\s+(\d+)\s+([\d.]+)",
+                        coord_part,
+                    )
                     if not m:
-                        raise ValueError("Could not find six numeric parts in the ICRS line")
-
+                        break
                     ra_h, ra_m, ra_s, dec_d, dec_m, dec_s = m.groups()
-
-                    # Convert to decimal degrees
-                    ra_deg = 15.0 * (float(ra_h) + float(ra_m)/60.0 + float(ra_s)/3600.0)
-
-                    sign = -1 if dec_d.strip().startswith('-') else 1
-                    dec_deg = sign * (abs(float(dec_d)) + float(dec_m)/60.0 + float(dec_s)/3600.0)
-                    
-                    self.siril.log(f"SIMBAD coordinates for {dso_name}: "
-                        f"RA={ra_deg:.12f} DEC={dec_deg:.12f}",
-                        LogColor.BLUE)
-
+                    ra_deg  = 15.0 * (float(ra_h) + float(ra_m) / 60.0 + float(ra_s) / 3600.0)
+                    sign    = -1 if dec_d.strip().startswith("-") else 1
+                    dec_deg = sign * (abs(float(dec_d)) + float(dec_m) / 60.0 + float(dec_s) / 3600.0)
+                    self.siril.log(
+                        f"SIMBAD succeeded for '{obj_name}': RA={ra_deg:.6f}  DEC={dec_deg:.6f}",
+                        LogColor.BLUE,
+                    )
                     return ra_deg, dec_deg
 
-            if ra_deg is None or dec_deg is None:
-                self.siril.log(f"SIMBAD did not return coordinates for {dso_name}",
-                            LogColor.SALMON)
-                return None
-
+            self.siril.log(f"SIMBAD returned no coordinates for '{obj_name}'", LogColor.SALMON)
         except Exception as e:
             self.siril.log(f"SIMBAD query error: {e}", LogColor.SALMON)
-            return None
-        
-    def fixVesperaProHeaders(self, dir_name):
-        """
-        Enrich every FITS file in the given directory with:
-            * RA and DEC (decimal degrees) from SIMBAD
-            * TELESCOP = "Vespera Pro"
-        """
-        self.siril.log("Fixing Vespera Pro headers", LogColor.BLUE)
 
+        self.siril.log("Could not determine coordinates — plate solving will be skipped",
+                       LogColor.SALMON)
+        return None
+
+    # Vespera model specs — used by fixVesperaHeaders to patch FITS headers
+    VESPERA_SPECS = {
+        "Vespera II":  {"FOCALLEN": 200.0, "XPIXSZ": 2.9, "YPIXSZ": 2.9, "TELESCOP": "Vespera II"},
+        "Vespera Pro": {"FOCALLEN": 250.0, "XPIXSZ": 2.0, "YPIXSZ": 2.0, "TELESCOP": "Vespera Pro"},
+    }
+
+    def fixVesperaHeaders(self, dir_name: str, coords=None):
+        """Enrich every FITS file in dir_name with RA/DEC, focal length, pixel
+        size, and TELESCOP for both Vespera II and Vespera Pro.
+        coords must be resolved by the caller via get_coordinates() *before*
+        calling this method, so the FITS files are still in their original
+        state when the blind solve runs.
+        Also sets self.target_coords for use by seq_plate_solve.
+        """
         dir_path = os.path.join(self.current_working_directory, dir_name)
         if not os.path.isdir(dir_path):
-            self.siril.log(f"Directory {dir_path} does not exist", LogColor.SALMON)
+            self.siril.log(f"Directory not found: {dir_path}", LogColor.SALMON)
             return
 
-        # Find the OBJECT value (all files are assumed to have the same one)
-        object_name = None
+        # Detect model from INSTRUME header of first readable FITS file
+        model    = None
+        instrume = ""
+        for file_name in sorted(os.listdir(dir_path)):
+            if not file_name.lower().endswith((".fits", ".fit")):
+                continue
+            try:
+                with fits.open(os.path.join(dir_path, file_name)) as hdul:
+                    instrume = hdul[0].header.get("INSTRUME", "").lower()
+                break
+            except Exception:
+                continue
+
+        if instrume.startswith("vesperaii") or instrume.startswith("vespera2"):
+            model = "Vespera II"
+        elif instrume.startswith("vesperapro"):
+            model = "Vespera Pro"
+        else:
+            # INSTRUME absent or unrecognised — fall back to sensor dimensions
+            first_fits = next(
+                (os.path.join(dir_path, f) for f in sorted(os.listdir(dir_path))
+                 if f.lower().endswith((".fits", ".fit"))),
+                None,
+            )
+            model = self.detect_vespera_model_from_naxis(first_fits) if first_fits else None
+            if model:
+                self.siril.log(f"Vespera model identified by sensor dimensions: {model}",
+                               LogColor.BLUE)
+            else:
+                model = self.chosen_telescope if self.chosen_telescope in self.VESPERA_SPECS else "Vespera Pro"
+                self.siril.log(f"Could not identify Vespera model — using UI selection: {model}",
+                               LogColor.SALMON)
+
+        specs = self.VESPERA_SPECS[model]
+        self.siril.log(f"Fixing {model} headers in '{dir_name}'", LogColor.BLUE)
+
+        if coords:
+            ra_deg, dec_deg = coords
+            self.target_coords = f"{ra_deg},{dec_deg}"
+        else:
+            ra_deg = dec_deg = None
+            self.siril.log("No coordinates resolved — RA/DEC headers will not be set",
+                           LogColor.SALMON)
+
+        # Patch every FITS file
         for file_name in os.listdir(dir_path):
-            if not (file_name.upper().endswith(".FITS") or file_name.upper().endswith(".FIT")):
+            if not file_name.lower().endswith((".fits", ".fit")):
                 continue
             file_path = os.path.join(dir_path, file_name)
             try:
-                with fits.open(file_path) as hdul:
-                    object_name = hdul[0].header.get("OBJECT", "").strip()
-                if object_name:
-                    break          # we found the common OBJECT; stop searching
-            except Exception as e:
-                self.siril.log(f"Failed to read {file_name} header: {e}", LogColor.SALMON)
-
-        if not object_name:
-            self.siril.log("No OBJECT header found in any FITS file.", LogColor.SALMON)
-            return
-
-        # Query SIMBAD once for the coordinates
-        try:
-            ra_deg, dec_deg = self.query_simbad_coordinates(object_name)
-        except Exception as e:
-            self.siril.log(f"SIMBAD query failed for '{object_name}': {e}", LogColor.SALMON)
-            return
-
-        if ra_deg is None or dec_deg is None:
-            self.siril.log(f"SIMBAD returned no coordinates for '{object_name}'.", LogColor.SALMON)
-            return
-
-        # Update every FITS file with the cached coordinates
-        for file_name in os.listdir(dir_path):
-            if not (file_name.upper().endswith(".FITS") or file_name.upper().endswith(".FIT")):
-                continue
-
-            file_path = os.path.join(dir_path, file_name)
-
-            try:
-                with fits.open(file_path) as hdul:
+                with fits.open(file_path, mode="update") as hdul:
                     hdr = hdul[0].header
-
-                    # Update RA / DEC
-                    hdr.set("RA", ra_deg,
-                            comment="Image center Right Ascension / [deg]")
-                    hdr.set("DEC", dec_deg,
-                            comment="Image center Declination / [deg]")
-
-                    # Common header additions
-                    hdr.set("FOCALLEN", 250.0)
-                    hdr.set("XPIXSZ", 2.0)
-                    hdr.set("YPIXSZ", 2.0)
-                    hdr.set("TELESCOP", "Vespera Pro")
-
-                    # Write back the updated header (data unchanged)
-                    fits.writeto(file_path, hdul[0].data, hdr, overwrite=True)
-
+                    if ra_deg is not None:
+                        hdr.set("RA",  ra_deg,  "Image center Right Ascension [deg]")
+                        hdr.set("DEC", dec_deg, "Image center Declination [deg]")
+                    hdr.set("FOCALLEN", specs["FOCALLEN"])
+                    hdr.set("XPIXSZ",   specs["XPIXSZ"])
+                    hdr.set("YPIXSZ",   specs["YPIXSZ"])
+                    hdr.set("TELESCOP", specs["TELESCOP"])
             except Exception as e:
                 self.siril.log(f"Failed to update {file_name}: {e}", LogColor.SALMON)
 
-        self.siril.log("Vespera Pro headers fixed!", LogColor.GREEN)
+        self.siril.log(f"{model} headers fixed!", LogColor.GREEN)
 
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
@@ -822,6 +986,11 @@ class PreprocessingInterface(QMainWindow):
             pixel_size = 1.45
             args.append(f"-focal={focal_len}")
             args.append(f"-pixelsize={pixel_size}")
+        elif self.chosen_telescope in ("Vespera II", "Vespera Pro") and self.target_coords:
+            specs = self.VESPERA_SPECS[self.chosen_telescope]
+            args.append(self.target_coords)
+            args.append(f"-focal={int(specs['FOCALLEN'])}")
+            args.append(f"-pixelsize={specs['XPIXSZ']}")
 
         args.extend(
             ["-nocache", "-force", "-disto=ps_distortion", "-order=4", "-radius=25"]
@@ -1330,6 +1499,8 @@ class PreprocessingInterface(QMainWindow):
             recoded_sensor = "Sony IMX415"  # very similar to IMX347
         elif "Odyssey" in oscsensor:
             recoded_sensor = "Sony IMX415"
+        elif "Vespera II" in oscsensor:
+            recoded_sensor = "Sony IMX462"
         elif "Vespera Pro" in oscsensor:
             recoded_sensor = "Sony IMX676"
         else:
@@ -2673,8 +2844,11 @@ class PreprocessingInterface(QMainWindow):
         if self.chosen_telescope.startswith("Unistellar"):
             self.fixUnistellarHeaders(dir_name=output_name)
 
-        if self.chosen_telescope.startswith("Vespera Pro"):
-            self.fixVesperaProHeaders(dir_name=output_name)
+        if self.chosen_telescope in ("Vespera II", "Vespera Pro"):
+            lights_dir = os.path.join(self.current_working_directory, output_name)
+            coords = self.get_coordinates(lights_dir=lights_dir)
+            self.siril.cmd("close")
+            self.fixVesperaHeaders(dir_name=output_name, coords=coords)
 
         # Output name is actually the name of the batched working directory
         self.convert_files(dir_name=output_name)
