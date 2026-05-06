@@ -779,11 +779,21 @@ class PreprocessingInterface(QMainWindow):
                                 black_indices.append(len(all_frames_info))
                         else:
                             self.siril.log(
-                                f"{filename}: Unexpected data shape {data.shape if data is not None else 'None'}",
+                                f"WARNING: Skipping {filename} — unexpected data shape "
+                                f"{data.shape if data is not None else 'None'}",
                                 LogColor.SALMON,
                             )
+                            all_frames_info.append((filename, None))
+                            black_frames.append(filename)
+                            black_indices.append(len(all_frames_info))
                 except Exception as e:
-                    self.siril.log(f"Error reading {filename}: {e}", LogColor.RED)
+                    self.siril.log(
+                        f"WARNING: Skipping {filename} — could not read file: {e}",
+                        LogColor.RED,
+                    )
+                    all_frames_info.append((filename, None))
+                    black_frames.append(filename)
+                    black_indices.append(len(all_frames_info))
 
         self.siril.log(f"Following files are black: {black_frames}", LogColor.SALMON)
         self.siril.log(
@@ -833,6 +843,7 @@ class PreprocessingInterface(QMainWindow):
             except (s.DataError, s.CommandError, s.SirilError) as e:
                 self.siril.log(f"Command execution failed: {e}", LogColor.RED)
                 self.close_dialog()
+                return
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
         # Copy the stacked calibration files to ../masters directory
@@ -954,33 +965,38 @@ class PreprocessingInterface(QMainWindow):
         output_norm=True,
         stack_weighted=False,
         weighting_method="Weighted FWHM",
+        norm_mode="addscale",
     ):
         """Stack it all, and feather if it's provided"""
         out = "result" if output_name is None else output_name
 
-        cmd_args = [
-            "stack",
-            f"{seq_name}",
-            " rej 3 3" if rejection else " rej none",
-            "-norm=addscale",
-            "-output_norm" if output_norm else "",
-            "-overlap_norm" if overlap_norm else "",
-            "-rgb_equal",
-            "-maximize",
-            "-filter-included",
-            "-32b",
-            f"-out={out}",
-        ]
-        if stack_weighted:
-            weighting_map = {
-                "Number of Stars": "nbstars",
-                "Weighted FWHM": "wfwhm",
-                "Noise": "noise",
-            }
-            weight_option = weighting_map.get(weighting_method, "wfwhm")
-            cmd_args.append(f"-weight={weight_option}")
-        if feather:
-            cmd_args.append(f"-feather={feather_amount}")
+        def build_cmd_args(norm):
+            args = [
+                "stack",
+                f"{seq_name}",
+                " rej 3 3" if rejection else " rej none",
+                f"-norm={norm}",
+                "-output_norm" if output_norm else "",
+                "-overlap_norm" if overlap_norm else "",
+                "-rgb_equal",
+                "-maximize",
+                "-filter-included",
+                "-32b",
+                f"-out={out}",
+            ]
+            if stack_weighted:
+                weighting_map = {
+                    "Number of Stars": "nbstars",
+                    "Weighted FWHM": "wfwhm",
+                    "Noise": "noise",
+                }
+                weight_option = weighting_map.get(weighting_method, "wfwhm")
+                args.append(f"-weight={weight_option}")
+            if feather:
+                args.append(f"-feather={feather_amount}")
+            return args
+
+        cmd_args = build_cmd_args(norm_mode)
 
         self.siril.log(
             f"Running seq_stack with arguments:\n"
@@ -996,8 +1012,29 @@ class PreprocessingInterface(QMainWindow):
         try:
             self.siril.cmd(*cmd_args)
         except (s.DataError, s.CommandError, s.SirilError) as e:
-            self.siril.log(f"Stacking failed: {e}", LogColor.RED)
-            self.close_dialog()
+            if norm_mode != "none":
+                # Drizzle mosaic frames with >50% zero padding cause the global
+                # median to be 0, which breaks addscale normalization (Siril
+                # reports "Generic error" in the exception but logs
+                # "Normalization failed"). Fall back to no normalization so
+                # the stack can still complete.
+                self.siril.log(
+                    f"Stacking failed with norm={norm_mode}: {e}. "
+                    f"Retrying without normalization (this is expected for "
+                    f"drizzle mosaic frames with large zero-padded borders)...",
+                    LogColor.SALMON,
+                )
+                fallback_args = build_cmd_args("none")
+                try:
+                    self.siril.cmd(*fallback_args)
+                except (s.DataError, s.CommandError, s.SirilError) as e2:
+                    self.siril.log(f"Stacking failed on retry: {e2}", LogColor.RED)
+                    self.close_dialog()
+                    return
+            else:
+                self.siril.log(f"Stacking failed: {e}", LogColor.RED)
+                self.close_dialog()
+                return
 
         self.siril.log(f"Completed stacking {seq_name}!", LogColor.GREEN)
 
