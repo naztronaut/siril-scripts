@@ -87,7 +87,6 @@ CHANGELOG:
 """
 
 import os
-from pathlib import Path
 import sys
 import math
 import shutil
@@ -97,6 +96,8 @@ from datetime import datetime
 import json
 from typing import Dict, List, Optional, Tuple
 import re
+from pathlib import Path
+from dataclasses import dataclass
 
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
@@ -356,7 +357,20 @@ class PreprocessingInterface(QMainWindow):
                     f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
                     LogColor.SALMON,
                 )
-                changed_cwd = False      
+                changed_cwd = False
+        elif os.path.exists(os.path.join(self.current_working_directory, "shotsInfo.json")):
+            msg = "You don't have 'lights' directory, but I've found a shotsinfo.json so you may be using a DWARF Telescope, do you want me to try to create the 'lights' directory for you and put your fits files in it?"
+            answer = QMessageBox.question(self, "Copy Dwarf fits into Lights Dir", msg)
+            if answer == QMessageBox.StandardButton.Yes:
+                dwarf = DwarfUtils(self.current_working_directory, self.siril)
+                dwarf.create_lights_folder()
+                changed_cwd = True
+            else:
+                self.siril.log(
+                    f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
+                    LogColor.SALMON,
+                )
+                changed_cwd = False
 
         if not changed_cwd:
             while True:
@@ -411,6 +425,23 @@ class PreprocessingInterface(QMainWindow):
                             LogColor.GREEN,
                         )
                     break
+
+                elif os.path.exists(os.path.join(selected_dir, "shotsInfo.json")):
+                    msg = "You don't have 'lights' directory, but I've found a shotsinfo.json so you may be using a DWARF Telescope, do you want me to try to create the 'lights' directory for you and put your fits files in it?"
+                    answer = QMessageBox.question(self, "Copy Dwarf fits into Lights Dir", msg)
+                    if answer == QMessageBox.StandardButton.Yes:
+                        dwarf = DwarfUtils(selected_dir, self.siril)
+                        dwarf.create_lights_folder()                        
+                        self.siril.cmd("cd", f'"{selected_dir}"')
+                        os.chdir(selected_dir)
+                        self.current_working_directory = selected_dir
+                        self.cwd_label_text = f"Current working directory: {selected_dir}"
+                        self.siril.log(
+                            f"Updated current working directory to: {selected_dir}",
+                            LogColor.GREEN,
+                        )                        
+                    break
+
                 else:
                     msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {selected_dir}. Please try again."
                     self.siril.log(msg, LogColor.SALMON)
@@ -2781,6 +2812,7 @@ class PreprocessingInterface(QMainWindow):
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
 
+@dataclass
 class DwarfShotsInfo:
     target: str
     exp_s: float
@@ -2797,7 +2829,8 @@ class DwarfShotsInfo:
         if self.min_temp is None or self.max_temp is None:
             return None
         return (self.min_temp + self.max_temp) / 2.0
-    
+
+@dataclass    
 class DwarfDarkMeta:
     exp_s: float
     gain: int
@@ -2808,13 +2841,26 @@ class DwarfUtils:
     # This class encapsulates code initially created by DeepSkyLab for his "DWARF Mini One‑Click Preprocess for Siril" script
     # https://youtu.be/GnNZ2issC-Y
 
-    def __init__(self, workdir: Path):
-        self.dwarfShotsInfo = self._read_DwarfShotsInfo(workdir)
+    def __init__(self, workdir: str, siril):
+        self.siril = siril
+        self.current_folder = Path(workdir)
+        self.dwarfShotsInfo = self._read_shotsinfo(Path(os.path.join(self.current_folder, "shotsInfo.json")))
         self._DARK_RE = re.compile(
             r"dark_exp_(?P<exp>[0-9]+\.?[0-9]*)_gain_(?P<gain>[0-9]+)_bin_(?P<bin>[0-9]+)_(?P<temp>[0-9]+)C",
             re.IGNORECASE,
         )        
         self._TEMP_SUFFIX_RE = re.compile(r".*_[+-]?\d+C\.(fit|fits|fts)$", re.IGNORECASE)
+
+    def _log(self, msg, color = LogColor.RED): 
+        self.siril.log(msg, color)
+
+    def create_lights_folder(self):
+        lights_directory = os.path.join(self.current_folder, "lights")
+        os.makedirs(lights_directory, exist_ok=True)        
+        (light_files, _, _) = self._select_light_files()
+        for light_file in light_files:
+            shutil.copy2(light_file, lights_directory)
+        self._log(f"{lights_directory} created, {len(light_files)} files copied in it", LogColor.GREEN)
 
     def _read_shotsinfo(self, shotsinfo_path: Path) -> DwarfShotsInfo:
         with shotsinfo_path.open("r", encoding="utf-8") as f:
@@ -2918,6 +2964,13 @@ class DwarfUtils:
         except Exception:
             return None
 
+    def _glob_fits(self, folder: Path) -> List[Path]:
+        exts = ("*.fit", "*.fits", "*.fts", "*.FIT", "*.FITS", "*.FTS")
+        out: List[Path] = []
+        for pat in exts:
+            out.extend(folder.glob(pat))
+        out = [p for p in out if p.is_file()]
+        return sorted(set(out))
 
     def _select_matching_darks(self, dark_dir: Path) -> List[Path]:
         shots = self.dwarfShotsInfo
@@ -2957,7 +3010,7 @@ class DwarfUtils:
         chosen = [f for (f, m) in candidates if abs(m.temp_c - target_t) == best_dist]
         return sorted(chosen)
 
-    def _fits_layer_count(path: Path) -> Optional[int]:
+    def _fits_layer_count(self, path: Path) -> Optional[int]:
         """Cheap FITS header peek to estimate # layers.
 
         - NAXIS<=2 -> 1 layer
@@ -3005,12 +3058,13 @@ class DwarfUtils:
         return naxis3
 
 
-    def _select_light_files(self, target_dir: Path) -> Tuple[List[Path], Dict[int, int], List[Path]]:
+    def _select_light_files(self) -> Tuple[List[Path], Dict[int, int], List[Path]]:
         """Return (selected_subs, layer_hist, excluded_fits).
 
         Excludes DWARF products like stacked*.fits and filters by majority layer count
         to prevent Siril sequence aborts.
         """
+        target_dir = self.current_folder
         allfits = self._glob_fits(target_dir)
 
         excluded: List[Path] = []
