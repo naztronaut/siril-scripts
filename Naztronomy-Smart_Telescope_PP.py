@@ -87,6 +87,7 @@ CHANGELOG:
 """
 
 import os
+from pathlib import Path
 import sys
 import math
 import shutil
@@ -94,6 +95,8 @@ import time
 import sirilpy as s
 from datetime import datetime
 import json
+from typing import Dict, List, Optional, Tuple
+import re
 
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
@@ -353,7 +356,7 @@ class PreprocessingInterface(QMainWindow):
                     f"Current working directory is invalid: {self.current_working_directory}, reprompting...",
                     LogColor.SALMON,
                 )
-                changed_cwd = False
+                changed_cwd = False      
 
         if not changed_cwd:
             while True:
@@ -2778,6 +2781,275 @@ class PreprocessingInterface(QMainWindow):
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
 
+class DwarfShotsInfo:
+    target: str
+    exp_s: float
+    gain: int
+    ir: str
+    binning: int
+    min_temp: Optional[int]
+    max_temp: Optional[int]
+    shots_taken: Optional[int]
+    shots_stacked: Optional[int]
+
+    @property
+    def mean_temp(self) -> Optional[float]:
+        if self.min_temp is None or self.max_temp is None:
+            return None
+        return (self.min_temp + self.max_temp) / 2.0
+    
+class DwarfDarkMeta:
+    exp_s: float
+    gain: int
+    binning: int
+    temp_c: int
+    
+class DwarfUtils: 
+    # This class encapsulates code initially created by DeepSkyLab for his "DWARF Mini One‑Click Preprocess for Siril" script
+    # https://youtu.be/GnNZ2issC-Y
+
+    def __init__(self, workdir: Path):
+        self.dwarfShotsInfo = self._read_DwarfShotsInfo(workdir)
+        self._DARK_RE = re.compile(
+            r"dark_exp_(?P<exp>[0-9]+\.?[0-9]*)_gain_(?P<gain>[0-9]+)_bin_(?P<bin>[0-9]+)_(?P<temp>[0-9]+)C",
+            re.IGNORECASE,
+        )        
+        self._TEMP_SUFFIX_RE = re.compile(r".*_[+-]?\d+C\.(fit|fits|fts)$", re.IGNORECASE)
+
+    def _read_shotsinfo(self, shotsinfo_path: Path) -> DwarfShotsInfo:
+        with shotsinfo_path.open("r", encoding="utf-8") as f:
+            d = json.load(f)
+
+        target = str(d.get("target", "UNKNOWN"))
+        exp_s = float(d.get("exp", 0))
+        gain = int(d.get("gain", 0))
+        ir = str(d.get("ir", "UNKNOWN"))
+
+        binning_raw = str(d.get("binning", "1*1"))
+        try:
+            binning = int(binning_raw.split("*")[0])
+        except Exception:
+            binning = 1
+
+        min_temp = d.get("minTemp", None)
+        max_temp = d.get("maxTemp", None)
+        min_temp = int(min_temp) if min_temp is not None else None
+        max_temp = int(max_temp) if max_temp is not None else None
+
+        shots_taken = d.get("shotsTaken", None)
+        shots_stacked = d.get("shotsStacked", None)
+        shots_taken = int(shots_taken) if shots_taken is not None else None
+        shots_stacked = int(shots_stacked) if shots_stacked is not None else None
+
+        return DwarfShotsInfo(
+            target=target,
+            exp_s=exp_s,
+            gain=gain,
+            ir=ir,
+            binning=binning,
+            min_temp=min_temp,
+            max_temp=max_temp,
+            shots_taken=shots_taken,
+            shots_stacked=shots_stacked,
+        )
+
+    def _detect_cam_name(self, folder_name: str) -> str:
+        n = folder_name.upper()
+        if "TELE" in n:
+            return "cam_0"
+        if "WIDE" in n:
+            return "cam_1"
+        return "cam_0"
+
+
+    def _detect_ir_code(self, ir_str: str) -> Optional[int]:
+        s0 = (ir_str or "").strip().lower()
+        if not s0:
+            return None
+        if "astro" in s0:
+            return 1
+        if "dual" in s0 or "duo" in s0 or "band" in s0 or "narrow" in s0:
+            return 2
+        if "none" in s0 or "off" in s0 or "clear" in s0 or "ircut" in s0:
+            return 0
+        return None
+
+
+    def _pick_best_calib_subfolder(self, parent: Path, cam_name: str, ir_code: Optional[int], gain: int) -> Optional[Path]:
+        """Pick best matching subfolder in CALI_FRAME/{bias|flat}."""
+        if not parent.is_dir():
+            return None
+
+        candidates = [p for p in parent.iterdir() if p.is_dir() and p.name.lower().startswith(cam_name.lower())]
+        if not candidates:
+            return None
+
+        def score(p: Path) -> int:
+            name = p.name.lower()
+            sc = 0
+            if name == cam_name.lower():
+                sc += 5
+            if ir_code is not None:
+                if f"ir_{ir_code}" in name:
+                    sc += 10
+                elif "ir_" in name:
+                    sc -= 2
+            if f"gain_{gain}" in name:
+                sc += 3
+            elif "gain_" in name:
+                sc -= 1
+            # prefer slightly more specific folders
+            sc += len(name) // 10
+            return sc
+
+        return sorted(candidates, key=score, reverse=True)[0]
+    
+    def _parse_dark_filename(self, name: str) -> Optional[DwarfDarkMeta]:
+        m = self._DARK_RE.search(name)
+        if not m:
+            return None
+        try:
+            return DwarfDarkMeta(
+                exp_s=float(m.group("exp")),
+                gain=int(m.group("gain")),
+                binning=int(m.group("bin")),
+                temp_c=int(m.group("temp")),
+            )
+        except Exception:
+            return None
+
+
+    def _select_matching_darks(self, dark_dir: Path) -> List[Path]:
+        shots = self.dwarfShotsInfo
+        files = self._glob_fits(dark_dir)
+        if not files:
+            return []
+
+        exp_tol = max(0.05, shots.exp_s * 0.02)  # DWARF uses odd decimals sometimes
+
+        candidates: List[Tuple[Path, DwarfDarkMeta]] = []
+        for f in files:
+            meta = self._parse_dark_filename(f.name)
+            if not meta:
+                continue
+            if meta.gain != shots.gain:
+                continue
+            if meta.binning != shots.binning:
+                continue
+            if abs(meta.exp_s - shots.exp_s) > exp_tol:
+                continue
+            candidates.append((f, meta))
+
+        if not candidates:
+            return []
+
+        # Prefer temps inside session range
+        # Tiny bonus: matching dark temperature matters more than most people think (until it *really* does).
+        if shots.min_temp is not None and shots.max_temp is not None:
+            in_range = [f for (f, m) in candidates if shots.min_temp <= m.temp_c <= shots.max_temp]
+            if in_range:
+                return sorted(in_range)
+
+        # Else closest to mean temp (or median)
+        temps = [m.temp_c for (_, m) in candidates]
+        target_t = shots.mean_temp if shots.mean_temp is not None else sorted(temps)[len(temps) // 2]
+        best_dist = min(abs(m.temp_c - target_t) for (_, m) in candidates)
+        chosen = [f for (f, m) in candidates if abs(m.temp_c - target_t) == best_dist]
+        return sorted(chosen)
+
+    def _fits_layer_count(path: Path) -> Optional[int]:
+        """Cheap FITS header peek to estimate # layers.
+
+        - NAXIS<=2 -> 1 layer
+        - NAXIS=3 and NAXIS3=3 -> 3 layers
+
+        Returns None if it can't parse.
+        """
+        try:
+            header_cards: List[str] = []
+            with path.open("rb") as f:
+                for _ in range(20):
+                    block = f.read(2880)
+                    if not block:
+                        break
+                    for i in range(0, len(block), 80):
+                        card = block[i : i + 80].decode("ascii", errors="ignore")
+                        header_cards.append(card)
+                        if card.startswith("END"):
+                            raise StopIteration
+        except StopIteration:
+            pass
+        except Exception:
+            return None
+
+        kv: Dict[str, str] = {}
+        for c in header_cards:
+            if "=" in c[:10]:
+                key = c[:8].strip()
+                val = c.split("=", 1)[1].split("/", 1)[0].strip()
+                kv[key] = val
+
+        try:
+            naxis = int(kv.get("NAXIS", "2"))
+        except Exception:
+            return None
+
+        if naxis <= 2:
+            return 1
+
+        try:
+            naxis3 = int(kv.get("NAXIS3", "1"))
+        except Exception:
+            naxis3 = 1
+
+        return naxis3
+
+
+    def _select_light_files(self, target_dir: Path) -> Tuple[List[Path], Dict[int, int], List[Path]]:
+        """Return (selected_subs, layer_hist, excluded_fits).
+
+        Excludes DWARF products like stacked*.fits and filters by majority layer count
+        to prevent Siril sequence aborts.
+        """
+        allfits = self._glob_fits(target_dir)
+
+        excluded: List[Path] = []
+
+        # Exclude obvious non-subs
+        nonstack: List[Path] = []
+        for p in allfits:
+            n = p.name.lower()
+            if "stacked" in n:
+                excluded.append(p)
+                continue
+            if n.startswith("pp_") or n.startswith("r_") or n.startswith("dsl_"):
+                excluded.append(p)
+                continue
+            nonstack.append(p)
+
+        # Prefer classic DWARF raw-sub naming: ..._27C.fits
+        temp_named = [p for p in nonstack if self._TEMP_SUFFIX_RE.match(p.name)]
+        candidates = temp_named if len(temp_named) >= max(5, len(nonstack) // 2) else nonstack
+
+        # Layer-count majority filter
+        layers: Dict[Path, Optional[int]] = {p: self._fits_layer_count(p) for p in candidates}
+        hist: Dict[int, int] = {}
+        for _, n in layers.items():
+            if n is None:
+                continue
+            hist[n] = hist.get(n, 0) + 1
+
+        if hist:
+            majority = sorted(hist.items(), key=lambda kv: kv[1], reverse=True)[0][0]
+            selected = [p for p in candidates if layers.get(p, None) == majority]
+            # Any candidate with a different layer count is excluded
+            for p in candidates:
+                if layers.get(p, None) != majority:
+                    excluded.append(p)
+        else:
+            selected = candidates
+
+        return sorted(selected), hist, sorted(set(excluded))
 
 def main():
     try:
