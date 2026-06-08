@@ -25,6 +25,7 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.1.0 - Improve DWARF experience using code from DeepSkyLab (find lights/dark/bias/flat files and filter thanks to shotsInfo.json)
 2.0.7 - Refactored directory selection for better maintainability
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
