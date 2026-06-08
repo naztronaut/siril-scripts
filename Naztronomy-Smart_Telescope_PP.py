@@ -597,6 +597,11 @@ class PreprocessingInterface(QMainWindow):
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
         directory = os.path.join(self.current_working_directory, dir_name)
+
+        if not os.path.isdir(directory) and self.dwarf is not None and dir_name in ["biases", "flats"]:
+            self.siril.log(f"DWARF telescope: try to find {dir_name} into ../CALI_FRAME/", LogColor.BLUE)
+            self.dwarf.copy_calibration_files(dir_name) #  If Dwarf, first let's try to fetch the correct calibration files
+
         if os.path.isdir(directory):
             self.siril.cmd("cd", dir_name)
             file_count = len(
@@ -660,6 +665,7 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
             return True
+
         else:
             self.siril.log(
                 f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.',
@@ -2193,6 +2199,7 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
         self.siril.cmd("close")
+        self.load_dwarf(self.current_working_directory)
 
         def check_interruption():
             if check_cancel and check_cancel():
@@ -2831,6 +2838,7 @@ class DwarfManager:
             re.IGNORECASE,
         )
         self._TEMP_SUFFIX_RE = re.compile(r".*_[+-]?\d+C\.(fit|fits|fts)$", re.IGNORECASE)
+        self.cam = self._detect_cam_name(workdir)
 
     def _log(self, msg, color = LogColor.RED):
         self.siril.log(msg, color)
@@ -2891,7 +2899,6 @@ class DwarfManager:
             return "cam_1"
         return "cam_0"
 
-
     def _detect_ir_code(self, ir_str: str) -> Optional[int]:
         s0 = (ir_str or "").strip().lower()
         if not s0:
@@ -2904,12 +2911,31 @@ class DwarfManager:
             return 0
         return None
 
-    def _pick_best_calib_subfolder(self, parent: Path, cam_name: str, ir_code: Optional[int], gain: int) -> Optional[Path]:
+    def copy_calibration_files(self, dir_name):
+        parent = self.current_folder.parent / "CALI_FRAME"
+        root_paths = {
+            'biases': parent / "bias",
+            'flats': parent / "flat",
+            'darks': parent / "dark"
+        }
+
+        best_directory = self._pick_best_calib_subfolder(root_paths[dir_name])
+        if best_directory is not None:
+            self.siril.log(f"Copy {best_directory.name} into {(self.current_folder / dir_name).name}", LogColor.GREEN)
+            shutil.copytree(best_directory, self.current_folder / dir_name)
+
+    def _pick_best_calib_subfolder(self, parent: Path) -> Optional[Path]:
         """Pick best matching subfolder in CALI_FRAME/{bias|flat}."""
+
+        cam_name = self.cam
+        ir_code = self._detect_ir_code(self.dwarf_shots_info.ir)
+        gain = self.dwarf_shots_info.gain
+
         if not parent.is_dir():
             return None
 
         candidates = [p for p in parent.iterdir() if p.is_dir() and p.name.lower().startswith(cam_name.lower())]
+
         if not candidates:
             return None
 
@@ -2918,6 +2944,7 @@ class DwarfManager:
             sc = 0
             if name == cam_name.lower():
                 sc += 5
+
             if ir_code is not None:
                 if f"ir_{ir_code}" in name:
                     sc += 10
@@ -2927,6 +2954,7 @@ class DwarfManager:
                 sc += 3
             elif "gain_" in name:
                 sc -= 1
+
             # prefer slightly more specific folders
             sc += len(name) // 10
             return sc
