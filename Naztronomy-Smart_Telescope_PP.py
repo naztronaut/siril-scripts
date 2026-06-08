@@ -331,7 +331,7 @@ class PreprocessingInterface(QMainWindow):
         if not changed_cwd:
             while True:
                 prompt_title = (
-                    "Select the parent directory containing the 'lights' directory"
+                    "Select the parent directory containing the 'lights' directory (or the 'shotsInfo.json' file if you have a DWARF telescope)"
                 )
 
                 selected_dir = QFileDialog.getExistingDirectory(
@@ -402,7 +402,7 @@ class PreprocessingInterface(QMainWindow):
             )
             return False
         elif self.load_dwarf(directory):
-            msg = "You don't have 'lights' directory, but I've found a shotsinfo.json so you may be using a DWARF Telescope, do you want me to try to create the 'lights' directory for you and put your fits files in it?"
+            msg = "You don't have 'lights' directory, but I've found a shotsinfo.json so you must be using a DWARF Telescope, do you want me to try to create the 'lights' directory for you and put your fits files in it?"
             file_number = 0
             answer = QMessageBox.question(self, "Copy Dwarf fits into Lights Dir", msg)
             if answer == QMessageBox.StandardButton.Yes:
@@ -415,7 +415,7 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.SALMON,
             )
 
-        msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {directory}. Please try again."
+        msg = f"The selected directory must contain either a subdirectory named 'lights' or a file 'shotsInfo.json' (DWARF telescope).\nYou selected: {directory}. Please try again."
         self.siril.log(msg, LogColor.SALMON)
         QMessageBox.critical(
             self, "Invalid Directory", msg, QMessageBox.StandardButton.Ok
@@ -431,7 +431,9 @@ class PreprocessingInterface(QMainWindow):
         Q: How do I get support?
         A: Join the Naztronomy Discord server for support and discussion. Please have your logs handy.
         Q: Where can I find the logs?
-        A: You can export logs by clicking the download button on the lower right hand side of the console.\n
+        A: You can export logs by clicking the download button on the lower right hand side of the console.
+        Q: How can I use bias/flat for DWARF Telescopes?
+        A: Keep a copy of the telescope CALI_FRAME/ directory into the parent directory of your selected directory, the needed files will automatically be fetched\n
         """
         self.siril_log_long(msg, LogColor.BLUE)
 
