@@ -32,10 +32,10 @@ CHANGELOG:
       - PR#75 - support compressed fits in lights dir
       - Refactored UI code for better maintainability
       - Allow safe cancellation of processing
-      - Added safe deletes
+      - Added safe deletes 
       - Added stack weighting option (Noise, Number of Stars, Weighted FWHM)
       - Max batch size of 8100 on Windows but default in UI is still 2000 until version is readable by Python OR feature becomes permanent
-      - Added Dwarf II in telescope name along with DWARFII.
+      - Added Dwarf II in telescope name along with DWARFII. 
 2.0.5 - Bugfix: Black Frames Scan now sees both compressed and uncompressed fits
       - Bugfix: Compression turned on at batch instead of run code
 2.0.4 - Compression is now an optional checkbox
@@ -51,7 +51,7 @@ CHANGELOG:
       - Updated and more Tooltips
       - Output stacking details
       - Fixed max frames bug for linux and mac
-      - Updated tolerance for BGE
+      - Updated tolerance for BGE 
       - Add Dwarf Mini Support
 2.0.2 - Small Bug fixes
       - Reenable feathering
@@ -76,7 +76,7 @@ CHANGELOG:
       - Allow changing batch size
       - Accepts master calibration frames (also creates master calibration frames)
       - Temporary workaround to cfa debayering bug in Siril when using drizzle and background extraction for seestars
-1.1.1 - Bug fixes:
+1.1.1 - Bug fixes: 
       - Fixed Celestron Origin focal length to 335mm
       - Fixed clean up for pre-pp files
 1.1.0 - Minor version update:
@@ -377,7 +377,7 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
 
-    def check_directory(self, directory: str, is_initial_dir=False) -> bool:
+    def check_directory(self, directory: str, is_initial_dir=False) -> bool: 
         lights_directory = os.path.join(directory, "lights")
         if os.path.isdir(lights_directory):
             self.confirm_selected_directory(directory)
@@ -427,7 +427,7 @@ class PreprocessingInterface(QMainWindow):
         Please watch latest demos on https://youtube.com/Naztronomy which can answer most questions.
         Here are some Frequently Asked Questions:
         Q: Can it handle telescopes not listed in the dropdown?
-        A: Yes, but it will not mosaic them. It will do regular star registration.
+        A: Yes, but it will not mosaic them. It will do regular star registration. 
         Q: How do I get support?
         A: Join the Naztronomy Discord server for support and discussion. Please have your logs handy.
         Q: Where can I find the logs?
@@ -667,7 +667,6 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
             return True
-
         else:
             self.siril.log(
                 f'No directory named "{dir_name}" at this location. Make sure the working directory is correct. Skipping.',
@@ -2434,10 +2433,10 @@ class PreprocessingInterface(QMainWindow):
         )
         self.siril.log(
             """
-        Thank you for using the Naztronomy Smart Telescope Preprocessor!
+        Thank you for using the Naztronomy Smart Telescope Preprocessor! 
         The author of this script is Nazmus Nasir (Naztronomy).
-        Website: https://www.Naztronomy.com
-        YouTube: https://www.YouTube.com/Naztronomy
+        Website: https://www.Naztronomy.com 
+        YouTube: https://www.YouTube.com/Naztronomy 
         Discord: https://discord.gg/yXKqrawpjr
         Patreon: https://www.patreon.com/c/naztronomy
         Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
@@ -3086,7 +3085,6 @@ class DwarfManager:
 
         return naxis3
 
-
     def _select_light_files(self) -> Tuple[List[Path], Dict[int, int], List[Path]]:
         """Return (selected_subs, layer_hist, excluded_fits).
 
@@ -3133,6 +3131,7 @@ class DwarfManager:
             selected = candidates
 
         return sorted(selected), hist, sorted(set(excluded))
+
 
 def main():
     try:
