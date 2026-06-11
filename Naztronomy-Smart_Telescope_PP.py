@@ -600,7 +600,7 @@ class PreprocessingInterface(QMainWindow):
     def convert_files(self, dir_name):
         directory = os.path.join(self.current_working_directory, dir_name)
 
-        if not os.path.isdir(directory) and self.dwarf is not None and dir_name in ["biases", "flats"]:
+        if not os.path.isdir(directory) and self.dwarf is not None and dir_name in ["biases", "flats", "darks"]:
             self.siril.log(f"DWARF telescope: try to find {dir_name} into ../CALI_FRAME/", LogColor.BLUE)
             self.dwarf.copy_calibration_files(dir_name) #  If Dwarf, first let's try to fetch the correct calibration files
 
@@ -2915,16 +2915,32 @@ class DwarfManager:
 
     def copy_calibration_files(self, dir_name):
         parent = self.current_folder.parent / "CALI_FRAME"
-        root_paths = {
+
+        dwarf_cali_paths = {
             'biases': parent / "bias",
             'flats': parent / "flat",
-            'darks': parent / "dark"
+            'darks': parent / "dark" / self.cam
         }
 
-        best_directory = self._pick_best_calib_subfolder(root_paths[dir_name])
-        if best_directory is not None:
-            self.siril.log(f"Copy {best_directory.name} into {(self.current_folder / dir_name).name}", LogColor.GREEN)
-            shutil.copytree(best_directory, self.current_folder / dir_name)
+        if dir_name == "darks":
+            best_files = self._select_matching_darks(dwarf_cali_paths[dir_name])
+            if len(best_files) > 0:
+                self.siril.log(f"Copy {len(best_files)} dark file(s) into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                os.makedirs(self.current_folder / dir_name, exist_ok=True)
+                for file in best_files:
+                    self.siril.log(f"Copy {file.absolute().name} into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                    shutil.copy2(file, self.current_folder / dir_name)
+            else:
+                self.siril.log(f"Couldn't find matching darks", LogColor.SALMON)
+
+        elif dir_name in ["biases", "flats"]:
+            best_directory = self._pick_best_calib_subfolder(dwarf_cali_paths[dir_name])
+            if best_directory is not None:
+                self.siril.log(f"Copy {best_directory.absolute().name}/* into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                shutil.copytree(best_directory, self.current_folder / dir_name)
+
+        else:
+            self.siril.log(f"Unknown calibration type {dir_name}", LogColor.RED)
 
     def _pick_best_calib_subfolder(self, parent: Path) -> Optional[Path]:
         """Pick best matching subfolder in CALI_FRAME/{bias|flat}."""
