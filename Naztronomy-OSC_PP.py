@@ -725,6 +725,7 @@ class PreprocessingInterface(QMainWindow):
             "dark_flats": "biases",
             "dark flat": "biases",
             "dark_flat": "biases",
+            "darkflat": "biases",
         }
         _ST_MAP = {
             "darks_stacked": "darks",
@@ -815,6 +816,7 @@ class PreprocessingInterface(QMainWindow):
             "dark_flats",
             "dark flat",
             "dark_flat",
+            "darkflat",
         }
 
         def _ancestor_label(p: Path) -> str:
@@ -955,6 +957,7 @@ class PreprocessingInterface(QMainWindow):
             "dark_flats": "biases",
             "dark flat": "biases",
             "dark_flat": "biases",
+            "darkflat": "biases",
         }
         _STACKED_FOLDER_MAP = {
             "darks_stacked": "darks",
