@@ -89,8 +89,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QComboBox,
     QFrame,
-    QListWidget,
-    QListWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QHeaderView,
     QSpinBox,
     QDoubleSpinBox,
     QCheckBox,
@@ -107,8 +108,6 @@ from PyQt6.QtWidgets import (
     QTextBrowser,
     QSizePolicy,
     QScrollArea,
-    QStyledItemDelegate,
-    QStyle,
 )
 from PyQt6.QtGui import (
     QFont,
@@ -370,55 +369,6 @@ class Session:
         self.panel = None
 
 
-class FileListDelegate(QStyledItemDelegate):
-    """Paints row colors from item data, with visible selection and hover highlights."""
-
-    _SEL_BG = QColor("#2563eb")
-    _SEL_FG = QColor("#ffffff")
-    _HOVER_BG = QColor(0, 0, 0, 45)  # semi-transparent dark tint for hover
-
-    def paint(self, painter, option, index):
-        painter.save()
-
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
-
-        # --- background ---
-        if selected:
-            painter.fillRect(option.rect, self._SEL_BG)
-        else:
-            bg = index.data(Qt.ItemDataRole.BackgroundRole)
-            if bg is not None:
-                painter.fillRect(
-                    option.rect, bg if isinstance(bg, QColor) else bg.color()
-                )
-            if hovered:
-                painter.fillRect(option.rect, self._HOVER_BG)
-
-        # --- text color ---
-        if selected:
-            text_color = self._SEL_FG
-        else:
-            fg = index.data(Qt.ItemDataRole.ForegroundRole)
-            if fg is not None:
-                text_color = fg if isinstance(fg, QColor) else fg.color()
-            else:
-                text_color = option.palette.color(option.palette.ColorRole.Text)
-
-        text_rect = option.rect.adjusted(4, 0, -4, 0)
-        painter.setPen(text_color)
-        font = index.data(Qt.ItemDataRole.FontRole)
-        if font:
-            painter.setFont(font)
-        painter.drawText(
-            text_rect,
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            index.data(Qt.ItemDataRole.DisplayRole) or "",
-        )
-
-        painter.restore()
-
-
 class FileTypeDialog(QDialog):
     """Prompt the user to choose a frame type for drag-and-dropped files."""
 
@@ -431,12 +381,14 @@ class FileTypeDialog(QDialog):
         current_session_name: str = "Current Session",
         all_session_names: list | None = None,
         current_session_index: int = 0,
+        auto_filter: bool = False,
         parent=None,
     ):
         super().__init__(parent)
         self._current_session_name = current_session_name
         self._all_session_names = all_session_names or [current_session_name]
         self._current_session_index = current_session_index
+        self._auto_filter = auto_filter
         self.setWindowTitle("Select Frame Type")
         self.setModal(True)
         self.setMinimumWidth(320)
@@ -456,7 +408,7 @@ class FileTypeDialog(QDialog):
             btn = QPushButton(frame_type)
             btn.setMinimumHeight(50)
             btn.setMinimumWidth(100)
-            if frame_type.lower() == "lights":
+            if self._routes_by_filter(frame_type):
                 btn.clicked.connect(lambda checked, t=frame_type: self._select(t))
             else:
                 btn.clicked.connect(
@@ -479,12 +431,32 @@ class FileTypeDialog(QDialog):
                 "QPushButton { background-color: #e8f4e8; color: #1d4e2d; }"
                 " QPushButton:hover { background-color: #c3e6cb; }"
             )
-            btn.clicked.connect(lambda checked, t=master_type: self._select_master(t))
+            if self._routes_by_filter(master_type):
+                btn.clicked.connect(lambda checked, t=master_type: self._select(t))
+            else:
+                btn.clicked.connect(
+                    lambda checked, t=master_type: self._select_master(t)
+                )
             layout.addWidget(btn)
 
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         layout.addWidget(cancel_btn)
+
+    def _routes_by_filter(self, type_str: str) -> bool:
+        """Whether a frame type is routed to sessions by its FITS filter.
+
+        Lights always route by filter (one session per filter / current session).
+        In ``auto_filter`` mode (single-target drops) flats and master flats also
+        route by filter, so they skip the current/all/selected scope sub-prompt.
+        Darks and biases are filter-agnostic and keep the scope prompt.
+        """
+        t = type_str.lower()
+        if t == "lights":
+            return True
+        if self._auto_filter and t in ("flats", "master flat"):
+            return True
+        return False
 
     def _select(self, frame_type: str):
         self.chosen_type = frame_type
@@ -554,12 +526,44 @@ class FileTypeDialog(QDialog):
         # else: cancel — stay in outer dialog
 
 
-class DragDropListWidget(QListWidget):
-    """A QListWidget that accepts file drag-and-drop and emits the dropped paths."""
+class SortableTreeItem(QTreeWidgetItem):
+    """Tree item with type-aware sorting.
+
+    The "#" column (column 0) sorts numerically rather than as text. Group-header
+    rows (those with ``group_order`` set) always keep their fixed insertion order
+    so the Lights/Darks/Flats/Biases sections never shuffle, no matter which
+    column the user sorts by.
+    """
+
+    group_order = None  # set on group-header rows to pin their position
+
+    def __lt__(self, other):
+        # Group headers are only ever compared against sibling group headers.
+        if (
+            self.group_order is not None
+            and getattr(other, "group_order", None) is not None
+        ):
+            return self.group_order < other.group_order
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree is not None else 0
+        if column == 0:
+            return self._as_int(self.text(0)) < self._as_int(other.text(0))
+        return self.text(column).lower() < other.text(column).lower()
+
+    @staticmethod
+    def _as_int(text):
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return 0
+
+
+class DragDropTreeWidget(QTreeWidget):
+    """A QTreeWidget (multi-column) that accepts file drag-and-drop and emits the dropped paths."""
 
     _NORMAL_STYLE = ""
     _HOVER_STYLE = (
-        "QListWidget { border: 2px dashed #2563eb;"
+        "QTreeWidget { border: 2px dashed #2563eb;"
         " background-color: rgba(37, 99, 235, 0.07); }"
     )
 
@@ -582,7 +586,7 @@ class DragDropListWidget(QListWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.count() == 0:
+        if self.topLevelItemCount() == 0:
             painter = QPainter(self.viewport())
             painter.save()
             pen_color = self.palette().color(self.palette().ColorRole.PlaceholderText)
@@ -1319,8 +1323,127 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.BLUE,
             )
 
+    def _distribute_lights_by_filter(self, files):
+        """Single-target mode: split dropped light frames by FITS filter and route
+        each filter into its own session.
+
+        A filter that already has a session is merged into it; otherwise a new
+        session is created and tagged with that filter and the detected object.
+        An empty, untagged current session is reused for the first new filter.
+        Lights with no detectable filter go to a single untagged session.
+        """
+        groups: dict[str, list[Path]] = {}
+        for f in files:
+            groups.setdefault(_detect_filter(f), []).append(f)
+
+        object_name = _detect_object(files)
+        last_idx = self.session_dropdown.currentIndex()
+
+        for filt in sorted(groups.keys(), key=_filter_sort_key):
+            flist = groups[filt]
+            session_filter = None if filt == NO_FILTER else filt
+            filt_display = filt if filt != NO_FILTER else "unfiltered"
+
+            # Merge into an existing session already tagged with this filter.
+            match_idx = next(
+                (
+                    i
+                    for i, sess in enumerate(self.sessions)
+                    if sess.filter == session_filter
+                ),
+                None,
+            )
+            if match_idx is not None:
+                target = self.sessions[match_idx]
+                target.lights.extend(flist)
+                if target.object_name is None and object_name:
+                    target.object_name = object_name
+                last_idx = match_idx
+                self.siril.log(
+                    f"> Added {len(flist)} {filt_display} light(s) to "
+                    f"{self._session_label(match_idx, target)}",
+                    LogColor.BLUE,
+                )
+                continue
+
+            # No session for this filter yet — reuse an empty untagged current
+            # session, otherwise create a new one.
+            current = self.chosen_session
+            current_is_empty = (
+                not current.lights
+                and not current.darks
+                and not current.flats
+                and not current.biases
+                and current.filter is None
+            )
+            if current_is_empty:
+                target = current
+                target_idx = self.session_dropdown.currentIndex()
+            else:
+                target = Session()
+                self.sessions.append(target)
+                target_idx = len(self.sessions) - 1
+            target.lights.extend(flist)
+            target.filter = session_filter
+            if object_name:
+                target.object_name = object_name
+            last_idx = target_idx
+            self.siril.log(
+                f"> Loaded {len(flist)} {filt_display} light(s) into "
+                f"{self._session_label(target_idx, target)}",
+                LogColor.BLUE,
+            )
+
+        self.update_dropdown()
+        last_idx = max(0, min(last_idx, len(self.sessions) - 1))
+        self.session_dropdown.setCurrentIndex(last_idx)
+        self.chosen_session = self.sessions[last_idx]
+        self.current_session = f"Session {last_idx + 1}"
+        self.update_process_separately_checkbox()
+
+    def _distribute_flats_by_filter(self, files):
+        """Single-target mode: route dropped flat frames to the session(s) whose
+        filter matches each flat's FITS filter.
+
+        Flats are filter-specific calibration, so flats whose filter has no
+        matching session are skipped with a warning (load the matching lights
+        first). When several sessions share a filter, the flats are added to each.
+        """
+        groups: dict[str, list[Path]] = {}
+        for f in files:
+            groups.setdefault(_detect_filter(f), []).append(f)
+
+        routed = False
+        for filt in sorted(groups.keys(), key=_filter_sort_key):
+            flist = groups[filt]
+            session_filter = None if filt == NO_FILTER else filt
+            filt_display = filt if filt != NO_FILTER else "unfiltered"
+            matches = [
+                (i, sess)
+                for i, sess in enumerate(self.sessions)
+                if sess.filter == session_filter
+            ]
+            if not matches:
+                self.siril.log(
+                    f"> No session matches filter '{filt_display}' — skipped "
+                    f"{len(flist)} flat(s). Load matching lights first.",
+                    LogColor.SALMON,
+                )
+                continue
+            for i, sess in matches:
+                sess.flats.extend(flist)
+                routed = True
+                self.siril.log(
+                    f"> Added {len(flist)} {filt_display} flat(s) to "
+                    f"{self._session_label(i, sess)}",
+                    LogColor.BLUE,
+                )
+
+        if routed:
+            self.update_dropdown()
+
     def _handle_dropped_files(self, paths: list):
-        """Called by DragDropListWidget when files or folders are dropped onto the list.
+        """Called by DragDropTreeWidget when files or folders are dropped onto the list.
 
         Folders named lights/darks/flats/biases (or dark flats → biases) are
         recognised and their contents are added to the *current session* directly,
@@ -1638,6 +1761,7 @@ class PreprocessingInterface(QMainWindow):
 
         # Remaining non-stacked files → show frame-type dialog as before
         if regular_files:
+            single_target = not self.mosaic_radio.isChecked()
             dlg = FileTypeDialog(
                 file_count=len(regular_files),
                 current_session_name=self.session_dropdown.currentText(),
@@ -1646,6 +1770,7 @@ class PreprocessingInterface(QMainWindow):
                     for i, session in enumerate(self.sessions)
                 ],
                 current_session_index=self.session_dropdown.currentIndex(),
+                auto_filter=single_target,
                 parent=self,
             )
             if dlg.exec() != QDialog.DialogCode.Accepted or dlg.chosen_type is None:
@@ -1655,14 +1780,6 @@ class PreprocessingInterface(QMainWindow):
             filetype = dlg.chosen_type
             scope = dlg.chosen_scope
 
-            # Determine which sessions to apply to
-            if scope == "all":
-                target_sessions = self.sessions
-            elif scope == "selected":
-                target_sessions = [self.sessions[i] for i in dlg.chosen_session_indices]
-            else:
-                target_sessions = [self.chosen_session]
-
             # Map master types to their underlying calibration list
             _master_map = {
                 "master dark": "darks",
@@ -1670,6 +1787,26 @@ class PreprocessingInterface(QMainWindow):
                 "master bias": "biases",
             }
             resolved_type = _master_map.get(filetype.lower(), filetype.lower())
+
+            # Single-target mode: organise loose files by their FITS filter.
+            # Lights are split into one session per filter; flats are routed to
+            # the matching session(s). Darks/biases fall through to the scope-based
+            # handling below (and all types do in Mosaic mode).
+            if single_target and resolved_type in ("lights", "flats"):
+                if resolved_type == "lights":
+                    self._distribute_lights_by_filter(regular_files)
+                else:
+                    self._distribute_flats_by_filter(regular_files)
+                self.refresh_file_list()
+                return
+
+            # Determine which sessions to apply to
+            if scope == "all":
+                target_sessions = self.sessions
+            elif scope == "selected":
+                target_sessions = [self.sessions[i] for i in dlg.chosen_session_indices]
+            else:
+                target_sessions = [self.chosen_session]
 
             for session in target_sessions:
                 match resolved_type:
@@ -1803,33 +1940,107 @@ class PreprocessingInterface(QMainWindow):
         "biases": ("#d1c4e9", "#311b5e"),
     }
 
+    def _file_filter_label(self, file_type, path):
+        """Filter label shown in the file list's Filter column.
+
+        Darks and biases carry no filter. Lights/flats use the session's filter
+        tag when set (instant); otherwise a cached per-file detection is used so
+        repeated refreshes don't re-read FITS headers over the network.
+        """
+        if file_type in ("darks", "biases"):
+            return "\u2014"  # em dash
+        if self.chosen_session and self.chosen_session.filter:
+            return self.chosen_session.filter
+        cache = getattr(self, "_file_filter_cache", None)
+        if cache is None:
+            cache = self._file_filter_cache = {}
+        key = str(path)
+        if key not in cache:
+            detected = _detect_filter(path)
+            cache[key] = detected if detected != NO_FILTER else "\u2014"
+        return cache[key]
+
+    def _file_object_label(self, path):
+        """Target name shown in the file list's Object column.
+
+        Uses the session's object tag when set (instant); otherwise a cached
+        per-file OBJECT-header read avoids re-reading over the network.
+        """
+        if self.chosen_session and self.chosen_session.object_name:
+            return self.chosen_session.object_name
+        cache = getattr(self, "_file_object_cache", None)
+        if cache is None:
+            cache = self._file_object_cache = {}
+        key = str(path)
+        if key not in cache:
+            obj = _read_fits_object(path)
+            cache[key] = obj if obj else "\u2014"
+        return cache[key]
+
     def refresh_file_list(self):
+        self.file_listbox.setSortingEnabled(False)
         self.file_listbox.clear()
         self.siril.log(
             f"Switched to {self.session_dropdown.currentText()}", LogColor.BLUE
         )
 
-        # Update the session content group box title
+        counts = {ft: 0 for ft in FRAME_TYPES}
+        if self.chosen_session:
+            for order, file_type in enumerate(FRAME_TYPES):
+                files = self.chosen_session.get_files_by_type(file_type)
+                counts[file_type] = len(files)
+                if not files:
+                    continue
+                bg_hex, fg_hex = self._FRAME_COLORS.get(
+                    file_type, ("#ffffff", "#000000")
+                )
+                row_bg = QBrush(QColor(bg_hex))
+                row_fg = QBrush(QColor(fg_hex))
+
+                # Group header — a strong colored bar spanning the whole row.
+                header_item = SortableTreeItem(
+                    [f"{file_type.capitalize()}  ({len(files)})"]
+                )
+                header_item.group_order = order
+                header_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                hfont = header_item.font(0)
+                hfont.setBold(True)
+                header_item.setFont(0, hfont)
+                header_item.setBackground(0, QBrush(QColor(fg_hex)))
+                header_item.setForeground(0, QBrush(QColor(bg_hex)))
+                self.file_listbox.addTopLevelItem(header_item)
+                header_item.setFirstColumnSpanned(True)
+
+                for n, file in enumerate(files, start=1):
+                    filt = self._file_filter_label(file_type, file)
+                    obj = self._file_object_label(file)
+                    child = SortableTreeItem([str(n), filt, obj, file.name])
+                    for col in range(4):
+                        child.setBackground(col, row_bg)
+                        child.setForeground(col, row_fg)
+                    child.setTextAlignment(
+                        0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    child.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+                    child.setToolTip(3, str(file.resolve()))
+                    child.setData(0, Qt.ItemDataRole.UserRole, (file_type, file))
+                    header_item.addChild(child)
+
+        self.file_listbox.expandAll()
+        self.file_listbox.setSortingEnabled(True)
+        self.file_listbox.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
+        # Group-box title with per-type counts, e.g.
+        # "Files in Session 1 — 28 L · 10 D · 10 F · 10 B  (total 58)"
         if hasattr(self, "session_content_group"):
             idx = self.session_dropdown.currentIndex() + 1
-            self.session_content_group.setTitle(f"Files in Session {idx}")
-
-        if self.chosen_session:
-            for file_type in FRAME_TYPES:
-                files = self.chosen_session.get_files_by_type(file_type)
-                if files:
-                    bg_hex, fg_hex = self._FRAME_COLORS.get(
-                        file_type, ("#ffffff", "#000000")
-                    )
-                    bg = QBrush(QColor(bg_hex))
-                    fg = QBrush(QColor(fg_hex))
-                    for idx, file in enumerate(files):
-                        item = QListWidgetItem(
-                            f"{idx + 1:>4}. {file_type.capitalize():^20}  {str(file.resolve())}"
-                        )
-                        item.setBackground(bg)
-                        item.setForeground(fg)
-                        self.file_listbox.addItem(item)
+            abbr = {"lights": "L", "darks": "D", "flats": "F", "biases": "B"}
+            parts = [f"{counts[ft]} {abbr[ft]}" for ft in FRAME_TYPES if counts[ft]]
+            total = sum(counts.values())
+            title = f"Files in Session {idx}"
+            if parts:
+                title += " \u2014 " + " \u00b7 ".join(parts) + f"  (total {total})"
+            self.session_content_group.setTitle(title)
 
         self.update_frame_buttons()
 
@@ -1874,18 +2085,15 @@ class PreprocessingInterface(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            # Build flat list of all files with type tracking
-            all_files = (
-                [("lights", f) for f in self.chosen_session.lights]
-                + [("darks", f) for f in self.chosen_session.darks]
-                + [("flats", f) for f in self.chosen_session.flats]
-                + [("biases", f) for f in self.chosen_session.biases]
-            )
-
             for item in selected_items:
-                row = self.file_listbox.row(item)  # Get the row index
-                filetype, path = all_files[row]
-                getattr(self.chosen_session, filetype).remove(path)
+                data = item.data(0, Qt.ItemDataRole.UserRole)
+                if not data:
+                    continue
+                filetype, path = data
+                try:
+                    getattr(self.chosen_session, filetype).remove(path)
+                except ValueError:
+                    pass
 
             self.refresh_file_list()
 
@@ -2786,20 +2994,36 @@ class PreprocessingInterface(QMainWindow):
         session_content_layout.addWidget(drop_hint_label)
 
         # Files list
-        self.file_listbox = DragDropListWidget(
+        self.file_listbox = DragDropTreeWidget(
             on_drop_callback=self._handle_dropped_files,
             on_delete_callback=self.remove_selected_files,
         )
+        self.file_listbox.setColumnCount(4)
+        self.file_listbox.setHeaderLabels(["#", "Filter", "Object", "File name"])
+        self.file_listbox.setRootIsDecorated(True)
+        self.file_listbox.setIndentation(14)
+        self.file_listbox.setUniformRowHeights(True)
+        self.file_listbox.setAlternatingRowColors(False)
+        self.file_listbox.setSortingEnabled(True)
         self.file_listbox.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
+        self.file_listbox.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        header = self.file_listbox.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
         self.file_listbox.setToolTip(
             "Drag and drop files or folders here to add them to the current session.\n"
             "Named folders (lights, darks, flats, biases) are auto-categorised.\n"
             "Drop a parent folder containing those subfolders to load an entire session,\n"
-            "or a folder with session sub-folders to auto-create multiple sessions."
+            "or a folder with session sub-folders to auto-create multiple sessions.\n"
+            "Click a column header to sort; rows are grouped by frame type."
         )
-        self.file_listbox.setItemDelegate(FileListDelegate(self.file_listbox))
         self.file_listbox.viewport().setMouseTracking(True)
         session_content_layout.addWidget(self.file_listbox)
 
