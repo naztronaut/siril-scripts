@@ -4097,9 +4097,7 @@ class PreprocessingInterface(QMainWindow):
         plate_solve_ok = self.seq_plate_solve(seq_name=seq_name)
         if plate_solve_ok:
             try:
-                self.siril.cmd(
-                    "seqapplyreg", seq_name, "-kernel=square", "-framing=max"
-                )
+                self.siril.cmd("seqapplyreg", seq_name, "-kernel=square")
             except (s.DataError, s.CommandError, s.SirilError) as e:
                 self.siril.log(
                     f"Could not apply registration to final frames: {e}",
@@ -4108,7 +4106,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             try:
                 self.siril.cmd("register", seq_name, "-2pass")
-                self.siril.cmd("seqapplyreg", seq_name, "-framing=max")
+                self.siril.cmd("seqapplyreg", seq_name)
             except (s.DataError, s.CommandError, s.SirilError) as e:
                 self.siril.log(f"Could not register final frames: {e}", LogColor.RED)
 
