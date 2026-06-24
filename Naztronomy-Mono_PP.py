@@ -257,6 +257,22 @@ def _detect_filter(path) -> str:
     return NO_FILTER
 
 
+def _detect_filter_from_name(name) -> str | None:
+    """Detect a canonical filter from a file name's tokens.
+
+    Splits the name on common separators (``_ - . space``) and returns the first
+    token that matches a known filter alias, e.g.
+    ``session1_RED_-4.9C_..._flats_stacked`` -> ``RED``. Returns None when no
+    token matches. Used as a fallback for stacked master frames whose FITS
+    FILTER header may have been dropped during integration.
+    """
+    stem = Path(name).stem
+    for token in re.split(r"[\s_\-.]+", stem):
+        if token and token.upper() in _FILTER_ALIAS_LOOKUP:
+            return _FILTER_ALIAS_LOOKUP[token.upper()]
+    return None
+
+
 def _read_fits_object(path) -> str | None:
     """Return the target name from a FITS file's OBJECT header, or None."""
     try:
@@ -1442,6 +1458,47 @@ class PreprocessingInterface(QMainWindow):
         if routed:
             self.update_dropdown()
 
+    def _route_stacked_by_filter(self, stacked_map: dict, source_label: str) -> dict:
+        """Auto-assign dropped stacked/master calibration files to sessions by filter.
+
+        Each file's filter is detected from its FITS FILTER header, falling back
+        to a filter token in its file name (e.g. ``..._RED_..._flats_stacked``).
+        Files whose filter matches one or more existing sessions are added to
+        every matching session automatically. Returns a ``{frame_type: [files]}``
+        map of the files that could NOT be matched (no filter detected, or no
+        session carries that filter) so the caller can fall back to the manual
+        current/all scope prompt.
+        """
+        leftover: dict[str, list[Path]] = {}
+        for frame_type, file_list in stacked_map.items():
+            for f in file_list:
+                filt = _detect_filter(f)
+                if filt == NO_FILTER:
+                    filt = _detect_filter_from_name(Path(f).name) or NO_FILTER
+                matches = (
+                    [
+                        (i, sess)
+                        for i, sess in enumerate(self.sessions)
+                        if (sess.filter or NO_FILTER) == filt
+                    ]
+                    if filt != NO_FILTER
+                    else []
+                )
+                if not matches:
+                    leftover.setdefault(frame_type, []).append(f)
+                    continue
+                for i, sess in matches:
+                    getattr(sess, frame_type).append(f)
+                labels = ", ".join(self._session_label(i, s) for i, s in matches)
+                self.siril.log(
+                    f"> Added {frame_type} master '{Path(f).name}' to {labels} "
+                    f"by filter '{filt}' ({source_label})",
+                    LogColor.BLUE,
+                )
+        if any(stacked_map.values()) and leftover != stacked_map:
+            self.update_dropdown()
+        return leftover
+
     def _handle_dropped_files(self, paths: list):
         """Called by DragDropTreeWidget when files or folders are dropped onto the list.
 
@@ -1639,6 +1696,12 @@ class PreprocessingInterface(QMainWindow):
 
         # Apply stacked calibration folders → ask session scope if >1 session
         if stacked_additions:
+            # First, auto-route any masters whose filter matches an existing
+            # session (so a RED master flat lands on the RED session, etc.).
+            stacked_additions = self._route_stacked_by_filter(
+                stacked_additions, "folder drop"
+            )
+        if stacked_additions:
             if len(self.sessions) > 1:
                 stacked_names = ", ".join(f"{ft}_stacked" for ft in stacked_additions)
                 msg = QMessageBox(self)
@@ -1671,18 +1734,18 @@ class PreprocessingInterface(QMainWindow):
                 stacked_target_sessions = [self.chosen_session]
                 stacked_session_label = self.session_dropdown.currentText()
 
-            for frame_type, stacked_files in stacked_additions.items():
+            for frame_type, stacked_flist in stacked_additions.items():
                 for session in stacked_target_sessions:
                     match frame_type:
                         case "darks":
-                            session.darks.extend(stacked_files)
+                            session.darks.extend(stacked_flist)
                         case "flats":
-                            session.flats.extend(stacked_files)
+                            session.flats.extend(stacked_flist)
                         case "biases":
-                            session.biases.extend(stacked_files)
+                            session.biases.extend(stacked_flist)
                 if stacked_target_sessions:
                     self.siril.log(
-                        f"> Added {len(stacked_files)} {frame_type} (stacked) files to "
+                        f"> Added {len(stacked_flist)} {frame_type} (stacked) files to "
                         f"{stacked_session_label} (folder drop)",
                         LogColor.BLUE,
                     )
@@ -1710,6 +1773,10 @@ class PreprocessingInterface(QMainWindow):
                 regular_files.append(Path(f))
 
         # Apply stacked calibration files → ask session scope if >1 session
+        if stacked_files:
+            # First, auto-route any masters whose filter matches an existing
+            # session by FITS header or a filter token in the file name.
+            stacked_files = self._route_stacked_by_filter(stacked_files, "drag & drop")
         if stacked_files:
             if len(self.sessions) > 1:
                 stacked_names = ", ".join(f"{ft}_stacked" for ft in stacked_files)
@@ -2407,7 +2474,7 @@ class PreprocessingInterface(QMainWindow):
         for index in black_indices:
             self.siril.cmd("unselect", seq_name, index, index)
 
-    def calibration_stack(self, seq_name):
+    def calibration_stack(self, seq_name, filter_name=None):
         # not in /process dir here
         if seq_name == "flats":
             if os.path.exists(
@@ -2493,6 +2560,13 @@ class PreprocessingInterface(QMainWindow):
                         filename_parts.insert(1, exp)
             except Exception as e:
                 self.siril.log(f"Error reading FITS headers: {e}", LogColor.SALMON)
+
+        # Tag the master with its optical filter so it's easy to identify and so
+        # it can be auto-routed back to the matching session when dropped in.
+        # Inserted last (at index 1) so it sits right after the session name,
+        # e.g. session1_RED_-4.9C_2026-04-02_0s_flats_stacked.
+        if filter_name and filter_name != NO_FILTER:
+            filename_parts.insert(1, filter_name)
 
         dst = os.path.join(
             masters_dir, f"{'_'.join(filename_parts)}{self.fits_extension}"
@@ -4308,7 +4382,9 @@ class PreprocessingInterface(QMainWindow):
                 if session_file_counts.get(image_type, 0) > 0:
                     converted = self.convert_files(image_type=image_type)
                     if converted:
-                        self.calibration_stack(seq_name=image_type)
+                        self.calibration_stack(
+                            seq_name=image_type, filter_name=current_filter
+                        )
                     self.clean_up(prefix=image_type)
                 else:
                     self.siril.log(
