@@ -20,26 +20,24 @@ Lights and flats are automatically split by optical filter, read from the FITS F
 matching a known filter. Each filter is processed as its own session and produces its own final
 stacked image. Darks and biases carry no filter and are shared across all filters in the same drop.
 
-If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically
-plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
-
 This script can be run from any directory but recommended to create a blank directory.
 
-All images are currently copied before processed so it can take up some disk space. This is to mitigate systems that don't allow symlinks. This also
-allows you to choose files from any folder and drive and they will all be consolidated into a single location.
+Symlinks will only work if your home directory is in the same drive as your images, Symlinks also need to be enabled (on windows, enable developer mode).
 
 Target modes:
-  - Single target: all sessions are of the same target and are combined into a single final stack.
-  - Mosaic: sessions are mosaic panels of the same target; each panel is stacked individually,
-    then stitched together with overlap normalization.
+  - Single target: all sessions are of the same target and are combined into a single final stack for EACH filter. Final recomposition is done by the user.
+  - Mosaic: sessions are mosaic panels. The parent folder for each panel must be named "Panel X" (where x is a number). Each panel directory can have
+    unlimited sessions and filters within. Each panel is stacked individually by filter. If a filter exists multiple times in a panel, they get combined.
+    Each panel for a specific filter then gets stitched together so you'll have one giant mosaic for each filter. Final recomposition is done by the user.
 
 Folder conventions (drag & drop an object folder to auto-detect the mode):
-  - Single target: object/<date>/lights (+ darks/flats/biases). One panel; sessions pooled into
-    one final stack per filter.
+  - Single target: object/<date>/lights (+ darks/flats/biases). Sessions pooled into one final stack per filter.
   - Mosaic: object/Panel N/<date>/lights — subfolders named "Panel 1", "panel2", "Panel_03"
     (case-insensitive) mark mosaic tiles. The same panel across several nights is pooled and
     integrated once, then all panels are stitched. Mosaic mode is selected automatically.
   - Absence of a "Panel N" level means single target, single panel.
+  - Structures inside the parent directory matters less because the script will read fits headers to determine the filter and object name.
+    The script will also read the parent folder names to determine the filter and panel if fits headers are missing (unlikely and not recommended).
 
 """
 
@@ -66,6 +64,7 @@ CHANGELOG:
       - Optional "Register final frames": aligns all final stacks to each other (common max
         framing) and saves r_-prefixed registered copies alongside the regular output for easy
         multi-filter compositing
+      - Initial copy from Naztronomy - OSC Preprocessing script
 
 """
 
@@ -136,7 +135,7 @@ from typing import List, Dict
 
 APP_NAME = "Naztronomy - Mono Image Preprocessor"
 VERSION = "1.0.0"
-BUILD = "20260622"
+BUILD = "20260625"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -870,6 +869,126 @@ class PreprocessingInterface(QMainWindow):
         self.current_session = "Session 1"
         self.refresh_file_list()
         self.update_process_separately_checkbox()  # Update checkbox state
+
+    def _filter_groups_for_combine(self) -> dict:
+        """Return {filter: [session indices]} for real-filter groups containing two
+        or more sessions. Sessions with no filter tag are excluded."""
+        groups: dict[str, list[int]] = {}
+        for i, sess in enumerate(self.sessions):
+            filt = getattr(sess, "filter", None)
+            if filt:
+                groups.setdefault(filt, []).append(i)
+        return {f: idxs for f, idxs in groups.items() if len(idxs) > 1}
+
+    def _update_combine_button_state(self):
+        """Enable Combine Like Filters only in single-target mode when at least one
+        filter is shared by two or more sessions."""
+        btn = getattr(self, "combine_filters_btn", None)
+        if btn is None:
+            return
+        mosaic = getattr(self, "mosaic_radio", None)
+        is_single = (mosaic is None) or (not mosaic.isChecked())
+        btn.setEnabled(bool(is_single and self._filter_groups_for_combine()))
+
+    def combine_like_filters(self):
+        """Single-target mode: merge all sessions that share the same filter into one
+        session per filter.
+
+        Lights are pooled (de-duplicated, order preserved). Calibration frames are
+        taken from the first session in each filter group that has them; any extra
+        calibration sets are discarded. Sessions with no filter tag are left as-is.
+        """
+        mosaic = getattr(self, "mosaic_radio", None)
+        if mosaic is not None and mosaic.isChecked():
+            self.siril.log(
+                "Combine Like Filters is only available in single-target mode.",
+                LogColor.SALMON,
+            )
+            return
+
+        groups = self._filter_groups_for_combine()
+        if not groups:
+            self.siril.log(
+                "No sessions share a filter; nothing to combine.", LogColor.BLUE
+            )
+            return
+
+        ordered = sorted(groups.items(), key=lambda kv: _filter_sort_key(kv[0]))
+        total_before = len(self.sessions)
+        merged_away = sum(len(idxs) - 1 for idxs in groups.values())
+        total_after = total_before - merged_away
+        plan_lines = "\n".join(
+            f"\u2022 {filt}: {len(idxs)} sessions \u2192 1" for filt, idxs in ordered
+        )
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Combine Like Filters")
+        msg.setText(
+            "Combine sessions that share a filter?\n\n"
+            f"{plan_lines}\n\n"
+            f"Sessions: {total_before} \u2192 {total_after}\n\n"
+            "Lights are pooled. Calibration frames are kept from the first session\n"
+            "in each filter group that has them; extra calibration sets are discarded."
+        )
+        btn_ok = msg.addButton("Combine", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() is not btn_ok:
+            return
+
+        # Merge, preserving overall order by each filter's first appearance.
+        new_sessions: list[Session] = []
+        target_by_filter: dict[str, Session] = {}
+        dropped_cals = 0
+        for sess in self.sessions:
+            filt = getattr(sess, "filter", None)
+            if not filt:
+                new_sessions.append(sess)
+                continue
+            target = target_by_filter.get(filt)
+            if target is None:
+                target_by_filter[filt] = sess
+                new_sessions.append(sess)
+                continue
+            # Pool lights (skip duplicates already present in the target).
+            existing = set(target.lights)
+            for p in sess.lights:
+                if p not in existing:
+                    target.lights.append(p)
+                    existing.add(p)
+            # Calibration frames: keep the first group session that has each type.
+            for ctype in ("darks", "flats", "biases"):
+                src = getattr(sess, ctype)
+                if not src:
+                    continue
+                if getattr(target, ctype):
+                    dropped_cals += len(src)
+                else:
+                    getattr(target, ctype).extend(src)
+            if target.object_name is None and sess.object_name:
+                target.object_name = sess.object_name
+            if target.panel is None and sess.panel:
+                target.panel = sess.panel
+
+        self.sessions = new_sessions
+        self.update_dropdown()
+        self.session_dropdown.setCurrentIndex(0)
+        self.chosen_session = self.sessions[0]
+        self.current_session = "Session 1"
+        self.refresh_file_list()
+        self.update_process_separately_checkbox()
+
+        summary = ", ".join(
+            f"{filt} \u00d7{len(idxs)}\u21921" for filt, idxs in ordered
+        )
+        self.siril.log(f"> Combined like filters: {summary}.", LogColor.GREEN)
+        if dropped_cals:
+            self.siril.log(
+                f"> Discarded {dropped_cals} duplicate calibration frame(s); kept the "
+                "first set per filter.",
+                LogColor.SALMON,
+            )
 
     def update_dropdown(self):
         session_names = []
@@ -2293,7 +2412,7 @@ class PreprocessingInterface(QMainWindow):
         # self.siril.cmd("cd", "process")
         args = ["seqplatesolve", seq_name]
 
-        args.extend(["-nocache", "-force", "-disto=ps_distortion"])
+        args.extend(["-nocache", "-force", "-disto=distortionFile"])
 
         try:
             self.siril.cmd(*args)
@@ -2719,6 +2838,7 @@ class PreprocessingInterface(QMainWindow):
                 f"{file_name}",
             )
             self.siril.log(f"Saved file: {file_name}", LogColor.GREEN)
+            self.siril.cmd("close")
             return file_name
         except (s.DataError, s.CommandError, s.SirilError) as e:
             self.siril.log(f"Save command execution failed: {e}", LogColor.RED)
@@ -3028,10 +3148,21 @@ class PreprocessingInterface(QMainWindow):
         remove_session_btn = QPushButton("\u2013 Remove Session")
         remove_session_btn.clicked.connect(self.remove_session)
 
+        self.combine_filters_btn = QPushButton("Combine Like Filters")
+        self.combine_filters_btn.setToolTip(
+            "Single-target mode: merge every session that shares the same filter into\n"
+            "one session each (lights pooled). Calibration frames are taken from the\n"
+            "first session in each filter group that has them. Enabled only when two or\n"
+            "more sessions share a filter."
+        )
+        self.combine_filters_btn.clicked.connect(self.combine_like_filters)
+        self.combine_filters_btn.setEnabled(False)
+
         session_row.addWidget(session_label)
         session_row.addWidget(self.session_dropdown)
         session_row.addWidget(add_session_btn)
         session_row.addWidget(remove_session_btn)
+        session_row.addWidget(self.combine_filters_btn)
         session_mgmt_layout.addLayout(session_row)
 
         files_layout.addWidget(session_mgmt_group)
@@ -3593,6 +3724,7 @@ class PreprocessingInterface(QMainWindow):
         self.mosaic_radio.setEnabled(multi_session)
         if not multi_session:
             self.single_target_radio.setChecked(True)
+        self._update_combine_button_state()
 
     def on_target_mode_changed(self, button, checked):
         """Update create_final_stack state when target mode radio selection changes."""
@@ -3604,6 +3736,7 @@ class PreprocessingInterface(QMainWindow):
         else:  # single target
             self.create_final_stack_check.setChecked(True)
             self.create_final_stack_check.setEnabled(True)
+        self._update_combine_button_state()
 
     def _on_filter_mode_changed(self, combo, spinbox):
         """Update spinbox properties when filter mode changes between σ and %."""
@@ -4370,6 +4503,7 @@ class PreprocessingInterface(QMainWindow):
 
         # e.g. CD sessions/session1
         for idx, session in enumerate(session_to_process):
+            self.siril.cmd("close")
             session_name = f"session{idx + 1}"
             current_filter = session_filters[idx]
             self.siril.cmd("cd", f"sessions/{session_name}")
@@ -4580,9 +4714,16 @@ class PreprocessingInterface(QMainWindow):
         ):
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
             self.current_working_directory = self.siril.get_siril_wd()
-            # Create a new sequence for each session
-            for idx, session in enumerate(session_to_process):
-                self.siril.create_new_seq(f"session{idx + 1}_pp_lights_")
+
+            # Each filter is integrated in its OWN isolated folder holding only
+            # that filter's calibrated lights, renumbered under a single
+            # "pp_lights_" prefix. Building one clean sequence per group (instead
+            # of calling create_new_seq repeatedly in the shared collected_lights
+            # folder, which holds many interleaved session prefixes) avoids
+            # Siril's sequence detection choking and crashing on the second
+            # sequence build.
+            final_groups_root = os.path.join(self.collected_lights_dir, "final_groups")
+            os.makedirs(final_groups_root, exist_ok=True)
 
             # Build one final stack per filter (single combined stack when no
             # filters are present).
@@ -4595,49 +4736,49 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
 
-                # Return to collected_lights for this filter's sequences.
-                self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
-                self.current_working_directory = self.siril.get_siril_wd()
-
-                if len(filt_indices) > 1:
-                    session_files = [
-                        f"session{idx + 1}_pp_lights_.seq"
-                        for idx in filt_indices
-                        if os.path.exists(
-                            os.path.join(
-                                self.current_working_directory,
-                                f"session{idx + 1}_pp_lights_.seq",
-                            )
-                        )
-                    ]
-                    seq_name = (
-                        f"pp_lights_merged_{filt}_"
-                        if filt != NO_FILTER
-                        else "pp_lights_merged_"
+                # Pool this filter's calibrated lights into an isolated folder
+                # with a single contiguous sequence name.
+                group_tag = "no_filter" if filt == NO_FILTER else filt.replace(" ", "_")
+                group_dir = os.path.join(final_groups_root, group_tag)
+                os.makedirs(group_dir, exist_ok=True)
+                counter = 1
+                for idx in filt_indices:
+                    prefix = f"session{idx + 1}_pp_lights_"
+                    src_files = sorted(
+                        f
+                        for f in os.listdir(self.collected_lights_dir)
+                        if f.startswith(prefix) and f.endswith(self.fits_extension)
                     )
-                    try:
-                        if session_files:
-                            self.siril.cmd("merge", *session_files, seq_name)
-                            self.siril.log(
-                                f"Merged session files{filt_tag}: "
-                                f"{', '.join(session_files)}",
-                                LogColor.GREEN,
-                            )
-                        else:
-                            self.siril.log(
-                                f"No session files found to merge{filt_tag}",
-                                LogColor.SALMON,
-                            )
-                            continue
-                    except (s.DataError, s.CommandError, s.SirilError) as e:
-                        self.siril.log(
-                            f"Could not merge sequences{filt_tag}. Please see error "
-                            f"and stack the individual sessions manually:\n {e}",
-                            LogColor.RED,
+                    for src_name in src_files:
+                        dst = os.path.join(
+                            group_dir,
+                            f"pp_lights_{counter:05d}{self.fits_extension}",
                         )
-                        continue
-                else:
-                    seq_name = f"session{filt_indices[0] + 1}_pp_lights_"
+                        shutil.copy2(
+                            os.path.join(self.collected_lights_dir, src_name),
+                            dst,
+                        )
+                        counter += 1
+                if counter == 1:
+                    self.siril.log(
+                        f"No calibrated lights found for final stack{filt_tag}; "
+                        "skipping.",
+                        LogColor.SALMON,
+                    )
+                    continue
+
+                # Build the clean sequence once in the isolated folder.
+                self.siril.cmd("cd", f'"{group_dir}"')
+                self.current_working_directory = self.siril.get_siril_wd()
+                # Reset Siril's in-memory state (loaded image and, crucially, the
+                # registration reference-frame data) left over from the previous
+                # filter before building the new sequence. Without this, the
+                # second filter's seqplatesolve/seqapplyreg inherits stale state
+                # and crashes — mirrors the per-session close in the proven flow.
+                self.siril.cmd("close")
+                time.sleep(3)
+                seq_name = "pp_lights_"
+                self.siril.create_new_seq(seq_name)
 
                 if bg_extract:
                     self.seq_bg_extract(seq_name=seq_name)
@@ -4685,9 +4826,7 @@ class PreprocessingInterface(QMainWindow):
                 # Scans for black frames due to existing Siril bug.
                 try:
                     if drizzle:
-                        self.scan_black_frames(
-                            seq_name=seq_name, folder=self.collected_lights_dir
-                        )
+                        self.scan_black_frames(seq_name=seq_name, folder=group_dir)
                 except (s.DataError, s.CommandError, s.SirilError) as e:
                     self.siril.log(
                         f"Data error occurred during black frame scan: {e}",
@@ -4717,10 +4856,21 @@ class PreprocessingInterface(QMainWindow):
                 og_suffix = f"_{filt}_og" if filt != NO_FILTER else "_og"
                 file_name = self.save_image(og_suffix)
                 final_stack_files.append(file_name)
+
                 self.load_image(image_name=file_name)
                 self.siril.log(
                     f"Final stack{filt_tag} saved as {file_name}", LogColor.GREEN
                 )
+
+            # Remove the temporary per-filter working folders now that the final
+            # stacks have been saved to the home directory. Close first so Siril
+            # releases its handle on the last group's sequence; otherwise Windows
+            # can't delete that folder and it is silently left behind.
+            self.siril.cmd("cd", f'"{self.home_directory}"')
+            self.current_working_directory = self.siril.get_siril_wd()
+            self.siril.cmd("close")
+            time.sleep(3)
+            shutil.rmtree(final_groups_root, ignore_errors=True)
         elif not panel_mosaic:
             self.siril.log("Final stack creation skipped", LogColor.BLUE)
 
@@ -4803,6 +4953,12 @@ class PreprocessingInterface(QMainWindow):
                         self.siril.cmd("cd", f'"{group_dir}"')
                         self.current_working_directory = self.siril.get_siril_wd()
 
+                        # Reset Siril's in-memory state (loaded image and
+                        # registration reference-frame data) left over from the
+                        # previous (panel, filter) group before building the new
+                        # sequence, so seqplatesolve/seqapplyreg starts clean.
+                        self.siril.cmd("close")
+                        time.sleep(3)
                         seq_name = "pp_lights_"
                         self.siril.create_new_seq(seq_name)
 
@@ -4910,9 +5066,13 @@ class PreprocessingInterface(QMainWindow):
                         )
 
             # Remove the temporary per-group working folders now that the panel
-            # stacks have been saved to individual_stacks.
+            # stacks have been saved to individual_stacks. Close first so Siril
+            # releases its handle on the last group's sequence; otherwise Windows
+            # can't delete that folder and it is silently left behind.
             self.siril.cmd("cd", f'"{self.home_directory}"')
             self.current_working_directory = self.siril.get_siril_wd()
+            self.siril.cmd("close")
+            time.sleep(3)
             shutil.rmtree(panel_groups_root, ignore_errors=True)
 
         # When calibrated lights were pooled only as a temporary step to build the
