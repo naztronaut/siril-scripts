@@ -3688,6 +3688,8 @@ class PreprocessingInterface(QMainWindow):
         self.create_final_stack_check = QCheckBox("Create final stack")
         self.create_final_stack_check.setToolTip(create_final_stack_tooltip)
         self.create_final_stack_check.setChecked(True)
+        # Mandatory: always create the final stack. Hidden from the UI.
+        self.create_final_stack_check.setVisible(False)
         stacking_layout.addWidget(self.create_final_stack_check)
 
         register_final_frames_tooltip = (
@@ -4067,9 +4069,7 @@ class PreprocessingInterface(QMainWindow):
                     self.mosaic_radio.setChecked(True)
                 else:
                     self.single_target_radio.setChecked(True)
-                self.create_final_stack_check.setChecked(
-                    presets.get("create_final_stack", True)
-                )
+                self.create_final_stack_check.setChecked(True)
                 self.save_calibrated_lights_check.setChecked(
                     presets.get("save_calibrated_lights", False)
                 )
