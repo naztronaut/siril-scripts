@@ -174,6 +174,92 @@ def _is_fits_file(path) -> bool:
     return any(name.endswith(ext) for ext in FITS_INPUT_EXTENSIONS)
 
 
+# Master calibration frames exported from other tools (e.g. PixInsight) often
+# arrive as a single XISF file named masterDark / masterFlat / masterBias. Siril
+# can read XISF natively but must convert it to FITS first, and astropy cannot
+# open XISF at all — so XISF masters are accepted as input but their filter is
+# detected from the file name rather than the header.
+XISF_INPUT_EXTENSIONS = (".xisf",)
+
+
+def _is_xisf_file(path) -> bool:
+    """Return True if `path` looks like an XISF file by extension."""
+    name = str(path).lower()
+    return any(name.endswith(ext) for ext in XISF_INPUT_EXTENSIONS)
+
+
+def _is_supported_input(path) -> bool:
+    """Return True if `path` is an accepted input frame (FITS or XISF)."""
+    return _is_fits_file(path) or _is_xisf_file(path)
+
+
+# Master / stacked calibration files identified by file name. Recognises both
+# Siril-style "..._darks_stacked" tokens and PixInsight-style "masterDark"
+# naming (with or without separators, any case).
+_STACKED_NAME_MAP = {
+    "_darks_stacked": "darks",
+    "_flats_stacked": "flats",
+    "_biases_stacked": "biases",
+}
+_MASTER_NAME_RE = re.compile(r"master[\s_\-]*(dark|flat|bias)", re.IGNORECASE)
+_MASTER_TYPE_MAP = {"dark": "darks", "flat": "flats", "bias": "biases"}
+
+
+def _detect_master_frame_type(name) -> str | None:
+    """Return 'darks'/'flats'/'biases' if `name` looks like a master/stacked
+    calibration file, else None."""
+    stem = Path(name).stem.lower()
+    for suffix, frame_type in _STACKED_NAME_MAP.items():
+        if suffix in stem:
+            return frame_type
+    match = _MASTER_NAME_RE.search(stem)
+    if match:
+        return _MASTER_TYPE_MAP[match.group(1).lower()]
+    return None
+
+
+# Frame-type categorisation from a FITS IMAGETYP header value. Used as a
+# fallback for dropped folders that have no recognised lights/darks/flats/biases
+# subfolder structure. Matching is case-insensitive on the stripped value.
+_IMAGETYP_MAP = {
+    "light": "lights",
+    "light frame": "lights",
+    "object": "lights",
+    "science": "lights",
+    "dark": "darks",
+    "dark frame": "darks",
+    "flat": "flats",
+    "flat frame": "flats",
+    "flat field": "flats",
+    "flatfield": "flats",
+    "bias": "biases",
+    "bias frame": "biases",
+    "zero": "biases",
+    "dark flat": "biases",
+    "dark_flat": "biases",
+    "darkflat": "biases",
+}
+
+
+def _read_fits_imagetyp(path) -> str | None:
+    """Return the canonical frame type ('lights'/'darks'/'flats'/'biases') from a
+    FITS file's IMAGETYP header, or None when absent or unrecognised."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                value = header.get("IMAGETYP")
+                if value not in (None, ""):
+                    key = str(value).strip().lower()
+                    if key in _IMAGETYP_MAP:
+                        return _IMAGETYP_MAP[key]
+    except Exception:
+        return None
+    return None
+
+
 # ── Filter awareness ─────────────────────────────────────────────────────────
 # Canonical filter names mapped to the aliases that may appear either in a FITS
 # "FILTER" header value or in a folder name. Matching is case-insensitive and
@@ -1123,7 +1209,9 @@ class PreprocessingInterface(QMainWindow):
 
                 if child_key in _FT_MAP or child_key in _ST_MAP:
                     files = sorted(
-                        f for f in child.iterdir() if f.is_file() and _is_fits_file(f)
+                        f
+                        for f in child.iterdir()
+                        if f.is_file() and _is_supported_input(f)
                     )
                     if files:
                         # Leaf: recognised dir with direct files
@@ -1216,6 +1304,33 @@ class PreprocessingInterface(QMainWindow):
         if not session_data:
             return None, None
         return session_data, panel_map
+
+    def _scan_folder_by_imagetyp(self, folder: Path) -> dict:
+        """Fallback categorisation when a dropped folder has no recognised
+        lights/darks/flats/biases subfolder structure.
+
+        Recursively collects supported input files under ``folder`` and sorts
+        them into a single session's frame lists. Master frames (FITS or XISF)
+        are categorised by filename first — this is the only path used for XISF,
+        which is never header-read. Remaining FITS files are categorised by their
+        IMAGETYP header. XISF files that are not masters are skipped. Returns
+        ``{frame_type: [files]}`` (empty when nothing recognisable is found).
+        """
+        collected: dict[str, list[Path]] = {}
+        for f in sorted(folder.rglob("*")):
+            if not f.is_file() or not _is_supported_input(f):
+                continue
+            master_type = _detect_master_frame_type(f)
+            if master_type:
+                collected.setdefault(master_type, []).append(f)
+                continue
+            # XISF non-master frames can't be read by astropy — skip them.
+            if not _is_fits_file(f):
+                continue
+            frame_type = _read_fits_imagetyp(f)
+            if frame_type:
+                collected.setdefault(frame_type, []).append(f)
+        return {ft: sorted(flist) for ft, flist in collected.items()}
 
     def _split_group_by_filter(self, frame_dict: dict) -> dict:
         """Split a scanned group's frames into per-filter sub-groups.
@@ -1661,12 +1776,12 @@ class PreprocessingInterface(QMainWindow):
         folders = [p for p in paths if Path(p).is_dir()]
         files = [p for p in paths if Path(p).is_file()]
 
-        # Mono script only accepts FITS data — drop any other dropped files.
-        non_fits = [p for p in files if not _is_fits_file(p)]
-        files = [p for p in files if _is_fits_file(p)]
+        # Mono script accepts FITS data plus XISF master frames — drop anything else.
+        non_fits = [p for p in files if not _is_supported_input(p)]
+        files = [p for p in files if _is_supported_input(p)]
         if non_fits:
             self.siril.log(
-                f"> Ignored {len(non_fits)} non-FITS file(s). Only .fit/.fits files are accepted.",
+                f"> Ignored {len(non_fits)} unsupported file(s). Only .fit/.fits/.xisf files are accepted.",
                 LogColor.SALMON,
             )
 
@@ -1688,7 +1803,9 @@ class PreprocessingInterface(QMainWindow):
             if folder_key in _FOLDER_TYPE_MAP:
                 frame_type = _FOLDER_TYPE_MAP[folder_key]
                 folder_files = sorted(
-                    f for f in folder.iterdir() if f.is_file() and _is_fits_file(f)
+                    f
+                    for f in folder.iterdir()
+                    if f.is_file() and _is_supported_input(f)
                 )
                 if folder_files:
                     folder_additions.setdefault(frame_type, []).extend(folder_files)
@@ -1707,7 +1824,9 @@ class PreprocessingInterface(QMainWindow):
             elif folder_key in _STACKED_FOLDER_MAP:
                 frame_type = _STACKED_FOLDER_MAP[folder_key]
                 folder_files = sorted(
-                    f for f in folder.iterdir() if f.is_file() and _is_fits_file(f)
+                    f
+                    for f in folder.iterdir()
+                    if f.is_file() and _is_supported_input(f)
                 )
                 if folder_files:
                     stacked_additions.setdefault(frame_type, []).extend(folder_files)
@@ -1743,12 +1862,30 @@ class PreprocessingInterface(QMainWindow):
                 # Scan recursively for recognised frame-type subdirectories
                 mode, scan_data = self._scan_folder_for_sessions(folder)
                 if mode == "none":
-                    self.siril.log(
-                        f"> Folder '{folder.name}' does not contain recognised "
-                        f"subfolders (lights, darks, flats, biases, dark_flats, "
-                        f"darks_stacked, flats_stacked, biases_stacked). Skipping.",
-                        LogColor.SALMON,
-                    )
+                    # Fallback: no recognised subfolders — categorise loose FITS
+                    # files by their IMAGETYP header into a single session.
+                    by_type = self._scan_folder_by_imagetyp(folder)
+                    if by_type:
+                        pending_single_sessions[folder] = by_type
+                        total = sum(len(v) for v in by_type.values())
+                        summary = ", ".join(
+                            f"{len(v)} {ft}" for ft, v in sorted(by_type.items())
+                        )
+                        self.siril.log(
+                            f"> Folder '{folder.name}' has no recognised "
+                            f"subfolders; categorised {total} file(s) by IMAGETYP "
+                            f"header ({summary}).",
+                            LogColor.BLUE,
+                        )
+                    else:
+                        self.siril.log(
+                            f"> Folder '{folder.name}' does not contain recognised "
+                            f"subfolders (lights, darks, flats, biases, dark_flats, "
+                            f"darks_stacked, flats_stacked, biases_stacked) and no "
+                            f"FITS files with a recognisable IMAGETYP header. "
+                            f"Skipping.",
+                            LogColor.SALMON,
+                        )
                 elif mode == "single":
                     # Track per-folder — resolved after the loop
                     pending_single_sessions[folder] = scan_data
@@ -1870,25 +2007,16 @@ class PreprocessingInterface(QMainWindow):
                     )
 
         # ── Process plain files ──────────────────────────────────────────────
-        # First, pull out any stacked calibration files identified by filename pattern.
-        # e.g. session1_240s_2024-12-03_darks_stacked.fit → darks
-        _STACKED_FILE_SUFFIXES = {
-            "_darks_stacked": "darks",
-            "_flats_stacked": "flats",
-            "_biases_stacked": "biases",
-        }
-
+        # First, pull out any stacked/master calibration files identified by
+        # filename pattern, e.g. session1_240s_2024-12-03_darks_stacked.fit or a
+        # PixInsight masterDark.xisf → darks.
         stacked_files: dict[str, list[Path]] = {}
         regular_files: list[Path] = []
         for f in files:
-            stem = Path(f).stem.lower()
-            matched = False
-            for suffix, frame_type in _STACKED_FILE_SUFFIXES.items():
-                if suffix in stem:
-                    stacked_files.setdefault(frame_type, []).append(Path(f))
-                    matched = True
-                    break
-            if not matched:
+            master_type = _detect_master_frame_type(f)
+            if master_type:
+                stacked_files.setdefault(master_type, []).append(Path(f))
+            else:
                 regular_files.append(Path(f))
 
         # Apply stacked calibration files → ask session scope if >1 session
@@ -2040,12 +2168,12 @@ class PreprocessingInterface(QMainWindow):
 
             paths = list(map(Path, file_paths))
 
-            # Mono script only accepts FITS data — drop anything else.
-            non_fits = [p for p in paths if not _is_fits_file(p)]
-            paths = [p for p in paths if _is_fits_file(p)]
+            # Mono script accepts FITS data plus XISF master frames — drop anything else.
+            non_fits = [p for p in paths if not _is_supported_input(p)]
+            paths = [p for p in paths if _is_supported_input(p)]
             if non_fits:
                 self.siril.log(
-                    f"> Ignored {len(non_fits)} non-FITS file(s). Only .fit/.fits files are accepted.",
+                    f"> Ignored {len(non_fits)} unsupported file(s). Only .fit/.fits/.xisf files are accepted.",
                     LogColor.SALMON,
                 )
             if not paths:
@@ -2347,19 +2475,42 @@ class PreprocessingInterface(QMainWindow):
                 )
                 src = os.path.join(directory, first_file)
 
+                process_dir = os.path.join(self.current_working_directory, "process")
+                os.makedirs(process_dir, exist_ok=True)
                 dst = os.path.join(
-                    self.current_working_directory,
-                    "process",
+                    process_dir,
                     f"{image_type}_stacked{self.fits_extension}",
                 )
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                self.siril.log(
-                    f"Copied master {image_type} to process as {image_type}_stacked.",
-                    LogColor.BLUE,
-                )
+
+                if _is_fits_file(first_file):
+                    shutil.copy2(src, dst)
+                    self.siril.log(
+                        f"Copied master {image_type} to process as {image_type}_stacked.",
+                        LogColor.BLUE,
+                    )
+                else:
+                    # Non-FITS master (e.g. an XISF masterDark/Flat/Bias):
+                    # astropy can't read it and a raw copy would leave XISF bytes
+                    # inside a .fit file, so let Siril load it and re-save it as a
+                    # genuine FITS master.
+                    try:
+                        self.siril.cmd("load", f'"{first_file}"')
+                        self.siril.cmd("save", f'"../process/{image_type}_stacked"')
+                        self.siril.cmd("close")
+                        self.siril.log(
+                            f"Converted master {image_type} "
+                            f"({os.path.splitext(first_file)[1]}) to process as "
+                            f"{image_type}_stacked.",
+                            LogColor.BLUE,
+                        )
+                    except (s.DataError, s.CommandError, s.SirilError) as e:
+                        self.siril.log(
+                            f"Master {image_type} conversion failed: {e}",
+                            LogColor.RED,
+                        )
+                        self.close_dialog()
                 self.siril.cmd("cd", "..")
-                # return false because there's no conversion
+                # return false because there's no stacking conversion
                 return False
             else:
                 try:
@@ -3537,6 +3688,8 @@ class PreprocessingInterface(QMainWindow):
         self.create_final_stack_check = QCheckBox("Create final stack")
         self.create_final_stack_check.setToolTip(create_final_stack_tooltip)
         self.create_final_stack_check.setChecked(True)
+        # Mandatory: always create the final stack. Hidden from the UI.
+        self.create_final_stack_check.setVisible(False)
         stacking_layout.addWidget(self.create_final_stack_check)
 
         register_final_frames_tooltip = (
@@ -3916,9 +4069,7 @@ class PreprocessingInterface(QMainWindow):
                     self.mosaic_radio.setChecked(True)
                 else:
                     self.single_target_radio.setChecked(True)
-                self.create_final_stack_check.setChecked(
-                    presets.get("create_final_stack", True)
-                )
+                self.create_final_stack_check.setChecked(True)
                 self.save_calibrated_lights_check.setChecked(
                     presets.get("save_calibrated_lights", False)
                 )
