@@ -122,7 +122,8 @@ from PyQt6.QtGui import (
     QColor,
     QBrush,
 )
-from datetime import datetime
+from datetime import datetime, timedelta
+import csv
 import time
 import os
 import sys
@@ -508,6 +509,113 @@ def _get_exptime_temp(path) -> tuple[float | None, float | None]:
             temp = _parse_temp_from_name(path)
         return exptime, temp
     return _parse_exptime_from_name(path), _parse_temp_from_name(path)
+
+
+def _parse_dateobs_night(value) -> str | None:
+    """Convert a FITS DATE-OBS value to the acquisition-night date (YYYY-MM-DD).
+
+    DATE-OBS is a UTC timestamp at the start of the exposure. Subtracting 12
+    hours before taking the date rolls frames captured after midnight back into
+    the night the session started, which is the convention AstroBin expects.
+    Returns None when the value cannot be parsed.
+    """
+    if value in (None, ""):
+        return None
+    text = str(value).strip().rstrip("Z")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        # Date-only header (no time component): use the date as-is, since there
+        # is no exposure time to roll back across midnight.
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return None
+    return (dt - timedelta(hours=12)).date().isoformat()
+
+
+def _read_light_metadata(path) -> dict:
+    """Read AstroBin-relevant metadata from a single light frame's FITS header.
+
+    Returns a dict with any of: date, filterName, binning, gain, sensorCooling,
+    fNumber, duration. Missing values are omitted. XISF frames (which astropy
+    cannot open) yield only what can be parsed from the file name.
+    """
+    meta: dict = {}
+    exptime, temp = _get_exptime_temp(path)
+    if exptime is not None:
+        meta["duration"] = exptime
+    if temp is not None:
+        meta["sensorCooling"] = temp
+
+    if not _is_fits_file(path):
+        return meta
+
+    try:
+        with fits.open(str(path)) as hdul:
+            header = {}
+            for hdu in hdul:
+                hdr = getattr(hdu, "header", None)
+                if hdr is not None:
+                    for key in hdr.keys():
+                        if key and key not in header:
+                            header[key] = hdr.get(key)
+    except Exception:
+        return meta
+
+    def _first(*keys):
+        for key in keys:
+            val = header.get(key)
+            if val not in (None, ""):
+                return val
+        return None
+
+    night = _parse_dateobs_night(_first("DATE-OBS", "DATE_OBS"))
+    if night:
+        meta["date"] = night
+
+    filter_name = _first("FILTER")
+    if filter_name not in (None, ""):
+        meta["filterName"] = str(filter_name).strip()
+
+    binning = _first("XBINNING", "BINNING", "BINX")
+    if binning not in (None, ""):
+        try:
+            meta["binning"] = int(float(binning))
+        except (TypeError, ValueError):
+            pass
+
+    gain = _first("GAIN", "EGAIN")
+    if gain not in (None, ""):
+        try:
+            meta["gain"] = float(gain)
+        except (TypeError, ValueError):
+            pass
+
+    if "sensorCooling" not in meta:
+        cooling = _first("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "SET-TEMP", "TEMP")
+        if cooling not in (None, ""):
+            try:
+                meta["sensorCooling"] = float(cooling)
+            except (TypeError, ValueError):
+                pass
+
+    fnumber = _first("FOCRATIO", "FNUMBER", "F-RATIO")
+    if fnumber not in (None, ""):
+        try:
+            meta["fNumber"] = float(fnumber)
+        except (TypeError, ValueError):
+            pass
+
+    if "duration" not in meta:
+        dur = _first("EXPTIME", "EXPOSURE")
+        if dur not in (None, ""):
+            try:
+                meta["duration"] = float(dur)
+            except (TypeError, ValueError):
+                pass
+
+    return meta
 
 
 # ── Panel awareness (mosaic projects) ────────────────────────────────────────
@@ -2706,6 +2814,180 @@ class PreprocessingInterface(QMainWindow):
         self.update_dropdown()
         self.refresh_file_list()
 
+    # AstroBin acquisition CSV columns, in order. Only "number" and "duration"
+    # are mandatory; the rest are emitted (header always present) when the data
+    # is available and left blank otherwise.
+    _CSV_COLUMNS = (
+        "date",
+        "filter",
+        "filterName",
+        "number",
+        "duration",
+        "binning",
+        "gain",
+        "sensorCooling",
+        "fNumber",
+        "darks",
+        "flats",
+        "flatDarks",
+        "bias",
+        "bortle",
+    )
+
+    @staticmethod
+    def _csv_num(value):
+        """Format a number for CSV: drop a trailing .0 from whole numbers."""
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _session_csv_row(self, session) -> dict | None:
+        """Build one AstroBin CSV row from a session.
+
+        Returns None when the session has no lights (the row would then have no
+        mandatory 'number'/'duration').
+        """
+        if not session.lights:
+            return None
+
+        meta = _read_light_metadata(session.lights[0])
+
+        duration = meta.get("duration")
+        cooling = meta.get("sensorCooling")
+        row = {
+            "date": meta.get("date", ""),
+            "filter": "",  # AstroBin filter ID — not derivable from headers
+            "filterName": meta.get("filterName")
+            or (session.filter if session.filter and session.filter != NO_FILTER else ""),
+            "number": str(len(session.lights)),
+            "duration": self._csv_num(duration),
+            "binning": self._csv_num(meta.get("binning")),
+            "gain": self._csv_num(meta.get("gain")),
+            "sensorCooling": (
+                self._csv_num(round(cooling)) if cooling is not None else ""
+            ),
+            "fNumber": f"{meta['fNumber']:.2f}" if "fNumber" in meta else "",
+            "darks": str(len(session.darks)) if session.darks else "",
+            "flats": str(len(session.flats)) if session.flats else "",
+            "flatDarks": "",  # flat-darks are not tracked per session
+            "bias": str(len(session.biases)) if session.biases else "",
+            "bortle": "",  # sky quality — not derivable from headers
+        }
+        return row
+
+    def _prompt_bortle(self) -> str | None:
+        """Pop up a small dialog asking for the Bortle scale to apply to every
+        row. Returns the chosen value as a string ("" when 'Leave blank' is
+        selected), or None if the user cancels."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Bortle Sky Quality")
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel(
+            "Select the Bortle scale to apply to every session:"
+        )
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.addItem("", "")
+        bortle_descriptions = {
+            1: "Excellent dark-sky site",
+            2: "Typical truly dark site",
+            3: "Rural sky",
+            4: "Rural/suburban transition",
+            5: "Suburban sky",
+            6: "Bright suburban sky",
+            7: "Suburban/urban transition",
+            8: "City sky",
+            9: "Inner-city sky",
+        }
+        for value, desc in bortle_descriptions.items():
+            combo.addItem(f"{value} \u2014 {desc}", str(value))
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return combo.currentData()
+
+    def export_sessions_csv(self):
+        """Export all sessions with lights to an AstroBin acquisition CSV."""
+        rows = []
+        for session in self.sessions:
+            row = self._session_csv_row(session)
+            if row is not None:
+                rows.append(row)
+
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Export Sessions to CSV",
+                "No sessions with light frames to export.",
+            )
+            return
+
+        missing_duration = sum(1 for r in rows if not r["duration"])
+        if missing_duration:
+            self.siril.log(
+                f"> {missing_duration} session(s) have no detectable exposure "
+                "time; their 'duration' column will be blank.",
+                LogColor.SALMON,
+            )
+
+        # Ask for the Bortle sky-quality scale and apply it to every row.
+        bortle = self._prompt_bortle()
+        if bortle is None:
+            return  # user cancelled
+        for row in rows:
+            row["bortle"] = bortle
+
+        try:
+            start_dir = self.siril.get_siril_wd()
+        except Exception:
+            start_dir = ""
+        default_path = os.path.join(start_dir, "astrobin_acquisitions.csv")
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Sessions to CSV",
+            default_path,
+            "CSV Files (*.csv)",
+        )
+        if not save_path:
+            return
+        if not save_path.lower().endswith(".csv"):
+            save_path += ".csv"
+
+        try:
+            with open(save_path, "w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(self._CSV_COLUMNS))
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as exc:
+            self.siril.log(f"Failed to export CSV: {exc}", LogColor.RED)
+            QMessageBox.warning(
+                self,
+                "Export Sessions to CSV",
+                f"Could not write the CSV file:\n{exc}",
+            )
+            return
+
+        self.siril.log(
+            f"Exported {len(rows)} session(s) to {save_path}", LogColor.GREEN
+        )
+
     def refresh_file_list(self):
         self.file_listbox.setSortingEnabled(False)
         self.file_listbox.clear()
@@ -3820,6 +4102,28 @@ class PreprocessingInterface(QMainWindow):
         )
         self.file_listbox.viewport().setMouseTracking(True)
         session_content_layout.addWidget(self.file_listbox)
+
+        # Export sessions to an AstroBin acquisition CSV.
+        export_csv_btn = QPushButton("Export Sessions to CSV")
+        export_csv_btn.setToolTip(
+            "Export each session (date, filter, frame counts, exposure, gain,\n"
+            "binning, cooling, f-number) to an AstroBin acquisition CSV file.\n"
+            "'number' and 'duration' are always filled; other columns are blank\n"
+            "when the data is unavailable."
+        )
+        export_csv_btn.setStyleSheet(
+            "QPushButton {"
+            "    background-color: #6f42c1;"
+            "    color: white;"
+            "    border: none;"
+            "    padding: 6px 12px;"
+            "    border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #8250df; }"
+            "QPushButton:pressed { background-color: #5a32a3; }"
+        )
+        export_csv_btn.clicked.connect(self.export_sessions_csv)
+        session_content_layout.addWidget(export_csv_btn)
 
         file_buttons = QHBoxLayout()
         remove_btn = QPushButton("Remove Selected File(s)")
