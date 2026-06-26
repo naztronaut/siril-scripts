@@ -84,10 +84,12 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QPushButton,
     QLabel,
     QComboBox,
     QFrame,
+    QLineEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QHeaderView,
@@ -120,7 +122,8 @@ from PyQt6.QtGui import (
     QColor,
     QBrush,
 )
-from datetime import datetime
+from datetime import datetime, timedelta
+import csv
 import time
 import os
 import sys
@@ -390,6 +393,229 @@ def _detect_object(paths) -> str | None:
     if len(found) == 1:
         return next(iter(found))
     return None
+
+
+# ── Exposure / temperature detection for master-dark matching ──────────────
+# Master darks are matched to a session by exposure time (must agree) and sensor
+# temperature (nearest within a tolerance). For FITS masters the values come from
+# the EXPTIME/EXPOSURE and CCD-TEMP/CCD_TEMP/TEMP headers. astropy cannot read
+# XISF, so for XISF masters the values are parsed from the file name instead
+# (e.g. "masterDark_300s_-10C.xisf", "masterDark_EXPTIME-300.00s_-10degC.xisf").
+
+# Temperature tolerance (°C) when matching a master dark to a session.
+MASTER_DARK_TEMP_TOLERANCE: float = 3.0
+# Exposure tolerance (seconds) when matching a master dark to a session.
+MASTER_DARK_EXP_TOLERANCE: float = 1.0
+
+_EXPTIME_NAME_RE = re.compile(
+    r"exp(?:osure|time)?[\s_\-]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)?",
+    re.IGNORECASE,
+)
+_EXPTIME_NAME_RE_GENERIC = re.compile(
+    r"([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)\b",
+    re.IGNORECASE,
+)
+_TEMP_NAME_RE = re.compile(
+    # A single separator (space/_/=/:/-) is allowed between the key and the
+    # value; the value's own leading "-" is preserved so PixInsight-style
+    # "TEMP--15.0" (separator dash + negative value) parses as -15.0 rather
+    # than dropping the sign.
+    r"(?:ccd[\s_\-]*temp|temp)[\s_=:\-]?(-?[0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
+_TEMP_NAME_RE_GENERIC = re.compile(
+    r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:deg)?\s*c(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def _read_fits_exptime(path) -> float | None:
+    """Return the exposure time (seconds) from a FITS EXPTIME/EXPOSURE header."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                for key in ("EXPTIME", "EXPOSURE"):
+                    value = header.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            continue
+    except Exception:
+        return None
+    return None
+
+
+def _read_fits_temp(path) -> float | None:
+    """Return the sensor temperature (°C) from a FITS CCD-TEMP header."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                for key in ("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "TEMP"):
+                    value = header.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            continue
+    except Exception:
+        return None
+    return None
+
+
+def _parse_exptime_from_name(name) -> float | None:
+    """Parse an exposure time (seconds) from a file name, or None."""
+    stem = Path(name).stem
+    match = _EXPTIME_NAME_RE.search(stem) or _EXPTIME_NAME_RE_GENERIC.search(stem)
+    if match:
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _parse_temp_from_name(name) -> float | None:
+    """Parse a sensor temperature (°C) from a file name, or None."""
+    stem = Path(name).stem
+    match = _TEMP_NAME_RE.search(stem) or _TEMP_NAME_RE_GENERIC.search(stem)
+    if match:
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _get_exptime_temp(path) -> tuple[float | None, float | None]:
+    """Return (exposure_seconds, temperature_C) for a frame.
+
+    FITS frames are read from their headers, falling back to the file name for
+    any value the header does not provide. XISF frames (which astropy cannot
+    open) are parsed from the file name only.
+    """
+    if _is_fits_file(path):
+        exptime = _read_fits_exptime(path)
+        temp = _read_fits_temp(path)
+        if exptime is None:
+            exptime = _parse_exptime_from_name(path)
+        if temp is None:
+            temp = _parse_temp_from_name(path)
+        return exptime, temp
+    return _parse_exptime_from_name(path), _parse_temp_from_name(path)
+
+
+def _parse_dateobs_night(value) -> str | None:
+    """Convert a FITS DATE-OBS value to the acquisition-night date (YYYY-MM-DD).
+
+    DATE-OBS is a UTC timestamp at the start of the exposure. Subtracting 12
+    hours before taking the date rolls frames captured after midnight back into
+    the night the session started, which is the convention AstroBin expects.
+    Returns None when the value cannot be parsed.
+    """
+    if value in (None, ""):
+        return None
+    text = str(value).strip().rstrip("Z")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        # Date-only header (no time component): use the date as-is, since there
+        # is no exposure time to roll back across midnight.
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return None
+    return (dt - timedelta(hours=12)).date().isoformat()
+
+
+def _read_light_metadata(path) -> dict:
+    """Read AstroBin-relevant metadata from a single light frame's FITS header.
+
+    Returns a dict with any of: date, filterName, binning, gain, sensorCooling,
+    fNumber, duration. Missing values are omitted. XISF frames (which astropy
+    cannot open) yield only what can be parsed from the file name.
+    """
+    meta: dict = {}
+    exptime, temp = _get_exptime_temp(path)
+    if exptime is not None:
+        meta["duration"] = exptime
+    if temp is not None:
+        meta["sensorCooling"] = temp
+
+    if not _is_fits_file(path):
+        return meta
+
+    try:
+        with fits.open(str(path)) as hdul:
+            header = {}
+            for hdu in hdul:
+                hdr = getattr(hdu, "header", None)
+                if hdr is not None:
+                    for key in hdr.keys():
+                        if key and key not in header:
+                            header[key] = hdr.get(key)
+    except Exception:
+        return meta
+
+    def _first(*keys):
+        for key in keys:
+            val = header.get(key)
+            if val not in (None, ""):
+                return val
+        return None
+
+    night = _parse_dateobs_night(_first("DATE-OBS", "DATE_OBS"))
+    if night:
+        meta["date"] = night
+
+    filter_name = _first("FILTER")
+    if filter_name not in (None, ""):
+        meta["filterName"] = str(filter_name).strip()
+
+    binning = _first("XBINNING", "BINNING", "BINX")
+    if binning not in (None, ""):
+        try:
+            meta["binning"] = int(float(binning))
+        except (TypeError, ValueError):
+            pass
+
+    gain = _first("GAIN", "EGAIN")
+    if gain not in (None, ""):
+        try:
+            meta["gain"] = float(gain)
+        except (TypeError, ValueError):
+            pass
+
+    if "sensorCooling" not in meta:
+        cooling = _first("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "SET-TEMP", "TEMP")
+        if cooling not in (None, ""):
+            try:
+                meta["sensorCooling"] = float(cooling)
+            except (TypeError, ValueError):
+                pass
+
+    fnumber = _first("FOCRATIO", "FNUMBER", "F-RATIO")
+    if fnumber not in (None, ""):
+        try:
+            meta["fNumber"] = float(fnumber)
+        except (TypeError, ValueError):
+            pass
+
+    if "duration" not in meta:
+        dur = _first("EXPTIME", "EXPOSURE")
+        if dur not in (None, ""):
+            try:
+                meta["duration"] = float(dur)
+            except (TypeError, ValueError):
+                pass
+
+    return meta
 
 
 # ── Panel awareness (mosaic projects) ────────────────────────────────────────
@@ -783,6 +1009,15 @@ class PreprocessingInterface(QMainWindow):
         # Sessions
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
+
+        # Reusable master calibration config (set via the Master Config dialog).
+        # master_darks_dir: folder of master darks matched to sessions by
+        # exposure + temperature. master_bias_path: single master bias applied
+        # to every session. Persisted to a small JSON file in the Siril config
+        # dir so the locations are pre-filled on the next run.
+        self.master_darks_dir: str | None = None
+        self.master_bias_path: str | None = None
+        self._load_master_config()
 
         self.session_dropdown = QComboBox()
         # self.update_dropdown()  # Fill it with sessions
@@ -2291,6 +2526,468 @@ class PreprocessingInterface(QMainWindow):
             cache[key] = obj if obj else "\u2014"
         return cache[key]
 
+    def _master_config_path(self) -> Path | None:
+        """Return the path to the shared Naztronomy scripts config JSON, or None.
+
+        The file lives in the Siril user config directory and is shared across
+        the Naztronomy scripts; this script reads/writes its own ``mono``
+        section so the master darks folder and master bias file are remembered
+        between runs.
+        """
+        try:
+            config_dir = self.siril.get_siril_configdir()
+        except Exception:
+            return None
+        if not config_dir:
+            return None
+        return Path(config_dir) / "naztronomy_scripts_config.json"
+
+    # Top-level key for this script's settings within the shared config file.
+    _CONFIG_SECTION = "mono"
+
+    def _load_master_config(self):
+        """Load the persisted master darks folder and master bias file, if any."""
+        path = self._master_config_path()
+        if not path or not path.is_file():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            return
+        darks = section.get("master_darks_dir")
+        bias = section.get("master_bias_path")
+        self.master_darks_dir = darks or None
+        self.master_bias_path = bias or None
+
+    def _save_master_config(self):
+        """Persist the current master darks folder and master bias file.
+
+        The shared config file is read first so other scripts' sections are
+        preserved, then only this script's ``mono`` section is updated.
+        """
+        path = self._master_config_path()
+        if not path:
+            return
+        data = {}
+        if path.is_file():
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, ValueError):
+                data = {}
+        data[self._CONFIG_SECTION] = {
+            "master_darks_dir": self.master_darks_dir or "",
+            "master_bias_path": self.master_bias_path or "",
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            self.siril.log(f"> Saved config to {path}", LogColor.BLUE)
+        except OSError as exc:
+            self.siril.log(f"> Could not save master config: {exc}", LogColor.SALMON)
+
+    def open_master_config(self):
+        """Popup to configure the master darks folder and the master bias file."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Master Calibration Config")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(520)
+        layout = QVBoxLayout(dialog)
+
+        intro = QLabel(
+            "Master darks are matched to each session by exposure time and\n"
+            "temperature. The master bias is applied to every session. Click\n"
+            "'Import Masters' afterwards to apply them. These locations are\n"
+            "remembered between runs."
+        )
+        intro.setStyleSheet("color: #555; font-size: 11px;")
+        layout.addWidget(intro)
+
+        layout.addWidget(QLabel("<b>Master darks folder</b>"))
+        darks_row = QHBoxLayout()
+        darks_edit = QLineEdit(self.master_darks_dir or "")
+        darks_edit.setPlaceholderText(
+            "Folder containing master dark frames (FITS/XISF)"
+        )
+        darks_browse = QPushButton("Browse\u2026")
+        darks_row.addWidget(darks_edit)
+        darks_row.addWidget(darks_browse)
+        layout.addLayout(darks_row)
+
+        layout.addWidget(QLabel("<b>Master bias file</b>"))
+        bias_row = QHBoxLayout()
+        bias_edit = QLineEdit(self.master_bias_path or "")
+        bias_edit.setPlaceholderText("Single master bias frame (FITS/XISF)")
+        bias_browse = QPushButton("Browse\u2026")
+        bias_row.addWidget(bias_edit)
+        bias_row.addWidget(bias_browse)
+        layout.addLayout(bias_row)
+
+        def browse_darks():
+            start = darks_edit.text().strip() or self.siril.get_siril_wd()
+            chosen = QFileDialog.getExistingDirectory(
+                dialog, "Select Master Darks Folder", start
+            )
+            if chosen:
+                darks_edit.setText(chosen)
+
+        def browse_bias():
+            start = bias_edit.text().strip() or self.siril.get_siril_wd()
+            chosen, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "Select Master Bias File",
+                start,
+                "Calibration frames (*.fit *.fits *.fit.fz *.fits.fz *.xisf)",
+            )
+            if chosen:
+                bias_edit.setText(chosen)
+
+        darks_browse.clicked.connect(browse_darks)
+        bias_browse.clicked.connect(browse_bias)
+
+        btn_row = QHBoxLayout()
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip(
+            "Clear the saved master darks folder and master bias file."
+        )
+        clear_btn.clicked.connect(lambda: (darks_edit.clear(), bias_edit.clear()))
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(True)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+        cancel_btn.clicked.connect(dialog.reject)
+        save_btn.clicked.connect(dialog.accept)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.master_darks_dir = darks_edit.text().strip() or None
+            self.master_bias_path = bias_edit.text().strip() or None
+            self._save_master_config()
+            self.siril.log(
+                "Master config saved: darks="
+                f"{self.master_darks_dir or 'none'}, "
+                f"bias={self.master_bias_path or 'none'}",
+                LogColor.BLUE,
+            )
+
+    def _match_master_dark(self, dark_library, light_exp, light_temp):
+        """Pick the best master dark for a light's exposure/temperature.
+
+        Exposure must agree within MASTER_DARK_EXP_TOLERANCE seconds. Among the
+        exposure matches the one with the nearest temperature (within
+        MASTER_DARK_TEMP_TOLERANCE) is chosen. When neither the light nor any
+        candidate carries a temperature, the first exposure match is used.
+        Returns the chosen Path, or None when nothing matches.
+        """
+        exp_matches = [
+            (path, temp)
+            for (path, exptime, temp) in dark_library
+            if abs(exptime - light_exp) <= MASTER_DARK_EXP_TOLERANCE
+        ]
+        if not exp_matches:
+            return None
+
+        if light_temp is None or all(temp is None for _, temp in exp_matches):
+            return exp_matches[0][0]
+
+        best_path = None
+        best_delta = None
+        for path, temp in exp_matches:
+            if temp is None:
+                continue
+            delta = abs(temp - light_temp)
+            if delta <= MASTER_DARK_TEMP_TOLERANCE and (
+                best_delta is None or delta < best_delta
+            ):
+                best_delta = delta
+                best_path = path
+        return best_path
+
+    def import_masters(self):
+        """Match configured master darks to each session by exposure+temperature
+        and apply the configured master bias to every session."""
+        if not self.master_darks_dir and not self.master_bias_path:
+            QMessageBox.information(
+                self,
+                "Import Masters",
+                "No master darks folder or master bias file configured.\n\n"
+                "Click 'Master Config…' first to set them.",
+            )
+            return
+
+        # Build the master-dark library: (path, exptime, temp) per dark file.
+        dark_library: list[tuple[Path, float, float | None]] = []
+        if self.master_darks_dir:
+            folder = Path(self.master_darks_dir)
+            if folder.is_dir():
+                for f in sorted(folder.rglob("*")):
+                    if not f.is_file() or not _is_supported_input(f):
+                        continue
+                    exptime, temp = _get_exptime_temp(f)
+                    if exptime is None:
+                        self.siril.log(
+                            f"> Skipping master dark '{f.name}': no exposure time "
+                            "found in header or file name",
+                            LogColor.SALMON,
+                        )
+                        continue
+                    dark_library.append((f, exptime, temp))
+            else:
+                self.siril.log(
+                    f"> Master darks folder not found: {self.master_darks_dir}",
+                    LogColor.SALMON,
+                )
+
+        bias_file: Path | None = None
+        if self.master_bias_path:
+            candidate = Path(self.master_bias_path)
+            if candidate.is_file():
+                bias_file = candidate
+            else:
+                self.siril.log(
+                    f"> Master bias file not found: {self.master_bias_path}",
+                    LogColor.SALMON,
+                )
+
+        darks_applied = 0
+        bias_applied = 0
+        for index, session in enumerate(self.sessions):
+            label = self._session_label(index, session)
+            if not session.lights:
+                continue
+
+            if dark_library:
+                light_exp, light_temp = _get_exptime_temp(session.lights[0])
+                if light_exp is None:
+                    self.siril.log(
+                        f"> {label}: could not read light exposure time; "
+                        "skipping master-dark match",
+                        LogColor.SALMON,
+                    )
+                else:
+                    best = self._match_master_dark(dark_library, light_exp, light_temp)
+                    if best is None:
+                        temp_part = (
+                            f" / temp {light_temp:g}\u00b0C"
+                            if light_temp is not None
+                            else ""
+                        )
+                        self.siril.log(
+                            f"> {label}: no master dark matches exposure "
+                            f"{light_exp:g}s{temp_part} \u2014 skipped",
+                            LogColor.SALMON,
+                        )
+                    elif best not in session.darks:
+                        session.darks.append(best)
+                        darks_applied += 1
+                        self.siril.log(
+                            f"> {label}: applied master dark '{best.name}'",
+                            LogColor.GREEN,
+                        )
+
+            if bias_file is not None and bias_file not in session.biases:
+                session.biases.append(bias_file)
+                bias_applied += 1
+
+        if bias_file is not None and bias_applied:
+            self.siril.log(
+                f"> Applied master bias '{bias_file.name}' to {bias_applied} "
+                "session(s)",
+                LogColor.GREEN,
+            )
+
+        self.siril.log(
+            f"Import Masters complete: {darks_applied} master dark(s) and "
+            f"{bias_applied} master bias assignment(s) added.",
+            LogColor.BLUE,
+        )
+        self.update_dropdown()
+        self.refresh_file_list()
+
+    # AstroBin acquisition CSV columns, in order. Only "number" and "duration"
+    # are mandatory; the rest are emitted (header always present) when the data
+    # is available and left blank otherwise.
+    _CSV_COLUMNS = (
+        "date",
+        "filter",
+        "filterName",
+        "number",
+        "duration",
+        "binning",
+        "gain",
+        "sensorCooling",
+        "fNumber",
+        "darks",
+        "flats",
+        "flatDarks",
+        "bias",
+        "bortle",
+    )
+
+    @staticmethod
+    def _csv_num(value):
+        """Format a number for CSV: drop a trailing .0 from whole numbers."""
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _session_csv_row(self, session) -> dict | None:
+        """Build one AstroBin CSV row from a session.
+
+        Returns None when the session has no lights (the row would then have no
+        mandatory 'number'/'duration').
+        """
+        if not session.lights:
+            return None
+
+        meta = _read_light_metadata(session.lights[0])
+
+        duration = meta.get("duration")
+        cooling = meta.get("sensorCooling")
+        row = {
+            "date": meta.get("date", ""),
+            "filter": "",  # AstroBin filter ID — not derivable from headers
+            "filterName": meta.get("filterName")
+            or (session.filter if session.filter and session.filter != NO_FILTER else ""),
+            "number": str(len(session.lights)),
+            "duration": self._csv_num(duration),
+            "binning": self._csv_num(meta.get("binning")),
+            "gain": self._csv_num(meta.get("gain")),
+            "sensorCooling": (
+                self._csv_num(round(cooling)) if cooling is not None else ""
+            ),
+            "fNumber": f"{meta['fNumber']:.2f}" if "fNumber" in meta else "",
+            "darks": str(len(session.darks)) if session.darks else "",
+            "flats": str(len(session.flats)) if session.flats else "",
+            "flatDarks": "",  # flat-darks are not tracked per session
+            "bias": str(len(session.biases)) if session.biases else "",
+            "bortle": "",  # sky quality — not derivable from headers
+        }
+        return row
+
+    def _prompt_bortle(self) -> str | None:
+        """Pop up a small dialog asking for the Bortle scale to apply to every
+        row. Returns the chosen value as a string ("" when 'Leave blank' is
+        selected), or None if the user cancels."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Bortle Sky Quality")
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel(
+            "Select the Bortle scale to apply to every session:"
+        )
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.addItem("", "")
+        bortle_descriptions = {
+            1: "Excellent dark-sky site",
+            2: "Typical truly dark site",
+            3: "Rural sky",
+            4: "Rural/suburban transition",
+            5: "Suburban sky",
+            6: "Bright suburban sky",
+            7: "Suburban/urban transition",
+            8: "City sky",
+            9: "Inner-city sky",
+        }
+        for value, desc in bortle_descriptions.items():
+            combo.addItem(f"{value} \u2014 {desc}", str(value))
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return combo.currentData()
+
+    def export_sessions_csv(self):
+        """Export all sessions with lights to an AstroBin acquisition CSV."""
+        rows = []
+        for session in self.sessions:
+            row = self._session_csv_row(session)
+            if row is not None:
+                rows.append(row)
+
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Export Sessions to CSV",
+                "No sessions with light frames to export.",
+            )
+            return
+
+        missing_duration = sum(1 for r in rows if not r["duration"])
+        if missing_duration:
+            self.siril.log(
+                f"> {missing_duration} session(s) have no detectable exposure "
+                "time; their 'duration' column will be blank.",
+                LogColor.SALMON,
+            )
+
+        # Ask for the Bortle sky-quality scale and apply it to every row.
+        bortle = self._prompt_bortle()
+        if bortle is None:
+            return  # user cancelled
+        for row in rows:
+            row["bortle"] = bortle
+
+        try:
+            start_dir = self.siril.get_siril_wd()
+        except Exception:
+            start_dir = ""
+        default_path = os.path.join(start_dir, "astrobin_acquisitions.csv")
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Sessions to CSV",
+            default_path,
+            "CSV Files (*.csv)",
+        )
+        if not save_path:
+            return
+        if not save_path.lower().endswith(".csv"):
+            save_path += ".csv"
+
+        try:
+            with open(save_path, "w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(self._CSV_COLUMNS))
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as exc:
+            self.siril.log(f"Failed to export CSV: {exc}", LogColor.RED)
+            QMessageBox.warning(
+                self,
+                "Export Sessions to CSV",
+                f"Could not write the CSV file:\n{exc}",
+            )
+            return
+
+        self.siril.log(
+            f"Exported {len(rows)} session(s) to {save_path}", LogColor.GREEN
+        )
+
     def refresh_file_list(self):
         self.file_listbox.setSortingEnabled(False)
         self.file_listbox.clear()
@@ -3289,7 +3986,9 @@ class PreprocessingInterface(QMainWindow):
         session_mgmt_layout = QVBoxLayout(session_mgmt_group)
         session_mgmt_layout.setContentsMargins(10, 8, 10, 8)
 
-        session_row = QHBoxLayout()
+        session_row = QGridLayout()
+        session_row.setHorizontalSpacing(6)
+        session_row.setVerticalSpacing(6)
         session_label = QLabel("Session:")
         self.update_dropdown()
         self.session_dropdown.setCurrentIndex(0)
@@ -3309,11 +4008,32 @@ class PreprocessingInterface(QMainWindow):
         self.combine_filters_btn.clicked.connect(self.combine_like_filters)
         self.combine_filters_btn.setEnabled(False)
 
-        session_row.addWidget(session_label)
-        session_row.addWidget(self.session_dropdown)
-        session_row.addWidget(add_session_btn)
-        session_row.addWidget(remove_session_btn)
-        session_row.addWidget(self.combine_filters_btn)
+        self.master_config_btn = QPushButton("Master Config\u2026")
+        self.master_config_btn.setToolTip(
+            "Configure a reusable master darks folder and a single master bias\n"
+            "file. Master darks are matched to each session by exposure time and\n"
+            "temperature; the master bias is applied to every session."
+        )
+        self.master_config_btn.clicked.connect(self.open_master_config)
+
+        self.import_masters_btn = QPushButton("Import Masters")
+        self.import_masters_btn.setToolTip(
+            "Apply the configured master darks and master bias to all open\n"
+            "sessions. Darks are matched by exposure time and temperature."
+        )
+        self.import_masters_btn.clicked.connect(self.import_masters)
+
+        # Row 0: Session label + dropdown, then the three session buttons.
+        session_row.addWidget(session_label, 0, 0)
+        session_row.addWidget(self.session_dropdown, 0, 1)
+        session_row.addWidget(add_session_btn, 0, 2)
+        session_row.addWidget(remove_session_btn, 0, 3)
+        session_row.addWidget(self.combine_filters_btn, 0, 4)
+        # Row 1: master buttons lined up under the session buttons (cols 2-3).
+        session_row.addWidget(self.master_config_btn, 1, 2)
+        session_row.addWidget(self.import_masters_btn, 1, 3)
+        # Let the dropdown column absorb extra width so buttons keep their size.
+        session_row.setColumnStretch(1, 1)
         session_mgmt_layout.addLayout(session_row)
 
         files_layout.addWidget(session_mgmt_group)
@@ -3382,6 +4102,28 @@ class PreprocessingInterface(QMainWindow):
         )
         self.file_listbox.viewport().setMouseTracking(True)
         session_content_layout.addWidget(self.file_listbox)
+
+        # Export sessions to an AstroBin acquisition CSV.
+        export_csv_btn = QPushButton("Export Sessions to CSV")
+        export_csv_btn.setToolTip(
+            "Export each session (date, filter, frame counts, exposure, gain,\n"
+            "binning, cooling, f-number) to an AstroBin acquisition CSV file.\n"
+            "'number' and 'duration' are always filled; other columns are blank\n"
+            "when the data is unavailable."
+        )
+        export_csv_btn.setStyleSheet(
+            "QPushButton {"
+            "    background-color: #6f42c1;"
+            "    color: white;"
+            "    border: none;"
+            "    padding: 6px 12px;"
+            "    border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #8250df; }"
+            "QPushButton:pressed { background-color: #5a32a3; }"
+        )
+        export_csv_btn.clicked.connect(self.export_sessions_csv)
+        session_content_layout.addWidget(export_csv_btn)
 
         file_buttons = QHBoxLayout()
         remove_btn = QPushButton("Remove Selected File(s)")
