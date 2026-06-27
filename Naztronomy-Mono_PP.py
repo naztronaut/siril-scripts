@@ -3011,6 +3011,139 @@ class PreprocessingInterface(QMainWindow):
         self.update_dropdown()
         self.refresh_file_list()
 
+    def reset_calibration(self):
+        """Remove all calibration frames (darks, flats, biases) from chosen
+        sessions. Lights are left untouched."""
+        if not self.sessions:
+            return
+
+        if len(self.sessions) == 1:
+            reply = QMessageBox.question(
+                self,
+                "Reset Calibration",
+                "Are you sure you want to remove the calibration frames "
+                "(darks, flats, biases) from this session?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self._clear_session_calibration([0])
+            return
+
+        # Multiple sessions: let the user pick which ones to clear.
+        indices, scope = self._prompt_reset_calibration_sessions()
+        if indices is None:
+            return  # cancelled
+
+        scope_word = "all" if scope == "all" else "selected"
+        reply = QMessageBox.question(
+            self,
+            "Reset Calibration",
+            f"Are you sure you want to remove the calibration frames "
+            f"(darks, flats, biases) from the {scope_word} sessions?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._clear_session_calibration(indices)
+
+    def _clear_session_calibration(self, indices: list[int]):
+        """Clear darks/flats/biases for the sessions at the given indices."""
+        cleared = 0
+        for i in indices:
+            if 0 <= i < len(self.sessions):
+                session = self.sessions[i]
+                if session.darks or session.flats or session.biases:
+                    cleared += 1
+                session.darks.clear()
+                session.flats.clear()
+                session.biases.clear()
+        self.siril.log(
+            f"Reset calibration: cleared calibration frames from {cleared} "
+            "session(s).",
+            LogColor.BLUE,
+        )
+        self.update_dropdown()
+        self.refresh_file_list()
+
+    def _prompt_reset_calibration_sessions(self):
+        """Show a checkbox list of sessions with Selected/All/Cancel options.
+
+        Returns a tuple ``(indices, scope)`` where ``indices`` is the list of
+        chosen session indices and ``scope`` is ``"all"`` or ``"selected"``.
+        Returns ``(None, None)`` if the user cancels.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Reset calibration for which sessions?")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(420)
+        dlg_layout = QVBoxLayout(dialog)
+
+        dlg_layout.addWidget(
+            QLabel("Remove <b>calibration frames</b> (darks, flats, biases) from:")
+        )
+
+        # Put the session checkboxes inside a scroll area so that, with many
+        # sessions, the dialog stays a fixed height and the buttons below remain
+        # accessible instead of being pushed off-screen.
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(4)
+
+        current_index = self.session_dropdown.currentIndex()
+        checkboxes: list[QCheckBox] = []
+        for i, session in enumerate(self.sessions):
+            cb = QCheckBox(self._session_label(i, session))
+            cb.setChecked(i == current_index)
+            checkboxes.append(cb)
+            scroll_layout.addWidget(cb)
+        scroll_layout.addStretch(1)
+
+        scroll.setWidget(scroll_content)
+        dlg_layout.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        selected_btn = QPushButton("Selected Sessions")
+        all_btn = QPushButton("All Sessions")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(selected_btn)
+        btn_row.addWidget(all_btn)
+        btn_row.addWidget(cancel_btn)
+        dlg_layout.addLayout(btn_row)
+
+        result = {"action": None}
+
+        def on_selected():
+            result["action"] = "selected"
+            dialog.accept()
+
+        def on_all():
+            result["action"] = "all"
+            dialog.accept()
+
+        selected_btn.clicked.connect(on_selected)
+        all_btn.clicked.connect(on_all)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None, None
+
+        if result["action"] == "all":
+            return list(range(len(self.sessions))), "all"
+        if result["action"] == "selected":
+            indices = [i for i, cb in enumerate(checkboxes) if cb.isChecked()]
+            if not indices:
+                return None, None  # nothing checked — treat as cancel
+            return indices, "selected"
+        return None, None
+
     # AstroBin acquisition CSV columns, in order. Only "number" and "duration"
     # are mandatory; the rest are emitted (header always present) when the data
     # is available and left blank otherwise.
@@ -4227,15 +4360,24 @@ class PreprocessingInterface(QMainWindow):
         )
         self.import_masters_btn.clicked.connect(self.import_masters)
 
+        self.reset_calibration_btn = QPushButton("Reset Calibration")
+        self.reset_calibration_btn.setToolTip(
+            "Remove all calibration frames (darks, flats, biases) from chosen\n"
+            "sessions. With multiple sessions you can pick which sessions to\n"
+            "clear; light frames are left untouched."
+        )
+        self.reset_calibration_btn.clicked.connect(self.reset_calibration)
+
         # Row 0: Session label + dropdown, then the three session buttons.
         session_row.addWidget(session_label, 0, 0)
         session_row.addWidget(self.session_dropdown, 0, 1)
         session_row.addWidget(add_session_btn, 0, 2)
         session_row.addWidget(remove_session_btn, 0, 3)
         session_row.addWidget(self.combine_filters_btn, 0, 4)
-        # Row 1: master buttons lined up under the session buttons (cols 2-3).
+        # Row 1: master buttons lined up under the session buttons (cols 2-4).
         session_row.addWidget(self.master_config_btn, 1, 2)
         session_row.addWidget(self.import_masters_btn, 1, 3)
+        session_row.addWidget(self.reset_calibration_btn, 1, 4)
         # Let the dropdown column absorb extra width so buttons keep their size.
         session_row.setColumnStretch(1, 1)
         session_mgmt_layout.addLayout(session_row)
