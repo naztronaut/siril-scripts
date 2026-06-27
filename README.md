@@ -68,6 +68,38 @@ An advanced OSC (One Shot Color) image preprocessing script designed for process
 - Individual sessions can be processed separately or combined
 - Experimental mono mode bypasses debayering for monochrome cameras
 
+## Naztronomy Mono Preprocessing Script
+
+#### [Naztronomy-Mono_PP.py](Naztronomy-Mono_PP.py)
+
+A dedicated monochrome image preprocessing script for narrowband and LRGB
+imaging. Built for multi-filter, multi-session workflows, and it
+produces a separate final stack per filter, ready for compositing.
+
+**Features:**
+
+- Multi-session support with individual file management
+- Filter-aware processing: lights and flats are auto-grouped by their FITS `FILTER` header, producing one final stack per filter (HA/SII/OIII, LRGB, etc.)
+- "Combine Like Filters" to merge sessions that share a filter into one
+- Mosaic mode with `Panel N` detection: same-panel sessions are pooled across nights and stitched into a per-filter mosaic
+- "Register final frames" to align the per-filter stacks to a common canvas for direct color combination
+- Reusable Master Calibration config: set a master darks folder + master bias once and reuse them between runs (saved to `naztronomy_scripts_config.json`)
+- "Import Masters" matches a master dark to each session by exposure time and temperature, and applies the master bias to every session
+- Master frame support for both FITS and PixInsight XISF files (matched by file name)
+- Drag & drop of files or whole folders, with automatic frame-type and session detection
+- Export Sessions to an AstroBin acquisition CSV (with a Bortle sky-quality prompt)
+- Drizzle, background extraction, feathering, and comprehensive filter (roundness/FWHM/star count/background) options
+- Save/Load presets functionality
+
+#### Usage Guidelines
+
+- Can be run from any directory
+- Tag sessions by filter (auto-detected from FITS headers) for per-filter stacks
+- Master darks are matched by exposure time and temperature; the master bias is applied to all sessions
+- XISF support is limited to master calibration frames (read by file name only)
+- Images are copied/symlinked for processing (requires disk space)
+- Organize mosaics as `Object/Panel N/...` for automatic panel detection
+
 ## Installation
 
 Two ways to install these scripts:
