@@ -800,16 +800,33 @@ class FileTypeDialog(QDialog):
         sub = QDialog(self)
         sub.setWindowTitle("Apply to which sessions?")
         sub.setModal(True)
+        sub.setMinimumWidth(420)
         sub_layout = QVBoxLayout(sub)
 
         sub_layout.addWidget(QLabel(f"Add <b>{frame_type}</b> to:"))
+
+        # Put the session checkboxes inside a scroll area so that, with many
+        # sessions, the dialog stays a fixed height and the buttons below remain
+        # accessible instead of being pushed off-screen.
+        scroll = QScrollArea(sub)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(4)
 
         checkboxes: list[QCheckBox] = []
         for i, name in enumerate(self._all_session_names):
             cb = QCheckBox(name)
             cb.setChecked(i == self._current_session_index)
             checkboxes.append(cb)
-            sub_layout.addWidget(cb)
+            scroll_layout.addWidget(cb)
+        scroll_layout.addStretch(1)
+
+        scroll.setWidget(scroll_content)
+        sub_layout.addWidget(scroll)
 
         btn_row = QHBoxLayout()
         selected_btn = QPushButton("Selected Sessions")
@@ -1708,46 +1725,112 @@ class PreprocessingInterface(QMainWindow):
         if not entries:
             return
 
-        summary_parts = []
+        # Collect the distinct frame types present across all entries, in a
+        # stable order, so each becomes its own aligned column in the table.
+        _FT_ORDER = ["lights", "darks", "flats", "biases"]
+
+        def _ft_display(ft: str) -> str:
+            if ft.startswith("_stacked_"):
+                return ft[len("_stacked_") :].capitalize() + " (stacked)"
+            return ft.capitalize()
+
+        present_fts: list[str] = []
         for entry in entries:
-            parts = []
-            for ft, files in sorted(entry["frames"].items()):
-                display = (
-                    (ft[len("_stacked_") :] + " (stacked)")
-                    if ft.startswith("_stacked_")
-                    else ft
-                )
-                parts.append(f"{display}: {len(files)}")
-            summary_parts.append(
-                f"<li><b>{entry['label']}</b> &mdash; {', '.join(parts)}</li>"
+            for ft in entry["frames"]:
+                if ft not in present_fts:
+                    present_fts.append(ft)
+        present_fts.sort(
+            key=lambda ft: (
+                _FT_ORDER.index(ft) if ft in _FT_ORDER else len(_FT_ORDER),
+                ft,
             )
+        )
 
         if root_folder is not None:
-            header = (
+            header_text = (
                 f"Found <b>{len(entries)}</b> session(s) in "
-                f"<b>{root_folder.name}/</b> (split by filter):<br>"
+                f"<b>{root_folder.name}/</b> (split by filter):"
             )
         else:
-            header = (
+            header_text = (
                 f"Found <b>{len(entries)}</b> session(s) across dropped folders "
-                f"(split by filter):<br>"
+                f"(split by filter):"
             )
 
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Multi-Session Folder Detected")
-        msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setText(
-            f"{header}"
-            f"<ul>{''.join(summary_parts)}</ul>"
-            f"Create <b>{len(entries)}</b> new session(s)?"
-        )
-        btn_create = msg.addButton(
-            f"Create {len(entries)} Session(s)", QMessageBox.ButtonRole.AcceptRole
-        )
-        msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        msg.exec()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Multi-Session Folder Detected")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+        outer = QVBoxLayout(dialog)
 
-        if msg.clickedButton() is not btn_create:
+        header_label = QLabel(header_text)
+        header_label.setTextFormat(Qt.TextFormat.RichText)
+        outer.addWidget(header_label)
+
+        # Scrollable, grid-aligned table of sessions. The scroll area caps the
+        # height so the OK/Cancel buttons stay reachable no matter how many
+        # sessions were detected.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(4)
+        grid.setContentsMargins(4, 4, 4, 4)
+
+        # Header row
+        hdr_session = QLabel("Session")
+        hdr_session.setStyleSheet("font-weight: bold;")
+        grid.addWidget(hdr_session, 0, 0)
+        for col, ft in enumerate(present_fts, start=1):
+            ft_hdr = QLabel(_ft_display(ft))
+            ft_hdr.setStyleSheet("font-weight: bold;")
+            ft_hdr.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            grid.addWidget(ft_hdr, 0, col)
+
+        # One row per detected session
+        for row, entry in enumerate(entries, start=1):
+            label_widget = QLabel(entry["label"])
+            label_widget.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            grid.addWidget(label_widget, row, 0)
+            for col, ft in enumerate(present_fts, start=1):
+                count = len(entry["frames"].get(ft, []))
+                cell = QLabel(str(count) if count else "\u2014")
+                cell.setAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
+                if not count:
+                    cell.setStyleSheet("color: #888;")
+                grid.addWidget(cell, row, col)
+
+        grid.setColumnStretch(0, 1)
+        scroll.setWidget(grid_widget)
+        # Cap the visible height so long lists scroll instead of pushing the
+        # buttons off-screen; short lists stay compact.
+        scroll.setMaximumHeight(320)
+        outer.addWidget(scroll)
+
+        prompt = QLabel(f"Create <b>{len(entries)}</b> new session(s)?")
+        prompt.setTextFormat(Qt.TextFormat.RichText)
+        outer.addWidget(prompt)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        create_btn = QPushButton(f"Create {len(entries)} Session(s)")
+        create_btn.setDefault(True)
+        create_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(create_btn)
+        outer.addLayout(btn_row)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         # If the current session is completely empty, reuse it for the first entry
