@@ -76,6 +76,8 @@ A dedicated monochrome image preprocessing script for narrowband and LRGB
 imaging. Built for multi-filter, multi-session workflows, and it
 produces a separate final stack per filter, ready for compositing.
 
+This only works with FIT(S) files with proper headers. Master calibration frames can be either FIT(S) or XISF.
+
 **Features:**
 
 - Multi-session support with individual file management
@@ -85,7 +87,7 @@ produces a separate final stack per filter, ready for compositing.
 - "Register final frames" to align the per-filter stacks to a common canvas for direct color combination
 - Reusable Master Calibration config: set a master darks folder + master bias once and reuse them between runs (saved to `naztronomy_scripts_config.json`)
 - "Import Masters" matches a master dark to each session by exposure time and temperature, and applies the master bias to every session
-- Master frame support for both FITS and PixInsight XISF files (matched by file name)
+- Master frame support for both FITS and PixInsight XISF files (matched by file name: masterDark, masterBias, masterFlat)
 - Drag & drop of files or whole folders, with automatic frame-type and session detection
 - Export Sessions to an AstroBin acquisition CSV (with a Bortle sky-quality prompt)
 - Drizzle, background extraction, feathering, and comprehensive filter (roundness/FWHM/star count/background) options
