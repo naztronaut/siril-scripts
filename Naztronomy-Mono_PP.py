@@ -1017,6 +1017,11 @@ class PreprocessingInterface(QMainWindow):
         # dir so the locations are pre-filled on the next run.
         self.master_darks_dir: str | None = None
         self.master_bias_path: str | None = None
+        # Persisted Processing-tab defaults and the last Bortle selection. Both
+        # are filled by _load_master_config when a saved config exists; the
+        # processing defaults are applied once the widgets are built below.
+        self._saved_processing_settings: dict = {}
+        self._last_bortle: str = ""
         self._load_master_config()
 
         self.session_dropdown = QComboBox()
@@ -1029,6 +1034,8 @@ class PreprocessingInterface(QMainWindow):
 
         # End Session
         self.create_widgets()
+        # Apply persisted Processing-tab defaults now that the widgets exist.
+        self._apply_processing_settings(self._saved_processing_settings)
         self.initialization_successful = True  # Flag to track successful initialization
 
     # Start session methods
@@ -2546,7 +2553,8 @@ class PreprocessingInterface(QMainWindow):
     _CONFIG_SECTION = "mono"
 
     def _load_master_config(self):
-        """Load the persisted master darks folder and master bias file, if any."""
+        """Load the persisted mono settings: master darks folder, master bias
+        file, the saved Processing-tab defaults, and the last Bortle choice."""
         path = self._master_config_path()
         if not path or not path.is_file():
             return
@@ -2562,16 +2570,18 @@ class PreprocessingInterface(QMainWindow):
         bias = section.get("master_bias_path")
         self.master_darks_dir = darks or None
         self.master_bias_path = bias or None
+        processing = section.get("processing")
+        if isinstance(processing, dict):
+            self._saved_processing_settings = processing
+        self._last_bortle = section.get("bortle", "") or ""
 
-    def _save_master_config(self):
-        """Persist the current master darks folder and master bias file.
-
-        The shared config file is read first so other scripts' sections are
-        preserved, then only this script's ``mono`` section is updated.
+    def _write_config_section(self, updates: dict) -> bool:
+        """Merge ``updates`` into this script's section of the shared config
+        file, preserving other scripts' sections and this section's other keys.
         """
         path = self._master_config_path()
         if not path:
-            return
+            return False
         data = {}
         if path.is_file():
             try:
@@ -2581,17 +2591,121 @@ class PreprocessingInterface(QMainWindow):
                     data = loaded
             except (OSError, ValueError):
                 data = {}
-        data[self._CONFIG_SECTION] = {
-            "master_darks_dir": self.master_darks_dir or "",
-            "master_bias_path": self.master_bias_path or "",
-        }
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            section = {}
+        section.update(updates)
+        data[self._CONFIG_SECTION] = section
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)
-            self.siril.log(f"> Saved config to {path}", LogColor.BLUE)
+            return True
         except OSError as exc:
-            self.siril.log(f"> Could not save master config: {exc}", LogColor.SALMON)
+            self.siril.log(f"> Could not save config: {exc}", LogColor.SALMON)
+            return False
+
+    def _save_master_config(self):
+        """Persist the current master darks folder and master bias file,
+        preserving the rest of this script's config section."""
+        if self._write_config_section(
+            {
+                "master_darks_dir": self.master_darks_dir or "",
+                "master_bias_path": self.master_bias_path or "",
+            }
+        ):
+            self.siril.log(
+                f"> Saved config to {self._master_config_path()}", LogColor.BLUE
+            )
+
+    def _collect_processing_settings(self) -> dict:
+        """Snapshot every Processing-tab control as a JSON-serializable dict."""
+        return {
+            "dark_flats": self.dark_flats_check.isChecked(),
+            "bg_extract": self.bg_extract_check.isChecked(),
+            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
+            "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
+            "feather": self.feather_checkbox.isChecked(),
+            "feather_amount": round(self.feather_amount_spinbox.value(), 0),
+            "filter_round": round(self.roundness_spinbox.value(), 1),
+            "filter_wfwhm": round(self.fwhm_spinbox.value(), 1),
+            "filter_stars": round(self.stars_spinbox.value(), 1),
+            "filter_bkg": round(self.bkg_spinbox.value(), 1),
+            "use_filter_round": self.roundness_check.isChecked(),
+            "use_filter_wfwhm": self.fwhm_check.isChecked(),
+            "use_filter_stars": self.stars_check.isChecked(),
+            "use_filter_bkg": self.bkg_check.isChecked(),
+            "filter_round_mode": self.roundness_mode_combo.currentText(),
+            "filter_wfwhm_mode": self.fwhm_mode_combo.currentText(),
+            "filter_stars_mode": self.stars_mode_combo.currentText(),
+            "filter_bkg_mode": self.bkg_mode_combo.currentText(),
+            "cleanup": self.cleanup_check.isChecked(),
+            "target_mode": (
+                "mosaic" if self.mosaic_radio.isChecked() else "single"
+            ),
+            "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
+            "register_final_frames": self.register_final_frames_check.isChecked(),
+            "output_norm": self.output_norm_check.isChecked(),
+            "stack_weighted": self.weight_stack_check.isChecked(),
+            "weighting_method": self.weight_method_combo.currentText(),
+        }
+
+    def _apply_processing_settings(self, presets: dict):
+        """Apply a saved Processing-tab settings dict to the controls. Missing
+        keys fall back to each control's default."""
+        if not presets:
+            return
+        self.dark_flats_check.setChecked(presets.get("dark_flats", False))
+        self.bg_extract_check.setChecked(presets.get("bg_extract", False))
+        self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+        self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
+        self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
+        self.feather_checkbox.setChecked(presets.get("feather", False))
+        self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
+        self.roundness_mode_combo.setCurrentText(presets.get("filter_round_mode", "\u03c3"))
+        self.fwhm_mode_combo.setCurrentText(presets.get("filter_wfwhm_mode", "\u03c3"))
+        self.stars_mode_combo.setCurrentText(presets.get("filter_stars_mode", "\u03c3"))
+        self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "\u03c3"))
+        self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
+        self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
+        self.stars_spinbox.setValue(presets.get("filter_stars", 3.0))
+        self.bkg_spinbox.setValue(presets.get("filter_bkg", 3.0))
+        self.roundness_check.setChecked(presets.get("use_filter_round", False))
+        self.fwhm_check.setChecked(presets.get("use_filter_wfwhm", False))
+        self.stars_check.setChecked(presets.get("use_filter_stars", False))
+        self.bkg_check.setChecked(presets.get("use_filter_bkg", False))
+        self.cleanup_check.setChecked(presets.get("cleanup", False))
+        target_mode = presets.get("target_mode", "single")
+        if target_mode in ("paneled", "mosaic") or presets.get("paneled_mosaic", False):
+            target_mode = "mosaic"
+        if target_mode == "mosaic" and len(self.sessions) > 1:
+            self.mosaic_radio.setChecked(True)
+        else:
+            self.single_target_radio.setChecked(True)
+        self.save_calibrated_lights_check.setChecked(
+            presets.get("save_calibrated_lights", False)
+        )
+        self.register_final_frames_check.setChecked(
+            presets.get("register_final_frames", False)
+        )
+        self.register_final_frames_check.setEnabled(
+            self.create_final_stack_check.isChecked()
+        )
+        self.output_norm_check.setChecked(presets.get("output_norm", True))
+        self.weight_stack_check.setChecked(presets.get("stack_weighted", False))
+        self.weight_method_combo.setCurrentText(
+            presets.get("weighting_method", "Weighted FWHM")
+        )
+
+    def _save_processing_defaults(self):
+        """Persist the current Processing-tab settings as the new defaults."""
+        if self._write_config_section(
+            {"processing": self._collect_processing_settings()}
+        ):
+            self.siril.log(
+                "> Saved processing settings as the new defaults.", LogColor.BLUE
+            )
 
     def open_master_config(self):
         """Popup to configure the master darks folder and the master bias file."""
@@ -2905,6 +3019,10 @@ class PreprocessingInterface(QMainWindow):
         }
         for value, desc in bortle_descriptions.items():
             combo.addItem(f"{value} \u2014 {desc}", str(value))
+        # Pre-select the last used Bortle value, if one was saved.
+        saved_idx = combo.findData(self._last_bortle or "")
+        if saved_idx >= 0:
+            combo.setCurrentIndex(saved_idx)
         layout.addWidget(combo)
 
         buttons = QHBoxLayout()
@@ -2950,6 +3068,9 @@ class PreprocessingInterface(QMainWindow):
         bortle = self._prompt_bortle()
         if bortle is None:
             return  # user cancelled
+        # Remember the choice so it pre-fills next time.
+        self._last_bortle = bortle
+        self._write_config_section({"bortle": bortle})
         for row in rows:
             row["bortle"] = bortle
 
@@ -4775,57 +4896,7 @@ class PreprocessingInterface(QMainWindow):
                 presets = json.load(f)
 
                 # Load UI settings
-                self.dark_flats_check.setChecked(presets.get("dark_flats", False))
-                self.bg_extract_check.setChecked(presets.get("bg_extract", False))
-                self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
-                self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
-                self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
-                self.feather_checkbox.setChecked(presets.get("feather", False))
-                self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
-                self.roundness_mode_combo.setCurrentText(
-                    presets.get("filter_round_mode", "σ")
-                )
-                self.fwhm_mode_combo.setCurrentText(
-                    presets.get("filter_wfwhm_mode", "σ")
-                )
-                self.stars_mode_combo.setCurrentText(
-                    presets.get("filter_stars_mode", "σ")
-                )
-                self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "σ"))
-                self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
-                self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
-                self.stars_spinbox.setValue(presets.get("filter_stars", 3.0))
-                self.bkg_spinbox.setValue(presets.get("filter_bkg", 3.0))
-                self.roundness_check.setChecked(presets.get("use_filter_round", False))
-                self.fwhm_check.setChecked(presets.get("use_filter_wfwhm", False))
-                self.stars_check.setChecked(presets.get("use_filter_stars", False))
-                self.bkg_check.setChecked(presets.get("use_filter_bkg", False))
-                self.cleanup_check.setChecked(presets.get("cleanup", False))
-                target_mode = presets.get("target_mode", "single")
-                # Support legacy presets that used other mode names / boolean fields
-                if target_mode in ("paneled", "mosaic") or presets.get(
-                    "paneled_mosaic", False
-                ):
-                    target_mode = "mosaic"
-                if target_mode == "mosaic" and len(self.sessions) > 1:
-                    self.mosaic_radio.setChecked(True)
-                else:
-                    self.single_target_radio.setChecked(True)
-                self.create_final_stack_check.setChecked(True)
-                self.save_calibrated_lights_check.setChecked(
-                    presets.get("save_calibrated_lights", False)
-                )
-                self.register_final_frames_check.setChecked(
-                    presets.get("register_final_frames", False)
-                )
-                self.register_final_frames_check.setEnabled(
-                    self.create_final_stack_check.isChecked()
-                )
-                self.output_norm_check.setChecked(presets.get("output_norm", True))
-                self.weight_stack_check.setChecked(presets.get("stack_weighted", False))
-                self.weight_method_combo.setCurrentText(
-                    presets.get("weighting_method", "Weighted FWHM")
-                )
+                self._apply_processing_settings(presets)
 
                 # Load session data
                 sessions_data = presets.get("sessions", [])
@@ -5226,6 +5297,9 @@ class PreprocessingInterface(QMainWindow):
                 f"Each session needs at least 2 light frames.",
             )
             return
+
+        # Persist the current Processing-tab selections as the new defaults.
+        self._save_processing_defaults()
 
         self.siril.log(
             f"Running script version {VERSION} with arguments:\n"
