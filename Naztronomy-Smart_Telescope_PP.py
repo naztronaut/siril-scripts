@@ -353,6 +353,7 @@ class PreprocessingInterface(QMainWindow):
                 if self.check_directory(selected_dir):
                     break
 
+        self.load_dwarf(self.current_working_directory)
         self.create_widgets()
         # Initialize fits_files_count before creating widgets
         self.fits_files_count = 0
