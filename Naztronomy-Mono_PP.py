@@ -26,14 +26,16 @@ Symlinks will only work if your home directory is in the same drive as your imag
 
 Target modes:
   - Single target: all sessions are of the same target and are combined into a single final stack for EACH filter. Final recomposition is done by the user.
-  - Mosaic: sessions are mosaic panels. The parent folder for each panel must be named "Panel X" (where x is a number). Each panel directory can have
+  - Mosaic: sessions are mosaic panels. The parent folder for each panel must contain the token "Panel X" (where x is a number) somewhere in its name, e.g.
+    "Panel 3" or "Lagoon Nebula Panel 3". Each panel directory can have
     unlimited sessions and filters within. Each panel is stacked individually by filter. If a filter exists multiple times in a panel, they get combined.
     Each panel for a specific filter then gets stitched together so you'll have one giant mosaic for each filter. Final recomposition is done by the user.
 
 Folder conventions (drag & drop an object folder to auto-detect the mode):
   - Single target: object/<date>/lights (+ darks/flats/biases). Sessions pooled into one final stack per filter.
-  - Mosaic: object/Panel N/<date>/lights — subfolders named "Panel 1", "panel2", "Panel_03"
-    (case-insensitive) mark mosaic tiles. The same panel across several nights is pooled and
+  - Mosaic: object/Panel N/<date>/lights — subfolders whose name contains "Panel 1", "panel2", "Panel_03"
+    (case-insensitive, token may be part of a longer name like "Lagoon Nebula Panel 3") mark mosaic
+    tiles. The same panel across several nights is pooled and
     integrated once, then all panels are stitched. Mosaic mode is selected automatically.
   - Absence of a "Panel N" level means single target, single panel.
   - Structures inside the parent directory matters less because the script will read fits headers to determine the filter and object name.
@@ -620,19 +622,25 @@ def _read_light_metadata(path) -> dict:
 
 # ── Panel awareness (mosaic projects) ────────────────────────────────────────
 # A "panel" is an optional grouping layer between the object folder and the
-# session (date) folders. A folder is treated as a panel when its name matches
-# "panel <n>" (case-insensitive, optional separators): "Panel 1", "panel1",
-# "Panel_02", "PANEL-3". Panels let multiple sessions (e.g. the same tile shot
-# on different nights, with their own calibration) be pooled into one stack per
-# panel before the panels are stitched into a mosaic.
-_PANEL_RE = re.compile(r"^panel[\s_\-]*0*(\d+)$", re.IGNORECASE)
+# session (date) folders. A folder is treated as a panel when its name contains
+# the token "panel <n>" (case-insensitive, optional separators) anywhere in the
+# name: "Panel 1", "panel1", "Panel_02", "PANEL-3", and also descriptive names
+# like "Lagoon Nebula Panel 3" or "M8-M20 Panel_04". Panels let multiple
+# sessions (e.g. the same tile shot on different nights, with their own
+# calibration) be pooled into one stack per panel before the panels are
+# stitched into a mosaic.
+_PANEL_RE = re.compile(r"\bpanel[\s_\-]*0*(\d+)\b", re.IGNORECASE)
 
 
 def _canonical_panel(name) -> str | None:
-    """Return a normalised panel label ("Panel 1") for a folder name, or None."""
+    """Return a normalised panel label ("Panel 1") for a folder name, or None.
+
+    The "panel <n>" token may appear anywhere in the name, so both a bare
+    "Panel 3" and a descriptive "Lagoon Nebula Panel 3" normalise to "Panel 3".
+    """
     if name is None:
         return None
-    match = _PANEL_RE.match(str(name).strip())
+    match = _PANEL_RE.search(str(name).strip())
     if not match:
         return None
     return f"Panel {int(match.group(1))}"
@@ -640,7 +648,7 @@ def _canonical_panel(name) -> str | None:
 
 def _panel_sort_key(name: str):
     """Sort key ordering panels numerically ("Panel 2" before "Panel 10")."""
-    match = _PANEL_RE.match(str(name).strip())
+    match = _PANEL_RE.search(str(name).strip())
     if match:
         return (0, int(match.group(1)))
     return (1, str(name))
@@ -2724,9 +2732,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_stars_mode": self.stars_mode_combo.currentText(),
             "filter_bkg_mode": self.bkg_mode_combo.currentText(),
             "cleanup": self.cleanup_check.isChecked(),
-            "target_mode": (
-                "mosaic" if self.mosaic_radio.isChecked() else "single"
-            ),
+            "target_mode": ("mosaic" if self.mosaic_radio.isChecked() else "single"),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
             "register_final_frames": self.register_final_frames_check.isChecked(),
             "output_norm": self.output_norm_check.isChecked(),
@@ -2746,7 +2752,9 @@ class PreprocessingInterface(QMainWindow):
         self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
         self.feather_checkbox.setChecked(presets.get("feather", False))
         self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
-        self.roundness_mode_combo.setCurrentText(presets.get("filter_round_mode", "\u03c3"))
+        self.roundness_mode_combo.setCurrentText(
+            presets.get("filter_round_mode", "\u03c3")
+        )
         self.fwhm_mode_combo.setCurrentText(presets.get("filter_wfwhm_mode", "\u03c3"))
         self.stars_mode_combo.setCurrentText(presets.get("filter_stars_mode", "\u03c3"))
         self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "\u03c3"))
@@ -3190,7 +3198,9 @@ class PreprocessingInterface(QMainWindow):
             "date": meta.get("date", ""),
             "filter": "",  # AstroBin filter ID — not derivable from headers
             "filterName": meta.get("filterName")
-            or (session.filter if session.filter and session.filter != NO_FILTER else ""),
+            or (
+                session.filter if session.filter and session.filter != NO_FILTER else ""
+            ),
             "number": str(len(session.lights)),
             "duration": self._csv_num(duration),
             "binning": self._csv_num(meta.get("binning")),
@@ -3215,9 +3225,7 @@ class PreprocessingInterface(QMainWindow):
         dialog.setWindowTitle("Bortle Sky Quality")
         layout = QVBoxLayout(dialog)
 
-        label = QLabel(
-            "Select the Bortle scale to apply to every session:"
-        )
+        label = QLabel("Select the Bortle scale to apply to every session:")
         layout.addWidget(label)
 
         combo = QComboBox()
