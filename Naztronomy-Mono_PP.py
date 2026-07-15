@@ -140,7 +140,7 @@ from typing import List, Dict
 
 APP_NAME = "Naztronomy - Mono Image Preprocessor"
 VERSION = "1.0.0"
-BUILD = "20260625"
+BUILD = "20260709"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -274,9 +274,9 @@ FILTER_ALIASES = {
     "RED": ("R", "RED"),
     "GREEN": ("G", "GREEN"),
     "BLUE": ("B", "BLUE"),
-    "HA": ("HA", "H-ALPHA", "HALPHA", "H_ALPHA", "HYDROGEN"),
-    "SII": ("SII", "S2", "S-II"),
-    "OIII": ("OIII", "O3", "O-III"),
+    "HA": ("HA", "H-ALPHA", "HALPHA", "H_ALPHA", "HYDROGEN", "H"),
+    "SII": ("SII", "S2", "S-II", "S", "SULFUR"),
+    "OIII": ("OIII", "O3", "O-III", "O", "OXYGEN"),
 }
 
 # Reverse lookup: alias (uppercased) -> canonical filter name.
@@ -1985,60 +1985,113 @@ class PreprocessingInterface(QMainWindow):
         self.update_process_separately_checkbox()
 
     def _distribute_flats_by_filter(self, files):
-        """Single-target mode: route dropped flat frames to the session(s) whose
-        filter matches each flat's FITS filter.
+        """Single-target mode: route dropped flat frames to sessions by filter.
 
-        Flats are filter-specific calibration, so flats whose filter has no
-        matching session are skipped with a warning (load the matching lights
-        first). When several sessions share a filter, the flats are added to each.
+        Each filter must be stacked into its own master flat, so flats are
+        organised one session per filter:
+          * Flats whose filter already has a session are added to every match.
+          * Flats whose filter has no session get their own new session, tagged
+            with that filter (an empty, untagged current session is reused for
+            the first one). This lets master flats be built per filter even when
+            no lights are loaded (e.g. "create master calibration frames only").
+          * Flats with no detectable filter go to the current session.
         """
         groups: dict[str, list[Path]] = {}
         for f in files:
             groups.setdefault(_detect_filter(f), []).append(f)
 
-        routed = False
+        last_idx = self.session_dropdown.currentIndex()
         for filt in sorted(groups.keys(), key=_filter_sort_key):
             flist = groups[filt]
             session_filter = None if filt == NO_FILTER else filt
             filt_display = filt if filt != NO_FILTER else "unfiltered"
+
+            # Add to every existing session already tagged with this filter.
             matches = [
                 (i, sess)
                 for i, sess in enumerate(self.sessions)
                 if sess.filter == session_filter
             ]
-            if not matches:
-                self.siril.log(
-                    f"> No session matches filter '{filt_display}' — skipped "
-                    f"{len(flist)} flat(s). Load matching lights first.",
-                    LogColor.SALMON,
-                )
+            if matches:
+                for i, sess in matches:
+                    sess.flats.extend(flist)
+                    last_idx = i
+                    self.siril.log(
+                        f"> Added {len(flist)} {filt_display} flat(s) to "
+                        f"{self._session_label(i, sess)}",
+                        LogColor.BLUE,
+                    )
                 continue
-            for i, sess in matches:
-                sess.flats.extend(flist)
-                routed = True
+
+            # Unfiltered flats can't seed a filter-tagged session — add to the
+            # current session as-is.
+            if session_filter is None:
+                self.chosen_session.flats.extend(flist)
+                last_idx = self.session_dropdown.currentIndex()
                 self.siril.log(
                     f"> Added {len(flist)} {filt_display} flat(s) to "
-                    f"{self._session_label(i, sess)}",
+                    f"{self.session_dropdown.currentText()}",
                     LogColor.BLUE,
                 )
+                continue
 
-        if routed:
-            self.update_dropdown()
+            # No session for this filter yet — reuse an empty untagged current
+            # session, otherwise create a new one, and tag it with the filter so
+            # it produces its own master flat.
+            current = self.chosen_session
+            current_is_empty = (
+                not current.lights
+                and not current.darks
+                and not current.flats
+                and not current.biases
+                and current.filter is None
+            )
+            if current_is_empty:
+                target = current
+                target_idx = self.session_dropdown.currentIndex()
+            else:
+                target = Session()
+                self.sessions.append(target)
+                target_idx = len(self.sessions) - 1
+            target.flats.extend(flist)
+            target.filter = session_filter
+            last_idx = target_idx
+            self.siril.log(
+                f"> Loaded {len(flist)} {filt_display} flat(s) into "
+                f"{self._session_label(target_idx, target)}",
+                LogColor.BLUE,
+            )
+
+        self.update_dropdown()
+        last_idx = max(0, min(last_idx, len(self.sessions) - 1))
+        self.session_dropdown.setCurrentIndex(last_idx)
+        self.chosen_session = self.sessions[last_idx]
+        self.current_session = f"Session {last_idx + 1}"
+        self.update_process_separately_checkbox()
 
     def _route_stacked_by_filter(self, stacked_map: dict, source_label: str) -> dict:
         """Auto-assign dropped stacked/master calibration files to sessions by filter.
 
-        Each file's filter is detected from its FITS FILTER header, falling back
-        to a filter token in its file name (e.g. ``..._RED_..._flats_stacked``).
-        Files whose filter matches one or more existing sessions are added to
-        every matching session automatically. Returns a ``{frame_type: [files]}``
-        map of the files that could NOT be matched (no filter detected, or no
-        session carries that filter) so the caller can fall back to the manual
-        current/all scope prompt.
+        Only flats are routed by filter. Each flat's filter is detected from its
+        FITS FILTER header, falling back to a filter token in its file name
+        (e.g. ``..._RED_..._flats_stacked``). Flats whose filter matches one or
+        more existing sessions are added to every matching session automatically.
+
+        Darks and biases are filter-agnostic — even though a master dark may carry
+        a FILTER header, it can be shared across any filter — so they are never
+        auto-routed and always fall through to the manual current/all/selected
+        scope prompt. Returns a ``{frame_type: [files]}`` map of the files that
+        could NOT be matched (no filter detected, or no session carries that
+        filter) so the caller can fall back to the manual scope prompt.
         """
         leftover: dict[str, list[Path]] = {}
         for frame_type, file_list in stacked_map.items():
             for f in file_list:
+                # Only flats route by filter. Darks/biases always go to the
+                # manual scope prompt so the user chooses their sessions.
+                if frame_type != "flats":
+                    leftover.setdefault(frame_type, []).append(f)
+                    continue
                 filt = _detect_filter(f)
                 if filt == NO_FILTER:
                     filt = _detect_filter_from_name(Path(f).name) or NO_FILTER
@@ -4514,6 +4567,16 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_group = QGroupBox("Optional Preprocessing Steps")
         preprocessing_layout = QVBoxLayout()
 
+        masters_only_tooltip = (
+            "Only create master calibration frames (darks, flats, biases) from every"
+            " session and stop. No light frames are calibrated or stacked. Only"
+            " available when none of the sessions contain light frames."
+        )
+        self.masters_only_check = QCheckBox("Create master calibration frames only")
+        self.masters_only_check.setToolTip(masters_only_tooltip)
+        preprocessing_layout.addWidget(self.masters_only_check)
+        self.update_masters_only_checkbox()
+
         dark_flats_tooltip = "If your bias frames are dark flats instead, check this box. It'll be properly applied to the light frames during calibration."
         self.dark_flats_check = QCheckBox("Using Dark Flats?")
         self.dark_flats_check.setToolTip(dark_flats_tooltip)
@@ -4844,6 +4907,7 @@ class PreprocessingInterface(QMainWindow):
                 weighting_method=self.weight_method_combo.currentText(),
                 output_norm=self.output_norm_check.isChecked(),
                 register_final_frames=self.register_final_frames_check.isChecked(),
+                masters_only=self.masters_only_check.isChecked(),
             )
         )
         processing_tab_outer.addWidget(process_btn)
@@ -4974,6 +5038,16 @@ class PreprocessingInterface(QMainWindow):
         if not multi_session:
             self.single_target_radio.setChecked(True)
         self._update_combine_button_state()
+        self.update_masters_only_checkbox()
+
+    def update_masters_only_checkbox(self):
+        """Enable "create masters only" only when no session contains lights."""
+        if not hasattr(self, "masters_only_check"):
+            return
+        has_lights = any(len(sess.lights) > 0 for sess in self.sessions)
+        self.masters_only_check.setEnabled(not has_lights)
+        if has_lights:
+            self.masters_only_check.setChecked(False)
 
     def on_target_mode_changed(self, button, checked):
         """Update create_final_stack state when target mode radio selection changes."""
@@ -5508,14 +5582,19 @@ class PreprocessingInterface(QMainWindow):
         weighting_method: str = "Weighted FWHM",
         output_norm: bool = True,
         register_final_frames: bool = False,
+        masters_only: bool = False,
     ):
         # ── Pre-flight: check every session has at least 2 light frames ──────
+        # Skipped entirely when only creating master calibration frames.
         problem_sessions = []
-        for i, session in enumerate(self.sessions):
-            if len(session.lights) == 0:
-                problem_sessions.append((i + 1, len(session.lights), "no lights"))
-            elif len(session.lights) == 1:
-                problem_sessions.append((i + 1, len(session.lights), "only 1 light"))
+        if not masters_only:
+            for i, session in enumerate(self.sessions):
+                if len(session.lights) == 0:
+                    problem_sessions.append((i + 1, len(session.lights), "no lights"))
+                elif len(session.lights) == 1:
+                    problem_sessions.append(
+                        (i + 1, len(session.lights), "only 1 light")
+                    )
 
         if problem_sessions:
             lines = "".join(
@@ -5557,6 +5636,7 @@ class PreprocessingInterface(QMainWindow):
             f"stack_weighted={stack_weighted} method={weighting_method}\n"
             f"output_norm={output_norm}\n"
             f"register_final_frames={register_final_frames}\n"
+            f"masters_only={masters_only}\n"
             f"build={VERSION}-{BUILD}",
             LogColor.BLUE,
         )
@@ -5722,6 +5802,22 @@ class PreprocessingInterface(QMainWindow):
                     self.siril.log(
                         f"Skipping {image_type}: no files found", LogColor.SALMON
                     )
+
+            # Masters-only mode: build calibration masters for every session and
+            # skip all light calibration/stacking. Return to the root and move on
+            # to the next session.
+            if masters_only:
+                self.siril.cmd("cd", f'"{self.home_directory}"')
+                self.current_working_directory = self.siril.get_siril_wd()
+                if clean_up_files:
+                    shutil.rmtree(
+                        os.path.join(
+                            self.current_working_directory, "sessions", session_name
+                        ),
+                        ignore_errors=True,
+                    )
+                self.siril.cmd("close")
+                continue
 
             # Process lights
             # self.siril.cmd("cd", "lights")
@@ -5906,6 +6002,16 @@ class PreprocessingInterface(QMainWindow):
 
             self.siril.cmd("close")
             time.sleep(3)  # Small delay to ensure Siril processes the command
+
+        # Masters-only mode: every session's calibration masters have been built.
+        # Nothing else to do (no lights to calibrate or stack).
+        if masters_only:
+            self.siril.log(
+                "Master calibration frames created for all sessions. Stopping script.",
+                LogColor.GREEN,
+            )
+            self.print_footer()
+            return
 
         if (
             self.create_final_stack_check.isChecked()
