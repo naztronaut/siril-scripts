@@ -27,7 +27,7 @@ allows you to choose files from any folder and drive and they will all be consol
 
 """
 CHANGELOG:
-
+2.0.4 - forcing nbstack weights for stacking stacks without doing collected lights
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -1027,7 +1027,9 @@ class PreprocessingInterface(QMainWindow):
             for ft_map in pending_single_sessions.values():
                 for ft, ft_files in ft_map.items():
                     if ft.startswith("_stacked_"):
-                        stacked_additions.setdefault(ft[len("_stacked_"):], []).extend(ft_files)
+                        stacked_additions.setdefault(ft[len("_stacked_") :], []).extend(
+                            ft_files
+                        )
                     else:
                         folder_additions.setdefault(ft, []).extend(ft_files)
         elif pending_single_sessions:
@@ -1301,8 +1303,13 @@ class PreprocessingInterface(QMainWindow):
 
                     if ALWAYS_SYMLINK or same_drive:
                         try:
-                            os.symlink(src.resolve(strict=False), dest_path.resolve(strict=False))
-                            self.siril.log(f"Symlinked {file} to {dest_path}", LogColor.BLUE)
+                            os.symlink(
+                                src.resolve(strict=False),
+                                dest_path.resolve(strict=False),
+                            )
+                            self.siril.log(
+                                f"Symlinked {file} to {dest_path}", LogColor.BLUE
+                            )
                             continue
                         except (OSError, NotImplementedError):
                             pass  # fall through to copy
@@ -1438,6 +1445,7 @@ class PreprocessingInterface(QMainWindow):
         if os.path.isdir(directory):
             print(f"Found directory for {image_type}: {directory}")
             self.siril.cmd("cd", f'"{directory}"')
+
             # Ignore hidden files and dirs.
             # Also accept symlinks: os.path.isfile() silently returns False for
             # symlinks whose targets live on an untrusted mount (WinError 448).
@@ -1905,6 +1913,7 @@ class PreprocessingInterface(QMainWindow):
                 "Number of Stars": "nbstars",
                 "Weighted FWHM": "wfwhm",
                 "Noise": "noise",
+                "Number of Frames": "nbstack",
             }
             weight_option = weighting_map.get(weighting_method, "wfwhm")
             cmd_args.append(f"-weight={weight_option}")
@@ -3722,8 +3731,11 @@ class PreprocessingInterface(QMainWindow):
                     output_name="final_stacked",
                     overlap_norm=False,
                     output_norm=output_norm,
-                    stack_weighted=stack_weighted,
-                    weighting_method=weighting_method,
+                    # Combining per-session masters: always weight by how many
+                    # subs went into each master (STACKCNT) so longer sessions
+                    # contribute proportionally more. Overrides the UI setting.
+                    stack_weighted=True,
+                    weighting_method="Number of Frames",
                 )
                 self.load_image(image_name="final_stacked")
                 self.siril.cmd("cd", f'"{self.home_directory}"')
