@@ -286,6 +286,7 @@ class PreprocessingInterface(QMainWindow):
             return
 
         self.fits_extension = self.siril.get_siril_config("core", "extension")
+        self.astrometry_net_available = self.local_astrometry_net_available()
 
         self.astrometry_gaia_available = False
         try:
@@ -647,8 +648,40 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.SALMON,
             )
 
+    def local_astrometry_net_available(self):
+        """Return True when Siril can find a local solve-field installation."""
+        configured_dir = ""
+        try:
+            configured_dir = self.siril.get_siril_config("core", "asnet_dir")
+        except (s.DataError, s.CommandError, s.SirilError):
+            pass
+
+        if configured_dir and configured_dir != "(not set)":
+            candidates = [
+                os.path.join(configured_dir, "solve-field"),
+                os.path.join(configured_dir, "solve-field.exe"),
+                os.path.join(configured_dir, "bin", "solve-field"),
+                os.path.join(configured_dir, "bin", "solve-field.exe"),
+            ]
+            if any(os.path.isfile(candidate) for candidate in candidates):
+                return True
+
+        if shutil.which("solve-field"):
+            return True
+
+        if sys.platform.startswith("win"):
+            ansvr_root = os.path.join(
+                os.environ.get("LOCALAPPDATA", ""), "cygwin_ansvr"
+            )
+            return any(
+                os.path.isfile(os.path.join(ansvr_root, "bin", executable))
+                for executable in ("solve-field", "solve-field.exe")
+            )
+
+        return False
+
     # Plate solve on sequence runs when file count < 2048
-    def seq_plate_solve(self, seq_name):
+    def seq_plate_solve(self, seq_name, use_astrometry_net=False):
         """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
         # self.siril.cmd("cd", "process")
         args = ["seqplatesolve", seq_name]
@@ -669,6 +702,27 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            if use_astrometry_net and self.astrometry_net_available:
+                self.siril.log(
+                    f"Siril seqplatesolve reported a failure; retrying unsolved "
+                    f"frames with local astrometry.net (slower): {e}",
+                    LogColor.SALMON,
+                )
+                fallback_args = [arg for arg in args if arg != "-force"]
+                fallback_args.extend(["-localasnet", "-blindpos", "-blindres"])
+                try:
+                    self.siril.cmd(*fallback_args)
+                    self.siril.log(
+                        f"Astrometry.net fallback completed for {seq_name}",
+                        LogColor.GREEN,
+                    )
+                    return True
+                except (s.DataError, s.CommandError, s.SirilError) as fallback_error:
+                    self.siril.log(
+                        f"Astrometry.net fallback failed: {fallback_error}",
+                        LogColor.RED,
+                    )
+                    return False
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
             return True  # TODO: disabling fallback because Siril seems to be throwing a false error
 
@@ -1741,9 +1795,22 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_checkbox.setToolTip(bg_extract_tooltip)
         preprocessing_layout.addWidget(self.bg_extract_checkbox, 1, 1)
 
+        self.astrometry_net_checkbox = QCheckBox(
+            "Fall back to local astrometry.net for unsolved frames (slower)"
+        )
+        self.astrometry_net_checkbox.setToolTip(
+            "After Siril's built-in sequence solve reports a failure, retry only "
+            "frames without an existing astrometric solution using local "
+            "astrometry.net. Requires suitable astrometry.net index files."
+        )
+        if self.astrometry_net_available:
+            preprocessing_layout.addWidget(
+                self.astrometry_net_checkbox, 2, 0, 1, 6
+            )
+
         # Add subsections
         drizzle_group = self._create_drizzle_group()
-        preprocessing_layout.addWidget(drizzle_group, 2, 0, 1, 6)
+        preprocessing_layout.addWidget(drizzle_group, 3, 0, 1, 6)
 
         return preprocessing_section
 
@@ -1987,6 +2054,10 @@ class PreprocessingInterface(QMainWindow):
             "use_biases": self.biases_checkbox.isChecked(),
             "max_files_per_batch": self.batch_size_spinbox.value(),
             "bg_extract": self.bg_extract_checkbox.isChecked(),
+            "use_astrometry_net": (
+                self.astrometry_net_available
+                and self.astrometry_net_checkbox.isChecked()
+            ),
             "drizzle": self.drizzle_group.isChecked(),
             "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 2),
             "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
@@ -2123,6 +2194,7 @@ class PreprocessingInterface(QMainWindow):
         use_biases: bool = False,
         max_files_per_batch: float = UI_DEFAULTS["max_files_per_batch"],
         bg_extract: bool = False,
+        use_astrometry_net: bool = False,
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
@@ -2147,6 +2219,7 @@ class PreprocessingInterface(QMainWindow):
             f"use_biases={use_biases}\n"
             f"batch_size={max_files_per_batch}\n"
             f"bg_extract={bg_extract}\n"
+            f"use_astrometry_net={use_astrometry_net}\n"
             f"drizzle={drizzle}\n"
             f"drizzle_amount={drizzle_amount}\n"
             f"filter_roundness={filter_roundness}\n"
@@ -2320,7 +2393,10 @@ class PreprocessingInterface(QMainWindow):
                 shutil.rmtree(batch_dir, ignore_errors=True)
 
             self.convert_files(final_stack_seq_name)
-            self.seq_plate_solve(seq_name=final_stack_seq_name)
+            self.seq_plate_solve(
+                seq_name=final_stack_seq_name,
+                use_astrometry_net=use_astrometry_net,
+            )
             # turn off drizzle for this
             self.drizzle_status = False
             # Force filters to 3 sigma
@@ -2560,7 +2636,10 @@ class PreprocessingInterface(QMainWindow):
                 pixel_fraction=pixel_fraction,
             )
         else:
-            individual_plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
+            individual_plate_solve_status = self.seq_plate_solve(
+                seq_name=seq_name,
+                use_astrometry_net=use_astrometry_net,
+            )
             if not individual_plate_solve_status:
                 self.siril.log(
                     "Plate solving failed, falling back to regular registration.",
@@ -2657,6 +2736,10 @@ class PreprocessingInterface(QMainWindow):
             "cleanup": self.cleanup_files_checkbox.isChecked(),
             "batch_size": self.batch_size_spinbox.value(),
             "bg_extract": self.bg_extract_checkbox.isChecked(),
+            "use_astrometry_net": (
+                self.astrometry_net_available
+                and self.astrometry_net_checkbox.isChecked()
+            ),
             "drizzle": self.drizzle_group.isChecked(),
             "drizzle_amount": self.drizzle_amount_spinbox.value(),
             "pixel_fraction": self.pixel_fraction_spinbox.value(),
@@ -2729,6 +2812,10 @@ class PreprocessingInterface(QMainWindow):
                 presets.get("batch_size", self.max_files_per_batch)
             )
             self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
+            self.astrometry_net_checkbox.setChecked(
+                self.astrometry_net_available
+                and presets.get("use_astrometry_net", False)
+            )
             self.drizzle_group.setChecked(presets.get("drizzle", False))
             self.drizzle_amount_spinbox.setValue(
                 presets.get("drizzle_amount", UI_DEFAULTS["drizzle_amount"])
