@@ -46,6 +46,9 @@ Folder conventions (drag & drop an object folder to auto-detect the mode):
 """
 CHANGELOG:
 
+1.0.1 - Masters Only Workflow
+      - More flexible panel folder names
+      - Add .fts extension
 1.0.0 - initial release (Mono preprocessing)
       - Derived from the Naztronomy OSC preprocessing script
       - Monochrome-only pipeline (no debayering / CFA handling)
@@ -139,8 +142,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 
 APP_NAME = "Naztronomy - Mono Image Preprocessor"
-VERSION = "1.0.0"
-BUILD = "20260709"
+VERSION = "1.0.1"
+BUILD = "20260722"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -170,7 +173,7 @@ FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
 # This script only accepts monochrome FITS data. Any other file types
 # (raw camera files, TIFF, PNG, etc.) are ignored on selection / drop.
-FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz")
+FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz", ".fts")
 
 
 def _is_fits_file(path) -> bool:
@@ -2069,55 +2072,208 @@ class PreprocessingInterface(QMainWindow):
         self.current_session = f"Session {last_idx + 1}"
         self.update_process_separately_checkbox()
 
-    def _route_stacked_by_filter(self, stacked_map: dict, source_label: str) -> dict:
-        """Auto-assign dropped stacked/master calibration files to sessions by filter.
+    def _prompt_master_session_scope(self, frame_label: str):
+        """Prompt for which sessions a master/stacked calibration frame applies to.
 
-        Only flats are routed by filter. Each flat's filter is detected from its
-        FITS FILTER header, falling back to a filter token in its file name
-        (e.g. ``..._RED_..._flats_stacked``). Flats whose filter matches one or
-        more existing sessions are added to every matching session automatically.
-
-        Darks and biases are filter-agnostic — even though a master dark may carry
-        a FILTER header, it can be shared across any filter — so they are never
-        auto-routed and always fall through to the manual current/all/selected
-        scope prompt. Returns a ``{frame_type: [files]}`` map of the files that
-        could NOT be matched (no filter detected, or no session carries that
-        filter) so the caller can fall back to the manual scope prompt.
+        Shows a dialog offering Current / Selected (checkboxes) / All. Returns a
+        ``(sessions, label)`` tuple with the chosen Session objects and a
+        human-readable description, or ``(None, None)`` when the user cancels.
+        With a single session the current session is returned without prompting.
         """
-        leftover: dict[str, list[Path]] = {}
-        for frame_type, file_list in stacked_map.items():
-            for f in file_list:
-                # Only flats route by filter. Darks/biases always go to the
-                # manual scope prompt so the user chooses their sessions.
-                if frame_type != "flats":
-                    leftover.setdefault(frame_type, []).append(f)
-                    continue
-                filt = _detect_filter(f)
-                if filt == NO_FILTER:
-                    filt = _detect_filter_from_name(Path(f).name) or NO_FILTER
-                matches = (
-                    [
-                        (i, sess)
-                        for i, sess in enumerate(self.sessions)
-                        if (sess.filter or NO_FILTER) == filt
-                    ]
-                    if filt != NO_FILTER
-                    else []
-                )
-                if not matches:
-                    leftover.setdefault(frame_type, []).append(f)
-                    continue
-                for i, sess in matches:
-                    getattr(sess, frame_type).append(f)
-                labels = ", ".join(self._session_label(i, s) for i, s in matches)
+        if len(self.sessions) <= 1:
+            return [self.chosen_session], self.session_dropdown.currentText()
+
+        sub = QDialog(self)
+        sub.setWindowTitle("Apply to which sessions?")
+        sub.setModal(True)
+        sub.setMinimumWidth(420)
+        sub_layout = QVBoxLayout(sub)
+        sub_layout.addWidget(QLabel(f"Add <b>{frame_label}</b> master to:"))
+
+        scroll = QScrollArea(sub)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(4)
+
+        current_index = self.session_dropdown.currentIndex()
+        checkboxes: list[QCheckBox] = []
+        for i, session in enumerate(self.sessions):
+            cb = QCheckBox(self._session_label(i, session))
+            cb.setChecked(i == current_index)
+            checkboxes.append(cb)
+            scroll_layout.addWidget(cb)
+        scroll_layout.addStretch(1)
+        scroll.setWidget(scroll_content)
+        sub_layout.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        current_btn = QPushButton(
+            f"Current Session ({self.session_dropdown.currentText()})"
+        )
+        selected_btn = QPushButton("Selected Sessions")
+        all_btn = QPushButton("All Sessions")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(current_btn)
+        btn_row.addWidget(selected_btn)
+        btn_row.addWidget(all_btn)
+        btn_row.addWidget(cancel_btn)
+        sub_layout.addLayout(btn_row)
+
+        result = {"action": None}
+
+        def on_current():
+            result["action"] = "current"
+            sub.accept()
+
+        def on_selected():
+            if not any(cb.isChecked() for cb in checkboxes):
+                return  # nothing checked — stay in dialog
+            result["action"] = "selected"
+            sub.accept()
+
+        def on_all():
+            result["action"] = "all"
+            sub.accept()
+
+        current_btn.clicked.connect(on_current)
+        selected_btn.clicked.connect(on_selected)
+        all_btn.clicked.connect(on_all)
+        cancel_btn.clicked.connect(sub.reject)
+
+        if sub.exec() != QDialog.DialogCode.Accepted or result["action"] is None:
+            return None, None
+
+        if result["action"] == "all":
+            return list(self.sessions), "all sessions"
+        if result["action"] == "current":
+            return [self.chosen_session], self.session_dropdown.currentText()
+        indices = [i for i, cb in enumerate(checkboxes) if cb.isChecked()]
+        if not indices:
+            return None, None
+        sessions = [self.sessions[i] for i in indices]
+        label = ", ".join(f"Session {i + 1}" for i in indices)
+        return sessions, label
+
+    def _auto_assign_flats_by_filter(self, filt_map: dict, source_label: str) -> None:
+        """Assign each flat to the session(s) whose filter matches. Flats whose
+        filter matches no session are reported and skipped."""
+        assigned_any = False
+        for filt, file_list in filt_map.items():
+            matches = (
+                [
+                    (i, sess)
+                    for i, sess in enumerate(self.sessions)
+                    if (sess.filter or NO_FILTER) == filt
+                ]
+                if filt != NO_FILTER
+                else []
+            )
+            if not matches:
                 self.siril.log(
-                    f"> Added {frame_type} master '{Path(f).name}' to {labels} "
-                    f"by filter '{filt}' ({source_label})",
-                    LogColor.BLUE,
+                    f"> {len(file_list)} flat master(s) with filter '{filt}' "
+                    f"matched no session; skipped ({source_label}).",
+                    LogColor.SALMON,
                 )
-        if any(stacked_map.values()) and leftover != stacked_map:
+                continue
+            for _i, sess in matches:
+                sess.flats.extend(file_list)
+            labels = ", ".join(self._session_label(i, s) for i, s in matches)
+            self.siril.log(
+                f"> Added {len(file_list)} flat master(s) to {labels} "
+                f"by filter '{filt}' ({source_label})",
+                LogColor.BLUE,
+            )
+            assigned_any = True
+        if assigned_any:
             self.update_dropdown()
-        return leftover
+
+    def _apply_stacked_flats(self, flats: list, source_label: str) -> None:
+        """Apply dropped master/stacked flats.
+
+        Flats spanning more than one filter are auto-assigned to their matching
+        filter session(s) after confirming. Single-filter flats let the user pick
+        the target sessions (current / selected / all).
+        """
+        filt_map: dict[str, list[Path]] = {}
+        for f in flats:
+            filt = _detect_filter(f)
+            if filt == NO_FILTER:
+                filt = _detect_filter_from_name(Path(f).name) or NO_FILTER
+            filt_map.setdefault(filt, []).append(Path(f))
+
+        known_filters = [k for k in filt_map if k != NO_FILTER]
+
+        if len(known_filters) > 1:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Master Flats — Multiple Filters")
+            msg.setTextFormat(Qt.TextFormat.RichText)
+            msg.setText(
+                "Flats for multiple filters were found "
+                f"(<b>{', '.join(sorted(known_filters))}</b>).<br><br>"
+                "This will automatically assign each flat to the session(s) with "
+                "the matching filter.<br><br>"
+                "If you want to pick specific sessions for your flats instead, "
+                "cancel and drop a single filter's flats at a time."
+            )
+            assign_btn = msg.addButton(
+                "Auto-assign by filter", QMessageBox.ButtonRole.AcceptRole
+            )
+            msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            if msg.clickedButton() is assign_btn:
+                self._auto_assign_flats_by_filter(filt_map, source_label)
+            return
+
+        label_filt = known_filters[0] if known_filters else None
+        frame_label = f"{label_filt} flats" if label_filt else "flats"
+        sessions, label = self._prompt_master_session_scope(frame_label)
+        if not sessions:
+            return
+        for sess in sessions:
+            sess.flats.extend(Path(f) for f in flats)
+        self.update_dropdown()
+        self.siril.log(
+            f"> Added {len(flats)} flat (stacked) file(s) to {label} ({source_label})",
+            LogColor.BLUE,
+        )
+
+    def _apply_stacked_darks_biases(
+        self, frame_type: str, files: list, source_label: str
+    ) -> None:
+        """Apply dropped master/stacked darks or biases. The user always chooses
+        which sessions they apply to (never auto-routed by filter)."""
+        sessions, label = self._prompt_master_session_scope(frame_type)
+        if not sessions:
+            return
+        for sess in sessions:
+            getattr(sess, frame_type).extend(Path(f) for f in files)
+        self.update_dropdown()
+        self.siril.log(
+            f"> Added {len(files)} {frame_type} (stacked) file(s) to {label} "
+            f"({source_label})",
+            LogColor.BLUE,
+        )
+
+    def _apply_stacked_calibration(self, stacked_map: dict, source_label: str) -> None:
+        """Route dropped stacked/master calibration files to sessions.
+
+        The frame type is trusted from the detected file name. Darks and biases
+        always prompt for the target sessions (current / selected / all). Flats
+        spanning multiple filters are auto-assigned by filter; single-filter flats
+        prompt for the target sessions.
+        """
+        for frame_type in ("darks", "biases", "flats"):
+            files = stacked_map.get(frame_type)
+            if not files:
+                continue
+            if frame_type == "flats":
+                self._apply_stacked_flats(files, source_label)
+            else:
+                self._apply_stacked_darks_biases(frame_type, files, source_label)
 
     def _handle_dropped_files(self, paths: list):
         """Called by DragDropTreeWidget when files or folders are dropped onto the list.
@@ -2133,8 +2289,10 @@ class PreprocessingInterface(QMainWindow):
 
         Individual files whose names contain _darks_stacked, _flats_stacked, or
         _biases_stacked are auto-categorised into their respective frame types.
-        When more than one session exists the user is asked whether to apply them
-        to the current session only or to all sessions.
+        Stacked/master darks and biases always prompt for which sessions to apply
+        to (current / selected / all) when more than one session exists. Stacked
+        flats spanning multiple filters are auto-assigned to their matching-filter
+        session(s); single-filter flats prompt for the target sessions.
 
         All other plain files still trigger the frame-type dialog.
         """
@@ -2336,61 +2494,11 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.BLUE,
             )
 
-        # Apply stacked calibration folders → ask session scope if >1 session
+        # Apply stacked calibration folders → prompt for type/sessions per the
+        # master-frame flow (darks/biases always prompt for sessions; flats are
+        # auto-assigned by filter when multiple filters are dropped).
         if stacked_additions:
-            # First, auto-route any masters whose filter matches an existing
-            # session (so a RED master flat lands on the RED session, etc.).
-            stacked_additions = self._route_stacked_by_filter(
-                stacked_additions, "folder drop"
-            )
-        if stacked_additions:
-            if len(self.sessions) > 1:
-                stacked_names = ", ".join(f"{ft}_stacked" for ft in stacked_additions)
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Apply Stacked Calibration Frames")
-                msg.setText(
-                    f"You dropped stacked calibration folder(s):\n<b>{stacked_names}</b>\n\n"
-                    f"Apply to which sessions?"
-                )
-                msg.setTextFormat(Qt.TextFormat.RichText)
-                btn_current = msg.addButton(
-                    f"Current Session ({self.session_dropdown.currentText()})",
-                    QMessageBox.ButtonRole.AcceptRole,
-                )
-                btn_all = msg.addButton(
-                    "All Sessions", QMessageBox.ButtonRole.ActionRole
-                )
-                msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                msg.exec()
-                clicked = msg.clickedButton()
-                if clicked is btn_all:
-                    stacked_target_sessions = self.sessions
-                    stacked_session_label = "all sessions"
-                elif clicked is btn_current:
-                    stacked_target_sessions = [self.chosen_session]
-                    stacked_session_label = self.session_dropdown.currentText()
-                else:
-                    stacked_target_sessions = []
-                    stacked_session_label = ""
-            else:
-                stacked_target_sessions = [self.chosen_session]
-                stacked_session_label = self.session_dropdown.currentText()
-
-            for frame_type, stacked_flist in stacked_additions.items():
-                for session in stacked_target_sessions:
-                    match frame_type:
-                        case "darks":
-                            session.darks.extend(stacked_flist)
-                        case "flats":
-                            session.flats.extend(stacked_flist)
-                        case "biases":
-                            session.biases.extend(stacked_flist)
-                if stacked_target_sessions:
-                    self.siril.log(
-                        f"> Added {len(stacked_flist)} {frame_type} (stacked) files to "
-                        f"{stacked_session_label} (folder drop)",
-                        LogColor.BLUE,
-                    )
+            self._apply_stacked_calibration(stacked_additions, "folder drop")
 
         # ── Process plain files ──────────────────────────────────────────────
         # First, pull out any stacked/master calibration files identified by
@@ -2405,59 +2513,11 @@ class PreprocessingInterface(QMainWindow):
             else:
                 regular_files.append(Path(f))
 
-        # Apply stacked calibration files → ask session scope if >1 session
+        # Apply stacked calibration files → prompt for type/sessions per the
+        # master-frame flow (darks/biases always prompt for sessions; flats are
+        # auto-assigned by filter when multiple filters are dropped).
         if stacked_files:
-            # First, auto-route any masters whose filter matches an existing
-            # session by FITS header or a filter token in the file name.
-            stacked_files = self._route_stacked_by_filter(stacked_files, "drag & drop")
-        if stacked_files:
-            if len(self.sessions) > 1:
-                stacked_names = ", ".join(f"{ft}_stacked" for ft in stacked_files)
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Apply Stacked Calibration Frames")
-                msg.setText(
-                    f"You dropped stacked/master calibration file(s):\n<b>{stacked_names}</b>\n\n"
-                    f"Apply to which sessions?"
-                )
-                msg.setTextFormat(Qt.TextFormat.RichText)
-                btn_current = msg.addButton(
-                    f"Current Session ({self.session_dropdown.currentText()})",
-                    QMessageBox.ButtonRole.AcceptRole,
-                )
-                btn_all = msg.addButton(
-                    "All Sessions", QMessageBox.ButtonRole.ActionRole
-                )
-                msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                msg.exec()
-                clicked = msg.clickedButton()
-                if clicked is btn_all:
-                    stacked_file_sessions = self.sessions
-                    stacked_file_label = "all sessions"
-                elif clicked is btn_current:
-                    stacked_file_sessions = [self.chosen_session]
-                    stacked_file_label = self.session_dropdown.currentText()
-                else:
-                    stacked_file_sessions = []
-                    stacked_file_label = ""
-            else:
-                stacked_file_sessions = [self.chosen_session]
-                stacked_file_label = self.session_dropdown.currentText()
-
-            for frame_type, sf_list in stacked_files.items():
-                for session in stacked_file_sessions:
-                    match frame_type:
-                        case "darks":
-                            session.darks.extend(sf_list)
-                        case "flats":
-                            session.flats.extend(sf_list)
-                        case "biases":
-                            session.biases.extend(sf_list)
-                if stacked_file_sessions:
-                    self.siril.log(
-                        f"> Added {len(sf_list)} {frame_type} (stacked) file(s) to "
-                        f"{stacked_file_label} (drag & drop)",
-                        LogColor.BLUE,
-                    )
+            self._apply_stacked_calibration(stacked_files, "drag & drop")
 
         # Remaining non-stacked files → show frame-type dialog as before
         if regular_files:
