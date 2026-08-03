@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - OSC Image Preprocessing script
-Version: 2.0.3
+Version: 2.0.5
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -28,6 +28,10 @@ allows you to choose files from any folder and drive and they will all be consol
 """
 CHANGELOG:
 
+2.0.4 - Filter settings: added "abs" (absolute value) mode alongside sigma and % for
+        Roundness, FWHM, Star Count and Background filters. When "abs" is chosen
+        the raw value is passed to Siril with no suffix (issue #99).
+      - allow astrometry.net fallback (PR#107 @tophrchris)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -128,7 +132,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
-VERSION = "2.0.3"
+VERSION = "2.0.5"
 BUILD = "20260430"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
@@ -1028,7 +1032,9 @@ class PreprocessingInterface(QMainWindow):
             for ft_map in pending_single_sessions.values():
                 for ft, ft_files in ft_map.items():
                     if ft.startswith("_stacked_"):
-                        stacked_additions.setdefault(ft[len("_stacked_"):], []).extend(ft_files)
+                        stacked_additions.setdefault(ft[len("_stacked_") :], []).extend(
+                            ft_files
+                        )
                     else:
                         folder_additions.setdefault(ft, []).extend(ft_files)
         elif pending_single_sessions:
@@ -1302,8 +1308,13 @@ class PreprocessingInterface(QMainWindow):
 
                     if ALWAYS_SYMLINK or same_drive:
                         try:
-                            os.symlink(src.resolve(strict=False), dest_path.resolve(strict=False))
-                            self.siril.log(f"Symlinked {file} to {dest_path}", LogColor.BLUE)
+                            os.symlink(
+                                src.resolve(strict=False),
+                                dest_path.resolve(strict=False),
+                            )
+                            self.siril.log(
+                                f"Symlinked {file} to {dest_path}", LogColor.BLUE
+                            )
                             continue
                         except (OSError, NotImplementedError):
                             pass  # fall through to copy
@@ -1439,6 +1450,7 @@ class PreprocessingInterface(QMainWindow):
         if os.path.isdir(directory):
             print(f"Found directory for {image_type}: {directory}")
             self.siril.cmd("cd", f'"{directory}"')
+
             # Ignore hidden files and dirs.
             # Also accept symlinks: os.path.isfile() silently returns False for
             # symlinks whose targets live on an untrusted mount (WinError 448).
@@ -1631,27 +1643,31 @@ class PreprocessingInterface(QMainWindow):
             "-kernel=square",
         ]
 
-        # Sigma or Percentage for each filter type (if enabled)
+        # Sigma, Percentage, or absolute value for each filter type (if enabled).
+        # "abs" appends the raw value with no suffix (Siril absolute threshold).
+        def _filter_value(mode: str, value: float) -> str:
+            if mode == "σ":
+                return f"{value}k"
+            if mode == "%":
+                return f"{int(value)}%"
+            return f"{value}"  # abs
+
         if use_filter_round:
-            if self.roundness_mode_combo.currentText() == "σ":
-                cmd_args.append(f"-filter-round={filter_round}k")
-            else:
-                cmd_args.append(f"-filter-round={int(filter_round)}%")
+            cmd_args.append(
+                f"-filter-round={_filter_value(self.roundness_mode_combo.currentText(), filter_round)}"
+            )
         if use_filter_wfwhm:
-            if self.fwhm_mode_combo.currentText() == "σ":
-                cmd_args.append(f"-filter-wfwhm={filter_wfwhm}k")
-            else:
-                cmd_args.append(f"-filter-wfwhm={int(filter_wfwhm)}%")
+            cmd_args.append(
+                f"-filter-wfwhm={_filter_value(self.fwhm_mode_combo.currentText(), filter_wfwhm)}"
+            )
         if use_filter_stars:
-            if self.stars_mode_combo.currentText() == "σ":
-                cmd_args.append(f"-filter-nbstars={filter_stars}k")
-            else:
-                cmd_args.append(f"-filter-nbstars={int(filter_stars)}%")
+            cmd_args.append(
+                f"-filter-nbstars={_filter_value(self.stars_mode_combo.currentText(), filter_stars)}"
+            )
         if use_filter_bkg:
-            if self.bkg_mode_combo.currentText() == "σ":
-                cmd_args.append(f"-filter-bkg={filter_bkg}k")
-            else:
-                cmd_args.append(f"-filter-bkg={int(filter_bkg)}%")
+            cmd_args.append(
+                f"-filter-bkg={_filter_value(self.bkg_mode_combo.currentText(), filter_bkg)}"
+            )
 
         # If not doing a paneled mosaic, use max framing, otherwise crop down to reference frame so edges don't have ugly noise
         if not self.paneled_mosaic_radio.isChecked():
@@ -2388,17 +2404,6 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_check.setToolTip(bg_extract_tooltip)
         preprocessing_layout.addWidget(self.bg_extract_check)
 
-        self.astrometry_net_check = QCheckBox(
-            "Fall back to local astrometry.net for unsolved frames (slower)"
-        )
-        self.astrometry_net_check.setToolTip(
-            "After Siril's built-in sequence solve reports a failure, retry only "
-            "frames without an existing astrometric solution using local "
-            "astrometry.net. Requires suitable astrometry.net index files."
-        )
-        if self.astrometry_net_available:
-            preprocessing_layout.addWidget(self.astrometry_net_check)
-
         drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
         self.drizzle_checkbox = QCheckBox("Enable Drizzle")
         self.drizzle_checkbox.setToolTip(drizzle_tooltip)
@@ -2442,6 +2447,17 @@ class PreprocessingInterface(QMainWindow):
 
         self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
 
+        self.astrometry_net_check = QCheckBox(
+            "Fall back to local astrometry.net for unsolved frames (slower)"
+        )
+        self.astrometry_net_check.setToolTip(
+            "After Siril's built-in sequence solve reports a failure, retry only "
+            "frames without an existing astrometric solution using local "
+            "astrometry.net. Requires suitable astrometry.net index files."
+        )
+        if self.astrometry_net_available:
+            preprocessing_layout.addWidget(self.astrometry_net_check)
+
         preprocessing_group.setLayout(preprocessing_layout)
         processing_layout.addWidget(preprocessing_group)
 
@@ -2464,7 +2480,7 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox.setEnabled(False)
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
         self.roundness_mode_combo = QComboBox()
-        self.roundness_mode_combo.addItems(["σ", "%"])
+        self.roundness_mode_combo.addItems(["σ", "%", "abs"])
         self.roundness_mode_combo.setFixedWidth(65)
         self.roundness_mode_combo.setEnabled(False)
         self.roundness_check.toggled.connect(self.roundness_spinbox.setEnabled)
@@ -2494,7 +2510,7 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_spinbox.setEnabled(False)
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
         self.fwhm_mode_combo = QComboBox()
-        self.fwhm_mode_combo.addItems(["σ", "%"])
+        self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
         self.fwhm_mode_combo.setFixedWidth(65)
         self.fwhm_mode_combo.setEnabled(False)
         self.fwhm_check.toggled.connect(self.fwhm_spinbox.setEnabled)
@@ -2524,7 +2540,7 @@ class PreprocessingInterface(QMainWindow):
         self.stars_spinbox.setEnabled(False)
         self.stars_spinbox.setToolTip(stars_label_tooltip)
         self.stars_mode_combo = QComboBox()
-        self.stars_mode_combo.addItems(["σ", "%"])
+        self.stars_mode_combo.addItems(["σ", "%", "abs"])
         self.stars_mode_combo.setFixedWidth(65)
         self.stars_mode_combo.setEnabled(False)
         self.stars_check.toggled.connect(self.stars_spinbox.setEnabled)
@@ -2554,7 +2570,7 @@ class PreprocessingInterface(QMainWindow):
         self.bkg_spinbox.setEnabled(False)
         self.bkg_spinbox.setToolTip(bkg_label_tooltip)
         self.bkg_mode_combo = QComboBox()
-        self.bkg_mode_combo.addItems(["σ", "%"])
+        self.bkg_mode_combo.addItems(["σ", "%", "abs"])
         self.bkg_mode_combo.setFixedWidth(65)
         self.bkg_mode_combo.setEnabled(False)
         self.bkg_check.toggled.connect(self.bkg_spinbox.setEnabled)
@@ -2863,19 +2879,26 @@ class PreprocessingInterface(QMainWindow):
             self.create_final_stack_check.setEnabled(True)
 
     def _on_filter_mode_changed(self, combo, spinbox):
-        """Update spinbox properties when filter mode changes between σ and %."""
-        if combo.currentText() == "σ":
+        """Update spinbox properties when filter mode changes between σ, % and abs."""
+        mode = combo.currentText()
+        if mode == "σ":
             spinbox.setRange(1, 4)
             spinbox.setSingleStep(0.1)
             spinbox.setDecimals(1)
             spinbox.setValue(3.0)
             spinbox.setSuffix(" σ")
-        else:
+        elif mode == "%":
             spinbox.setRange(1, 100)
             spinbox.setSingleStep(1)
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
+        else:  # abs
+            spinbox.setRange(0, 1000)
+            spinbox.setSingleStep(0.1)
+            spinbox.setDecimals(2)
+            spinbox.setValue(0)
+            spinbox.setSuffix("")
 
     def save_presets(self, filepath=None):
         """Save current UI settings and session data to a preset file.
@@ -2885,8 +2908,7 @@ class PreprocessingInterface(QMainWindow):
             "dark_flats": self.dark_flats_check.isChecked(),
             "bg_extract": self.bg_extract_check.isChecked(),
             "use_astrometry_net": (
-                self.astrometry_net_available
-                and self.astrometry_net_check.isChecked()
+                self.astrometry_net_available and self.astrometry_net_check.isChecked()
             ),
             "drizzle": self.drizzle_checkbox.isChecked(),
             "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
