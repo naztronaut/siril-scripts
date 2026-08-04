@@ -25,6 +25,7 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
+2.1.0 - Improve DWARF experience using code from DeepSkyLab (find lights/dark/bias/flat files and filter thanks to shotsInfo.json)
 2.0.7 - Refactored directory selection for better maintainability
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
@@ -95,6 +96,10 @@ import time
 import sirilpy as s
 from datetime import datetime
 import json
+from typing import Dict, List, Optional, Tuple
+import re
+from pathlib import Path
+from dataclasses import dataclass
 
 
 s.ensure_installed("PyQt6", "numpy", "astropy")
@@ -268,6 +273,7 @@ class PreprocessingInterface(QMainWindow):
         self.target_coords = None
         self.telescope_combo = None
         self.filter_combo = None
+        self.dwarf = None
 
         self.filter_options_map = FILTER_OPTIONS_MAP
         self.current_filter_options = self.filter_options_map["ZWO Seestar S50"]
@@ -325,7 +331,7 @@ class PreprocessingInterface(QMainWindow):
         if not changed_cwd:
             while True:
                 prompt_title = (
-                    "Select the parent directory containing the 'lights' directory"
+                    "Select the parent directory containing the 'lights' directory (or the 'shotsInfo.json' file if you have a DWARF telescope)"
                 )
 
                 selected_dir = QFileDialog.getExistingDirectory(
@@ -347,6 +353,7 @@ class PreprocessingInterface(QMainWindow):
                 if self.check_directory(selected_dir):
                     break
 
+        self.load_dwarf(self.current_working_directory)
         self.create_widgets()
         # Initialize fits_files_count before creating widgets
         self.fits_files_count = 0
@@ -395,13 +402,26 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.SALMON,
             )
             return False
-        else: 
-            msg = f"The selected directory must contain a subdirectory named 'lights'.\nYou selected: {directory}. Please try again."
-            self.siril.log(msg, LogColor.SALMON)
-            QMessageBox.critical(
-                self, "Invalid Directory", msg, QMessageBox.StandardButton.Ok
+        elif self.load_dwarf(directory):
+            msg = "You don't have 'lights' directory, but I've found a shotsinfo.json so you must be using a DWARF Telescope, do you want me to try to create the 'lights' directory for you and put your fits files in it?"
+            file_number = 0
+            answer = QMessageBox.question(self, "Copy Dwarf fits into Lights Dir", msg)
+            if answer == QMessageBox.StandardButton.Yes:
+                file_number = self.dwarf.create_lights_folder()
+            if file_number > 0:
+                self.confirm_selected_directory(directory)
+                return True
+            self.siril.log(
+                f"Current working directory is invalid: {directory}, reprompting...",
+                LogColor.SALMON,
             )
-            return False
+
+        msg = f"The selected directory must contain either a subdirectory named 'lights' or a file 'shotsInfo.json' (DWARF telescope).\nYou selected: {directory}. Please try again."
+        self.siril.log(msg, LogColor.SALMON)
+        QMessageBox.critical(
+            self, "Invalid Directory", msg, QMessageBox.StandardButton.Ok
+        )
+        return False
 
     def initial_message(self):
         msg = f"""Welcome to {APP_NAME} v{VERSION}!
@@ -412,7 +432,9 @@ class PreprocessingInterface(QMainWindow):
         Q: How do I get support?
         A: Join the Naztronomy Discord server for support and discussion. Please have your logs handy.
         Q: Where can I find the logs?
-        A: You can export logs by clicking the download button on the lower right hand side of the console.\n
+        A: You can export logs by clicking the download button on the lower right hand side of the console.
+        Q: How can I use bias/flat for DWARF Telescopes?
+        A: Keep a copy of the telescope CALI_FRAME/ directory into the parent directory of your selected directory, the needed files will automatically be fetched\n
         """
         self.siril_log_long(msg, LogColor.BLUE)
 
@@ -578,6 +600,11 @@ class PreprocessingInterface(QMainWindow):
     # Dirname: lights, darks, biases, flats
     def convert_files(self, dir_name):
         directory = os.path.join(self.current_working_directory, dir_name)
+
+        if not os.path.isdir(directory) and self.dwarf is not None and dir_name in ["biases", "flats", "darks"]:
+            self.siril.log(f"DWARF telescope: try to find {dir_name} into ../CALI_FRAME/", LogColor.BLUE)
+            self.dwarf.copy_calibration_files(dir_name) #  If Dwarf, first let's try to fetch the correct calibration files
+
         if os.path.isdir(directory):
             self.siril.cmd("cd", dir_name)
             file_count = len(
@@ -1313,6 +1340,15 @@ class PreprocessingInterface(QMainWindow):
         # Set default selection
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
+
+        if selected_scope[0:5] == "Dwarf" and self.dwarf is not None: # If Dwarf, try to autodetect the filter
+            filter = self.dwarf.dwarf_shots_info.ir.strip().lower()
+            if "dual" in filter or "duo" in filter or "band" in filter or "narrow" in filter:
+                self.filter_combo.setCurrentText(new_options[1]) # It seems to be Dual Band Filter
+                self.siril.log(
+                    "Dual Band Filter detected",
+                    LogColor.BLUE,
+                )
 
         # Disable SPCC for Celestron Origin
         if selected_scope == "Celestron Origin":
@@ -2165,6 +2201,7 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
         self.siril.cmd("close")
+        self.load_dwarf(self.current_working_directory)
 
         def check_interruption():
             if check_cancel and check_cancel():
@@ -2757,6 +2794,344 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
+
+    def load_dwarf(self, directory: str) -> bool:
+        if not os.path.exists(Path(os.path.join(directory, "shotsInfo.json"))):
+            self.dwarf = None
+            return False
+        self.dwarf = DwarfManager(directory, self.siril)
+        return True
+
+@dataclass
+class DwarfShotsInfo:
+    target: str
+    exp_s: float
+    gain: int
+    ir: str
+    binning: int
+    min_temp: Optional[int]
+    max_temp: Optional[int]
+    shots_taken: Optional[int]
+    shots_stacked: Optional[int]
+
+    @property
+    def mean_temp(self) -> Optional[float]:
+        if self.min_temp is None or self.max_temp is None:
+            return None
+        return (self.min_temp + self.max_temp) / 2.0
+
+@dataclass
+class DwarfDarkMeta:
+    exp_s: float
+    gain: int
+    binning: int
+    temp_c: int
+
+class DwarfManager:
+    # This class encapsulates code initially created by DeepSkyLab for his "DWARF Mini One‑Click Preprocess for Siril" script
+    # https://youtu.be/GnNZ2issC-Y
+
+    def __init__(self, workdir: str, siril):
+        self.siril = siril
+        self.current_folder = Path(workdir)
+        self.dwarf_shots_info = self._read_shotsinfo(Path(os.path.join(self.current_folder, "shotsInfo.json")))
+        self._DARK_RE = re.compile(
+            r"dark_exp_(?P<exp>[0-9]+\.?[0-9]*)_gain_(?P<gain>[0-9]+)_bin_(?P<bin>[0-9]+)_(?P<temp>[0-9]+)C",
+            re.IGNORECASE,
+        )
+        self._TEMP_SUFFIX_RE = re.compile(r".*_[+-]?\d+C\.(fit|fits|fts)$", re.IGNORECASE)
+        self.cam = self._detect_cam_name(workdir)
+
+    def _log(self, msg, color = LogColor.RED):
+        self.siril.log(msg, color)
+
+    def create_lights_folder(self) -> int:
+        lights_directory = os.path.join(self.current_folder, "lights")
+        (light_files, _, _) = self._select_light_files()
+        if len(light_files) == 0:
+            return 0 # early return don't create the dir
+        os.makedirs(lights_directory, exist_ok=True)
+        for light_file in light_files:
+            shutil.copy2(light_file, lights_directory)
+        self._log(f"{lights_directory} created, {len(light_files)} files copied in it", LogColor.GREEN)
+        return len(light_files)
+
+    def _read_shotsinfo(self, shotsinfo_path: Path) -> DwarfShotsInfo:
+        with shotsinfo_path.open("r", encoding="utf-8") as f:
+            d = json.load(f)
+
+        target = str(d.get("target", "UNKNOWN"))
+        exp_s = float(d.get("exp", 0))
+        gain = int(d.get("gain", 0))
+        ir = str(d.get("ir", "UNKNOWN"))
+
+        binning_raw = str(d.get("binning", "1*1"))
+        try:
+            binning = int(binning_raw.split("*")[0])
+        except Exception:
+            binning = 1
+
+        min_temp = d.get("minTemp", None)
+        max_temp = d.get("maxTemp", None)
+        min_temp = int(min_temp) if min_temp is not None else None
+        max_temp = int(max_temp) if max_temp is not None else None
+
+        shots_taken = d.get("shotsTaken", None)
+        shots_stacked = d.get("shotsStacked", None)
+        shots_taken = int(shots_taken) if shots_taken is not None else None
+        shots_stacked = int(shots_stacked) if shots_stacked is not None else None
+
+        return DwarfShotsInfo(
+            target=target,
+            exp_s=exp_s,
+            gain=gain,
+            ir=ir,
+            binning=binning,
+            min_temp=min_temp,
+            max_temp=max_temp,
+            shots_taken=shots_taken,
+            shots_stacked=shots_stacked,
+        )
+
+    def _detect_cam_name(self, folder_name: str) -> str:
+        n = folder_name.upper()
+        if "TELE" in n:
+            return "cam_0"
+        if "WIDE" in n:
+            return "cam_1"
+        return "cam_0"
+
+    def _detect_ir_code(self, ir_str: str) -> Optional[int]:
+        s0 = (ir_str or "").strip().lower()
+        if not s0:
+            return None
+        if "astro" in s0:
+            return 1
+        if "dual" in s0 or "duo" in s0 or "band" in s0 or "narrow" in s0:
+            return 2
+        if "none" in s0 or "off" in s0 or "clear" in s0 or "ircut" in s0:
+            return 0
+        return None
+
+    def copy_calibration_files(self, dir_name):
+        parent = self.current_folder.parent / "CALI_FRAME"
+
+        dwarf_cali_paths = {
+            'biases': parent / "bias",
+            'flats': parent / "flat",
+            'darks': parent / "dark" / self.cam
+        }
+
+        if dir_name == "darks":
+            best_files = self._select_matching_darks(dwarf_cali_paths[dir_name])
+            if len(best_files) > 0:
+                self.siril.log(f"Copy {len(best_files)} dark file(s) into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                os.makedirs(self.current_folder / dir_name, exist_ok=True)
+                for file in best_files:
+                    self.siril.log(f"Copy {file.absolute().name} into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                    shutil.copy2(file, self.current_folder / dir_name)
+            else:
+                self.siril.log(f"Couldn't find matching darks", LogColor.SALMON)
+
+        elif dir_name in ["biases", "flats"]:
+            best_directory = self._pick_best_calib_subfolder(dwarf_cali_paths[dir_name])
+            if best_directory is not None:
+                self.siril.log(f"Copy {best_directory.absolute().name}/* into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                shutil.copytree(best_directory, self.current_folder / dir_name)
+
+        else:
+            self.siril.log(f"Unknown calibration type {dir_name}", LogColor.RED)
+
+    def _pick_best_calib_subfolder(self, parent: Path) -> Optional[Path]:
+        """Pick best matching subfolder in CALI_FRAME/{bias|flat}."""
+
+        cam_name = self.cam
+        ir_code = self._detect_ir_code(self.dwarf_shots_info.ir)
+        gain = self.dwarf_shots_info.gain
+
+        if not parent.is_dir():
+            return None
+
+        candidates = [p for p in parent.iterdir() if p.is_dir() and p.name.lower().startswith(cam_name.lower())]
+
+        if not candidates:
+            return None
+
+        def score(p: Path) -> int:
+            name = p.name.lower()
+            sc = 0
+            if name == cam_name.lower():
+                sc += 5
+
+            if ir_code is not None:
+                if f"ir_{ir_code}" in name:
+                    sc += 10
+                elif "ir_" in name:
+                    sc -= 2
+            if f"gain_{gain}" in name:
+                sc += 3
+            elif "gain_" in name:
+                sc -= 1
+
+            # prefer slightly more specific folders
+            sc += len(name) // 10
+            return sc
+
+        return sorted(candidates, key=score, reverse=True)[0]
+
+    def _parse_dark_filename(self, name: str) -> Optional[DwarfDarkMeta]:
+        m = self._DARK_RE.search(name)
+        if not m:
+            return None
+        try:
+            return DwarfDarkMeta(
+                exp_s=float(m.group("exp")),
+                gain=int(m.group("gain")),
+                binning=int(m.group("bin")),
+                temp_c=int(m.group("temp")),
+            )
+        except Exception:
+            return None
+
+    def _glob_fits(self, folder: Path) -> List[Path]:
+        exts = ("*.fit", "*.fits", "*.fts", "*.FIT", "*.FITS", "*.FTS")
+        out: List[Path] = []
+        for pat in exts:
+            out.extend(folder.glob(pat))
+        out = [p for p in out if p.is_file()]
+        return sorted(set(out))
+
+    def _select_matching_darks(self, dark_dir: Path) -> List[Path]:
+        shots = self.dwarf_shots_info
+        files = self._glob_fits(dark_dir)
+        if not files:
+            return []
+
+        exp_tol = max(0.05, shots.exp_s * 0.02)  # DWARF uses odd decimals sometimes
+
+        candidates: List[Tuple[Path, DwarfDarkMeta]] = []
+        for f in files:
+            meta = self._parse_dark_filename(f.name)
+            if not meta:
+                continue
+            if meta.gain != shots.gain:
+                continue
+            if meta.binning != shots.binning:
+                continue
+            if abs(meta.exp_s - shots.exp_s) > exp_tol:
+                continue
+            candidates.append((f, meta))
+
+        if not candidates:
+            return []
+
+        # Prefer temps inside session range
+        # Tiny bonus: matching dark temperature matters more than most people think (until it *really* does).
+        if shots.min_temp is not None and shots.max_temp is not None:
+            in_range = [f for (f, m) in candidates if shots.min_temp <= m.temp_c <= shots.max_temp]
+            if in_range:
+                return sorted(in_range)
+
+        # Else closest to mean temp (or median)
+        temps = [m.temp_c for (_, m) in candidates]
+        target_t = shots.mean_temp if shots.mean_temp is not None else sorted(temps)[len(temps) // 2]
+        best_dist = min(abs(m.temp_c - target_t) for (_, m) in candidates)
+        chosen = [f for (f, m) in candidates if abs(m.temp_c - target_t) == best_dist]
+        return sorted(chosen)
+
+    def _fits_layer_count(self, path: Path) -> Optional[int]:
+        """Cheap FITS header peek to estimate # layers.
+
+        - NAXIS<=2 -> 1 layer
+        - NAXIS=3 and NAXIS3=3 -> 3 layers
+
+        Returns None if it can't parse.
+        """
+        try:
+            header_cards: List[str] = []
+            with path.open("rb") as f:
+                for _ in range(20):
+                    block = f.read(2880)
+                    if not block:
+                        break
+                    for i in range(0, len(block), 80):
+                        card = block[i : i + 80].decode("ascii", errors="ignore")
+                        header_cards.append(card)
+                        if card.startswith("END"):
+                            raise StopIteration
+        except StopIteration:
+            pass
+        except Exception:
+            return None
+
+        kv: Dict[str, str] = {}
+        for c in header_cards:
+            if "=" in c[:10]:
+                key = c[:8].strip()
+                val = c.split("=", 1)[1].split("/", 1)[0].strip()
+                kv[key] = val
+
+        try:
+            naxis = int(kv.get("NAXIS", "2"))
+        except Exception:
+            return None
+
+        if naxis <= 2:
+            return 1
+
+        try:
+            naxis3 = int(kv.get("NAXIS3", "1"))
+        except Exception:
+            naxis3 = 1
+
+        return naxis3
+
+    def _select_light_files(self) -> Tuple[List[Path], Dict[int, int], List[Path]]:
+        """Return (selected_subs, layer_hist, excluded_fits).
+
+        Excludes DWARF products like stacked*.fits and filters by majority layer count
+        to prevent Siril sequence aborts.
+        """
+        target_dir = self.current_folder
+        allfits = self._glob_fits(target_dir)
+
+        excluded: List[Path] = []
+
+        # Exclude obvious non-subs
+        nonstack: List[Path] = []
+        for p in allfits:
+            n = p.name.lower()
+            if "stacked" in n:
+                excluded.append(p)
+                continue
+            if n.startswith("pp_") or n.startswith("r_") or n.startswith("dsl_"):
+                excluded.append(p)
+                continue
+            nonstack.append(p)
+
+        # Prefer classic DWARF raw-sub naming: ..._27C.fits
+        temp_named = [p for p in nonstack if self._TEMP_SUFFIX_RE.match(p.name)]
+        candidates = temp_named if len(temp_named) >= max(5, len(nonstack) // 2) else nonstack
+
+        # Layer-count majority filter
+        layers: Dict[Path, Optional[int]] = {p: self._fits_layer_count(p) for p in candidates}
+        hist: Dict[int, int] = {}
+        for _, n in layers.items():
+            if n is None:
+                continue
+            hist[n] = hist.get(n, 0) + 1
+
+        if hist:
+            majority = sorted(hist.items(), key=lambda kv: kv[1], reverse=True)[0][0]
+            selected = [p for p in candidates if layers.get(p, None) == majority]
+            # Any candidate with a different layer count is excluded
+            for p in candidates:
+                if layers.get(p, None) != majority:
+                    excluded.append(p)
+        else:
+            selected = candidates
+
+        return sorted(selected), hist, sorted(set(excluded))
 
 
 def main():
