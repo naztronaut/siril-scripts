@@ -26,6 +26,18 @@ The following subdirectories are optional:
 CHANGELOG:
 
 2.0.7 - Refactored directory selection for better maintainability
+      - Fix: SPCC no longer fails with "This command only works on plate solved
+        images". The stacked image is now checked for a WCS and plate solved on
+        demand immediately before SPCC.
+      - The on-demand solve retries with a drizzle-corrected pixel size, since a
+        drizzled stack can keep the native XPIXSZ in its header while the actual
+        sampling is XPIXSZ / drizzle amount.
+      - Fix: a failed SPCC no longer closes the dialog mid-run and no longer
+        saves an uncalibrated image under the "_spcc" name.
+      - Fix: a seqplatesolve failure is recorded and reported instead of being
+        silently swallowed.
+      - Fix: batch result files are only moved when the filename matches the
+        batch prefix.
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
@@ -266,6 +278,9 @@ class PreprocessingInterface(QMainWindow):
         self.chosen_telescope = "ZWO Seestar S30"
         self.telescope_options = TELESCOPES
         self.target_coords = None
+        # Set when seqplatesolve reports a failure so later steps (SPCC) know
+        # the stacked result may not carry a WCS.
+        self.seq_plate_solve_failed = False
         self.telescope_combo = None
         self.filter_combo = None
 
@@ -669,7 +684,14 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            # Remembered so SPCC, which requires a WCS, knows the stack may not
+            # have inherited astrometry from the sequence.
+            self.seq_plate_solve_failed = True
             self.siril.log(f"seqplatesolve failed: {e}", LogColor.RED)
+            self.siril.log(
+                "Continuing - the stacked image is re-solved on demand if SPCC needs it.",
+                LogColor.SALMON,
+            )
             return True  # TODO: disabling fallback because Siril seems to be throwing a false error
 
     # Regular registration if plate solve not available - No Mosaics
@@ -1135,15 +1157,159 @@ class PreprocessingInterface(QMainWindow):
 
     def image_plate_solve(self):
         """Plate solve the loaded image with the '-force' argument."""
+        return self.ensure_plate_solved(context="registration", force=True)
+
+    # SPCC refuses to run on an image without a WCS. The sequence is plate
+    # solved before registration, but the stacked result does not always
+    # inherit the astrometry: a failed or partial seqplatesolve, a fallback to
+    # regular registration, or a drizzled stack can all leave the final image
+    # without one. So verify, and solve on demand, right before SPCC.
+    def get_loaded_header(self):
+        """FITS header of the currently loaded image as a dict ({} on failure)."""
         try:
-            self.siril.cmd("platesolve", "-force")
-        except (s.DataError, s.CommandError, s.SirilError) as e:
-            # turn off compression if error (if checked)
-            if self.compression_checkbox.isChecked():
-                self.siril.cmd("setcompress", "0")
-            self.siril.log(f"Plate Solve command execution failed: {e}", LogColor.RED)
-            self.close_dialog()
-        self.siril.log("Platesolved image", LogColor.GREEN)
+            return self.siril.get_image_fits_header(return_as="dict") or {}
+        except Exception as e:
+            self.siril.log(
+                f"Could not read the FITS header of the loaded image: {e}",
+                LogColor.SALMON,
+            )
+            return {}
+
+    def is_plate_solved(self, header=None):
+        """True when the loaded image carries a usable WCS."""
+        hdr = self.get_loaded_header() if header is None else header
+        if not hdr:
+            return False
+        has_projection = str(hdr.get("CTYPE1", "") or "").strip() != ""
+        has_reference = hdr.get("CRVAL1") is not None and hdr.get("CRPIX1") is not None
+        has_scale = any(
+            hdr.get(key) is not None for key in ("CD1_1", "CDELT1", "PC1_1")
+        )
+        return has_projection and has_reference and has_scale
+
+    @staticmethod
+    def coord_to_degrees(value, is_ra):
+        """Header RA/Dec to degrees. Numbers are already degrees; sexagesimal
+        strings follow the FITS convention of hours for RA, degrees for Dec."""
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        cleaned = text
+        for token in (":", "h", "m", "s", "d", "'", '"', "*"):
+            cleaned = cleaned.replace(token, " ")
+        try:
+            numbers = [float(part) for part in cleaned.split()[:3]]
+        except ValueError:
+            return None
+        if not numbers:
+            return None
+        sign = -1.0 if text.lstrip().startswith("-") else 1.0
+        numbers = [abs(number) for number in numbers]
+        degrees = numbers[0]
+        if len(numbers) > 1:
+            degrees += numbers[1] / 60.0
+        if len(numbers) > 2:
+            degrees += numbers[2] / 3600.0
+        degrees *= sign
+        return degrees * 15.0 if is_ra else degrees
+
+    def center_coords_from_header(self, hdr):
+        """Best effort 'ra,dec' in decimal degrees for the platesolve command."""
+        for ra_key, dec_key in (
+            ("OBJCTRA", "OBJCTDEC"),
+            ("RA", "DEC"),
+            ("FOVRA", "FOVDEC"),
+            ("CRVAL1", "CRVAL2"),
+        ):
+            ra = self.coord_to_degrees(hdr.get(ra_key), is_ra=True)
+            dec = self.coord_to_degrees(hdr.get(dec_key), is_ra=False)
+            if ra is None or dec is None:
+                continue
+            if not (0.0 <= ra <= 360.0 and -90.0 <= dec <= 90.0):
+                continue
+            return f"{ra:.6f},{dec:.6f}"
+        # Fall back to whatever was extracted earlier (Dwarf 2 / Celestron Origin)
+        return self.target_coords
+
+    @staticmethod
+    def header_float(hdr, key):
+        try:
+            value = hdr.get(key)
+            return None if value is None else float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def ensure_plate_solved(self, context="SPCC", force=False):
+        """Makes sure the loaded image has a WCS, solving it if it does not.
+
+        Returns True when the image is plate solved on return."""
+        if not force and self.is_plate_solved():
+            return True
+
+        if self.seq_plate_solve_failed:
+            self.siril.log(
+                "Sequence plate solving reported a failure earlier in this run.",
+                LogColor.SALMON,
+            )
+        self.siril.log(
+            f"Loaded image has no WCS, plate solving it before {context}.",
+            LogColor.BLUE,
+        )
+
+        hdr = self.get_loaded_header()
+        coords = self.center_coords_from_header(hdr)
+        focal = self.header_float(hdr, "FOCALLEN")
+        header_pixel_size = self.header_float(hdr, "XPIXSZ")
+
+        # Candidate pixel sizes, tried in order. A drizzled stack samples finer
+        # than the sensor, but the header can still carry the native XPIXSZ, so
+        # the solver gets a plate scale that is off by the drizzle factor and
+        # finds no match. Trying both covers either behaviour.
+        pixel_sizes = []
+        if header_pixel_size:
+            pixel_sizes.append(header_pixel_size)
+            if self.drizzle_status and self.drizzle_factor and self.drizzle_factor > 0:
+                scaled = round(header_pixel_size / float(self.drizzle_factor), 4)
+                if abs(scaled - header_pixel_size) > 1e-6:
+                    pixel_sizes.append(scaled)
+        pixel_sizes.append(None)  # let Siril work it out from the header alone
+
+        for pixel_size in pixel_sizes:
+            args = ["platesolve"]
+            if coords:
+                args.append(coords)
+            args.append("-force")
+            if focal:
+                args.append(f"-focal={focal}")
+            if pixel_size:
+                args.append(f"-pixelsize={pixel_size}")
+
+            described = " ".join(args[1:])
+            try:
+                self.siril.cmd(*args)
+            except (s.DataError, s.CommandError, s.SirilError) as e:
+                self.siril.log(
+                    f"Plate solve attempt failed ({described}): {e}", LogColor.SALMON
+                )
+                continue
+
+            self.siril.log(f"Platesolved image ({described})", LogColor.GREEN)
+            return True
+
+        self.siril.log(
+            "Could not plate solve the stacked image. The stack is saved and usable - "
+            "plate solve and run SPCC manually in Siril to colour calibrate it.",
+            LogColor.RED,
+        )
+        return False
 
     def spcc(
         self,
@@ -1152,9 +1318,16 @@ class PreprocessingInterface(QMainWindow):
         catalog="localgaia",
         whiteref="Average Spiral Galaxy",
     ):
+        """SPCC with oscsensor, filter, catalog, and whiteref."""
+        # SPCC only runs on plate solved images, so verify and solve if needed
+        # instead of letting the command fail.
+        if not self.ensure_plate_solved(context="SPCC"):
+            self.siril.log(
+                "Skipping SPCC because the image has no WCS.", LogColor.SALMON
+            )
+            return None
 
         recoded_sensor = oscsensor
-        """SPCC with oscsensor, filter, catalog, and whiteref."""
         if oscsensor in ["ZWO Seestar S30 Pro"]:
             recoded_sensor = "Sony IMX585"
         elif oscsensor in ["Dwarf 3"]:
@@ -1193,7 +1366,10 @@ class PreprocessingInterface(QMainWindow):
             if self.compression_checkbox.isChecked():
                 self.siril.cmd("setcompress", "0")
             self.siril.log(f"SPCC execution failed: {e}", LogColor.RED)
-            self.close_dialog()
+            # Do not close the dialog and do not save an uncalibrated image
+            # under the "_spcc" name. The caller handles a None return and
+            # carries on with the rest of the script.
+            return None
 
         img = self.save_image("_spcc")
         self.siril.log(f"Saved SPCC'd image: {img}", LogColor.GREEN)
@@ -2304,12 +2480,14 @@ class PreprocessingInterface(QMainWindow):
 
             # Loop through all files in the source directory
             for filename in os.listdir(source_dir):
-                if f"{batch_lights}" in filename:
-                    full_src_path = os.path.join(source_dir, filename)
-                    full_dst_path = os.path.join(target_subdir, filename)
+                if f"{batch_lights}" not in filename:
+                    continue
+
+                full_src_path = os.path.join(source_dir, filename)
+                full_dst_path = os.path.join(target_subdir, filename)
 
                 # Only move files, skip directories
-                # Should only moved the final batched files
+                # Should only move the final batched files
                 if os.path.isfile(full_src_path):
                     shutil.move(full_src_path, full_dst_path)
                     self.siril.log(f"Moved: {filename}", LogColor.BLUE)
@@ -2372,13 +2550,20 @@ class PreprocessingInterface(QMainWindow):
                     whiteref="Average Spiral Galaxy",
                 )
                 # self.autostretch(do_spcc=do_spcc)
-                if drizzle:
-                    img = os.path.basename(img) + self.fits_extension
+                if img is None:
+                    # SPCC was skipped or failed, keep the stacked image loaded.
+                    self.siril.log(
+                        "SPCC produced no image, keeping the stacked result loaded.",
+                        LogColor.SALMON,
+                    )
                 else:
-                    img = os.path.basename(img)
-                self.load_image(
-                    image_name=os.path.basename(img)
-                )  # Load either og or spcc image
+                    if drizzle:
+                        img = os.path.basename(img) + self.fits_extension
+                    else:
+                        img = os.path.basename(img)
+                    self.load_image(
+                        image_name=os.path.basename(img)
+                    )  # Load either og or spcc image
             except Exception as e:
                 self.siril.log(
                     f"SPCC failed: {e}. Continuing with the rest of the script.",
