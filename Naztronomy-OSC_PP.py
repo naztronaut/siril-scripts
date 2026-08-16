@@ -28,7 +28,8 @@ allows you to choose files from any folder and drive and they will all be consol
 """
 CHANGELOG:
 
-2.0.4 - Files tab: file list is now a sortable, grouped tree (#, Filter, Object,
+2.0.4 - Discard rejected and bad files coming from NINA
+      - Files tab: file list is now a sortable, grouped tree (#, Filter, Object,
         File name) with per-type counts in the group title. Ported from Mono PP.
       - Export Sessions to CSV: writes an AstroBin acquisition CSV (date, filter,
         frame counts, exposure, gain, binning, cooling, f-number) with a Bortle
