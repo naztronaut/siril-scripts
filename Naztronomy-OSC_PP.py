@@ -3419,8 +3419,8 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_group = QGroupBox("Optional Preprocessing Steps")
         preprocessing_layout = QVBoxLayout()
 
-        dark_flats_tooltip = "If your bias frames are dark flats instead, check this box. It'll be properly applied to the light frames during calibration."
-        self.dark_flats_check = QCheckBox("Using Dark Flats?")
+        dark_flats_tooltip = "If your flat frames are not being applied correctly, enable this option to apply dark flats or bias frames to your light frames before stacking."
+        self.dark_flats_check = QCheckBox("Apply Dark Flats/Biases to Lights")
         self.dark_flats_check.setToolTip(dark_flats_tooltip)
         preprocessing_layout.addWidget(self.dark_flats_check)
 
