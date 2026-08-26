@@ -49,6 +49,8 @@ CHANGELOG:
 1.0.1 - Masters Only Workflow
       - More flexible panel folder names
       - Add .fts extension
+      - Various Bug fixes
+      - Drizzle 4x enabled
 1.0.0 - initial release (Mono preprocessing)
       - Derived from the Naztronomy OSC preprocessing script
       - Monochrome-only pipeline (no debayering / CFA handling)
@@ -4138,6 +4140,11 @@ class PreprocessingInterface(QMainWindow):
         if filter_name and filter_name.lower() not in file_name.lower():
             file_name += f"_{filter_name}"
 
+        # Header values (e.g. OBJECT) may carry stray quotes; Siril writes the
+        # file without them, so remove them here to keep the returned name
+        # matching the actual file on disk (needed by final-frame registration).
+        file_name = file_name.replace("'", "").replace('"', "")
+
         try:
             self.siril.cmd(
                 "save",
@@ -4664,7 +4671,7 @@ class PreprocessingInterface(QMainWindow):
         drizzle_amount_label.setToolTip(drizzle_amount_tooltip)
 
         self.drizzle_amount_spinbox = QDoubleSpinBox()
-        self.drizzle_amount_spinbox.setRange(0.1, 3.0)
+        self.drizzle_amount_spinbox.setRange(0.1, 4.0)
         self.drizzle_amount_spinbox.setSingleStep(0.1)
         self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
         self.drizzle_amount_spinbox.setDecimals(1)
@@ -6443,8 +6450,13 @@ class PreprocessingInterface(QMainWindow):
 
         # When calibrated lights were pooled only as a temporary step to build the
         # final stack or per-panel stacks (user didn't opt to keep them), remove the
-        # pooled directory now that the stacks are saved.
-        if (needs_per_session_stack or panel_mosaic) and not save_calibrated_lights:
+        # pooled directory now that the stacks are saved. Only do this when the user
+        # opted into cleanup; unchecking "clean up files" preserves all intermediates.
+        if (
+            (needs_per_session_stack or panel_mosaic)
+            and not save_calibrated_lights
+            and clean_up_files
+        ):
             self.siril.cmd("cd", f'"{self.home_directory}"')
             self.current_working_directory = self.siril.get_siril_wd()
             shutil.rmtree(self.collected_lights_dir, ignore_errors=True)
