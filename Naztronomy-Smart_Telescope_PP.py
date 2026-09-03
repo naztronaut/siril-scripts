@@ -557,6 +557,10 @@ class PreprocessingInterface(QMainWindow):
                     hdr.set("YPIXSZ", 2.9)  # add a YPIXSZ header
                     telescope = "Odyssey"
 
+                # needed by siril to set properly the pixel size of the stacked image
+                hdr.set("XBINNING", 1) # add a XBINNING header
+                hdr.set("YBINNING", 1) # add a YBINNING header
+
                 if hdr["SOFTVER"].startswith("4.2") and telescope.startswith(
                     "eVscope"
                 ):  # fix for bayer issue with latest FW 4.2
