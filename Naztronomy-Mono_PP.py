@@ -1501,13 +1501,24 @@ class PreprocessingInterface(QMainWindow):
                                     ft, []
                                 ).extend(flist)
                 else:
-                    # Unrecognised dir — potential session boundary
-                    new_group = child if group_key is None else group_key
-                    for k, v in recurse(child, new_group).items():
-                        for ft, flist in v.items():
-                            sub_sessions.setdefault(k, {}).setdefault(ft, []).extend(
-                                flist
-                            )
+                    # Unrecognised dir — check for FITS files directly inside
+                    # (e.g. filter named folders like Ha/, Oiii/, Sii/, H/, O/, S/
+                    # Filter identity is resolved later per file by _detect_filter()
+                    # from the FITS header or this folder's name
+                    direct_fits = sorted(
+                        f for f in child.iterdir()
+                        if f.is_file() and _is_supported_input(f)
+                    )
+                    if direct_fits:
+                        collected.setdefault("lights", []).extend(direct_fits)
+                    else:
+                        # Potential session boundary, recurse deeper
+                        new_group = child if group_key is None else group_key
+                        for k, v in recurse(child, new_group).items():
+                            for ft, flist in v.items():
+                                sub_sessions.setdefault(k, {}).setdefault(ft, []).extend(
+                                    flist
+                                )
 
             if collected:
                 gkey = group_key if group_key is not None else d
@@ -5927,7 +5938,7 @@ class PreprocessingInterface(QMainWindow):
                             self.collected_lights_dir, new_file_name
                         )
 
-                        shutil.copy2(src_path, dest_path)
+                        shutil.move(src_path, dest_path)
                         self.siril.log(
                             f"Moved {file_name} to {self.collected_lights_dir} as {new_file_name}",
                             LogColor.BLUE,
@@ -5957,6 +5968,8 @@ class PreprocessingInterface(QMainWindow):
                 if bg_extract:
                     self.seq_bg_extract(seq_name=individual_seq_name)
                     individual_seq_name = "bkg_" + individual_seq_name
+                    for f in Path(self.current_working_directory).glob(f"pp_lights_*{self.fits_extension}"):
+                        f.unlink(missing_ok=True)
 
                 individual_plate_solve_status = self.seq_plate_solve(
                     seq_name=individual_seq_name
@@ -6127,7 +6140,7 @@ class PreprocessingInterface(QMainWindow):
                             group_dir,
                             f"pp_lights_{counter:05d}{self.fits_extension}",
                         )
-                        shutil.copy2(
+                        shutil.move(
                             os.path.join(self.collected_lights_dir, src_name),
                             dst,
                         )
@@ -6156,6 +6169,8 @@ class PreprocessingInterface(QMainWindow):
                 if bg_extract:
                     self.seq_bg_extract(seq_name=seq_name)
                     seq_name = "bkg_" + seq_name
+                    for f in Path(group_dir).glob(f"pp_lights_*{self.fits_extension}"):
+                        f.unlink(missing_ok=True)
 
                 plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
 
@@ -6194,7 +6209,10 @@ class PreprocessingInterface(QMainWindow):
                         use_filter_bkg=use_filter_bkg,
                     )
 
+                pre_reg_seq = seq_name
                 seq_name = f"r_{seq_name}"
+                for f in Path(group_dir).glob(f"{pre_reg_seq}*{self.fits_extension}"):
+                    f.unlink(missing_ok=True)
 
                 # Scans for black frames due to existing Siril bug.
                 try:
@@ -6222,6 +6240,8 @@ class PreprocessingInterface(QMainWindow):
                     stack_weighted=stack_weighted,
                     weighting_method=weighting_method,
                 )
+                for f in Path(group_dir).glob(f"{seq_name}*{self.fits_extension}"):
+                    f.unlink(missing_ok=True)
 
                 self.load_image(image_name=stack_name)
                 self.siril.cmd("cd", f'"{self.home_directory}"')
@@ -6309,7 +6329,7 @@ class PreprocessingInterface(QMainWindow):
                                 group_dir,
                                 f"pp_lights_{counter:05d}{self.fits_extension}",
                             )
-                            shutil.copy2(
+                            shutil.move(
                                 os.path.join(self.collected_lights_dir, src_name),
                                 dst,
                             )
@@ -6338,6 +6358,8 @@ class PreprocessingInterface(QMainWindow):
                         if bg_extract:
                             self.seq_bg_extract(seq_name=seq_name)
                             seq_name = "bkg_" + seq_name
+                            for f in Path(group_dir).glob(f"pp_lights_*{self.fits_extension}"):
+                                f.unlink(missing_ok=True)
 
                         plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
 
@@ -6376,7 +6398,10 @@ class PreprocessingInterface(QMainWindow):
                                 use_filter_bkg=use_filter_bkg,
                             )
 
+                        pre_reg_seq = seq_name
                         seq_name = f"r_{seq_name}"
+                        for f in Path(group_dir).glob(f"{pre_reg_seq}*{self.fits_extension}"):
+                            f.unlink(missing_ok=True)
 
                         # Scans for black frames due to existing Siril bug.
                         try:
@@ -6404,6 +6429,8 @@ class PreprocessingInterface(QMainWindow):
                             stack_weighted=stack_weighted,
                             weighting_method=weighting_method,
                         )
+                        for f in Path(group_dir).glob(f"{seq_name}*{self.fits_extension}"):
+                            f.unlink(missing_ok=True)
 
                         self.load_image(image_name=stack_basename)
                         panel_suffix = f"_{panel_safe}" + (
