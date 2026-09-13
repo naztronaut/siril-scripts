@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - Mono Image Preprocessing script
-Version: 1.0.0
+Version: 1.0.1
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -51,6 +51,8 @@ CHANGELOG:
       - Add .fts extension
       - Various Bug fixes
       - Drizzle 4x enabled
+      - PR#114 from astr0bits - improved subdir recursion and file clean up process
+      - Bug fix: Finds and replaces spaces in filter names with underscores
 1.0.0 - initial release (Mono preprocessing)
       - Derived from the Naztronomy OSC preprocessing script
       - Monochrome-only pipeline (no debayering / CFA handling)
@@ -145,7 +147,7 @@ from typing import List, Dict
 
 APP_NAME = "Naztronomy - Mono Image Preprocessor"
 VERSION = "1.0.1"
-BUILD = "20260722"
+BUILD = "20260913"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -170,7 +172,7 @@ UI_DEFAULTS = {
 #   fail with I/O errors (WinError 448), so they are always copied.
 # True: always symlink regardless of drive. Use only if your OS / mount allows it
 #   and you want to avoid the disk copy (e.g. large raw files on a trusted NAS).
-ALWAYS_SYMLINK: bool = False
+ALWAYS_SYMLINK: bool = True
 FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
 # This script only accepts monochrome FITS data. Any other file types
@@ -317,7 +319,11 @@ def _canonical_filter(raw) -> str | None:
     text = str(raw).strip()
     if not text:
         return None
-    return _FILTER_ALIAS_LOOKUP.get(text.upper(), text.upper())
+    # Unknown filters keep their name but with whitespace collapsed to
+    # underscores: names like "HYDROGEN-ALPHA 5NM" flow into Siril -out= and
+    # stack names, and a space there breaks Siril's command argument parsing.
+    fallback = re.sub(r"\s+", "_", text.upper())
+    return _FILTER_ALIAS_LOOKUP.get(text.upper(), fallback)
 
 
 def _read_fits_filter(path) -> str | None:
@@ -1506,7 +1512,8 @@ class PreprocessingInterface(QMainWindow):
                     # Filter identity is resolved later per file by _detect_filter()
                     # from the FITS header or this folder's name
                     direct_fits = sorted(
-                        f for f in child.iterdir()
+                        f
+                        for f in child.iterdir()
                         if f.is_file() and _is_supported_input(f)
                     )
                     if direct_fits:
@@ -1516,9 +1523,9 @@ class PreprocessingInterface(QMainWindow):
                         new_group = child if group_key is None else group_key
                         for k, v in recurse(child, new_group).items():
                             for ft, flist in v.items():
-                                sub_sessions.setdefault(k, {}).setdefault(ft, []).extend(
-                                    flist
-                                )
+                                sub_sessions.setdefault(k, {}).setdefault(
+                                    ft, []
+                                ).extend(flist)
 
             if collected:
                 gkey = group_key if group_key is not None else d
@@ -5968,7 +5975,9 @@ class PreprocessingInterface(QMainWindow):
                 if bg_extract:
                     self.seq_bg_extract(seq_name=individual_seq_name)
                     individual_seq_name = "bkg_" + individual_seq_name
-                    for f in Path(self.current_working_directory).glob(f"pp_lights_*{self.fits_extension}"):
+                    for f in Path(self.current_working_directory).glob(
+                        f"pp_lights_*{self.fits_extension}"
+                    ):
                         f.unlink(missing_ok=True)
 
                 individual_plate_solve_status = self.seq_plate_solve(
@@ -6358,7 +6367,9 @@ class PreprocessingInterface(QMainWindow):
                         if bg_extract:
                             self.seq_bg_extract(seq_name=seq_name)
                             seq_name = "bkg_" + seq_name
-                            for f in Path(group_dir).glob(f"pp_lights_*{self.fits_extension}"):
+                            for f in Path(group_dir).glob(
+                                f"pp_lights_*{self.fits_extension}"
+                            ):
                                 f.unlink(missing_ok=True)
 
                         plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
@@ -6400,7 +6411,9 @@ class PreprocessingInterface(QMainWindow):
 
                         pre_reg_seq = seq_name
                         seq_name = f"r_{seq_name}"
-                        for f in Path(group_dir).glob(f"{pre_reg_seq}*{self.fits_extension}"):
+                        for f in Path(group_dir).glob(
+                            f"{pre_reg_seq}*{self.fits_extension}"
+                        ):
                             f.unlink(missing_ok=True)
 
                         # Scans for black frames due to existing Siril bug.
@@ -6429,7 +6442,9 @@ class PreprocessingInterface(QMainWindow):
                             stack_weighted=stack_weighted,
                             weighting_method=weighting_method,
                         )
-                        for f in Path(group_dir).glob(f"{seq_name}*{self.fits_extension}"):
+                        for f in Path(group_dir).glob(
+                            f"{seq_name}*{self.fits_extension}"
+                        ):
                             f.unlink(missing_ok=True)
 
                         self.load_image(image_name=stack_basename)
