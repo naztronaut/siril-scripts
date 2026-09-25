@@ -33,6 +33,7 @@ CHANGELOG:
       - Persistent configs! On run, the current checkboxes are saved and restored automatically on next script run
       - S50 Pro added to the list
       - Fix SPCC Platesolve Bug
+      - Copied over help section from the mono script
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
@@ -126,9 +127,12 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QScrollArea,
     QProgressBar,
+    QDialog,
+    QTextBrowser,
+    QSizePolicy,
 )
-from PyQt6.QtCore import pyqtSlot as Slot, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QShortcut, QKeySequence
+from PyQt6.QtCore import pyqtSlot as Slot, Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence, QDesktopServices
 from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
@@ -136,11 +140,14 @@ import numpy as np
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
-VERSION = "2.0.6"
-BUILD = "20260220"
+VERSION = "2.0.7"
+BUILD = "20260925"
 AUTHOR = "Nazmus Nasir"
-WEBSITE = "Naztronomy.com"
-YOUTUBE = "YouTube.com/Naztronomy"
+WEBSITE = "https://www.Naztronomy.com"
+YOUTUBE = "https://www.YouTube.com/Naztronomy"
+DISCORD = "https://discord.gg/yXKqrawpjr"
+PATREON = "https://www.patreon.com/c/naztronomy"
+BUY_ME_A_COFFEE = "https://www.buymeacoffee.com/naztronomy"
 TELESCOPES = [
     "ZWO Seestar S30",
     "ZWO Seestar S30 Pro",
@@ -149,6 +156,7 @@ TELESCOPES = [
     "Dwarf Mini",
     "Dwarf 3",
     "Dwarf 2",
+    "Dwarflab Draco",
     "Celestron Origin",
     "Unistellar eVscope 1 / eQuinox 1",
     "Unistellar eVscope 2 / eQuinox 2",
@@ -163,6 +171,7 @@ FILTER_OPTIONS_MAP = {
     "Dwarf Mini": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 2": ["Astro filter (UV/IR)"],
+    "Dwarflab Draco": ["Astro filter (UV/IR)", "Dual-Band"],
     "Celestron Origin": ["No Filter (Broadband)"],
     "Unistellar eVscope 1 / eQuinox 1": ["No Filter (Broadband)"],
     "Unistellar eVscope 2 / eQuinox 2": ["No Filter (Broadband)"],
@@ -211,6 +220,9 @@ FILTER_COMMANDS_MAP = {
         ],
     },
     "Dwarf 2": {"Astro filter (UV/IR)": ["-oscfilter=UV/IR Block"]},
+    "Dwarflab Draco": {
+        "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+    },
     "Celestron Origin": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
     },
@@ -489,6 +501,7 @@ class PreprocessingInterface(QMainWindow):
             "DWARF 3": "Dwarf 3",
             "DWARFII": "Dwarf 2",
             "DWARF II": "Dwarf 2",
+            "Draco": "Dwarflab Draco",
             "Origin": "Celestron Origin",
             "eVscope v1.0": "Unistellar eVscope 1 / eQuinox 1",
             "eVscope v2.0": "Unistellar eVscope 2 / eQuinox 2",
@@ -1408,12 +1421,12 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
 
-        # Disable SPCC for Celestron Origin
-        if selected_scope == "Celestron Origin":
+        # Disable SPCC for scopes whose sensor isn't mapped yet
+        if selected_scope in ["Celestron Origin", "Dwarflab Draco"]:
             self.spcc_checkbox.setChecked(False)
             self.spcc_checkbox.setEnabled(False)
             self.siril.log(
-                "SPCC cannot be run on Celestron Origin automatically. It must be done manually.",
+                f"SPCC cannot be run on {selected_scope} automatically. It must be done manually.",
                 LogColor.SALMON,
             )
         else:
@@ -1422,29 +1435,158 @@ class PreprocessingInterface(QMainWindow):
         self.filter_combo.setEnabled(self.spcc_checkbox.isChecked())
 
     def show_help(self):
-        help_text = (
-            f"Author: {AUTHOR} ({WEBSITE}); Youtube: {YOUTUBE}\n"
-            "Discord: https://discord.gg/yXKqrawpjr\n"
-            "Patreon: https://www.patreon.com/c/naztronomy\n"
-            "Buy me a Coffee: https://www.buymeacoffee.com/naztronomy\n\n"
-            "Info:\n"
-            '1. Must have a "lights" subdirectory inside of the working directory.\n'
-            "2. For Calibration frames, you can optionally have one or more of the following types: darks, flats, biases.\n"
-            "3. If only one calibration frame is present, it will be treated as a master frame.\n"
-            "4. Local Astrometry Gaia catalog is required for mosaics!\n"
-            f"5. If you have more than the default {self.max_files_per_batch} files, this script will automatically split them into batches. You can change the batching count from 50 to {self.max_files_per_batch}.\n"
-            "6. If batching, intermediary files are cleaned up automatically even if 'clean up files' is unchecked.\n"
-            "7. If batching, the frames are automatically feathered during the final stack even if 'feather' is unchecked.\n"
-            "8. Drizzle increases processing time. Higher the drizzle the longer it takes.\n"
-            "9. If you get an error with feathering, turn it off and try again.\n"
-            "10. If the logs show a 'normalization' error, please check the 'black frames bug' checkbox and try again.\n"
-            "11. When asking for help, please have the logs handy."
-        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{APP_NAME} — Help")
+        dialog.setMinimumSize(620, 580)
+        dialog.resize(660, 640)
 
-        # Show help in Qt message box
-        QMessageBox.information(self, "Help", help_text)
-        # self.siril.log(help_text, LogColor.BLUE)
-        self.siril_log_long(help_text, LogColor.BLUE)
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(10)
+
+        # Header
+        header_label = QLabel(f"<b>{APP_NAME}</b>")
+        header_font = QFont()
+        header_font.setPointSize(11)
+        header_label.setFont(header_font)
+        outer.addWidget(header_label)
+
+        author_label = QLabel(f'<a href="{WEBSITE}">{AUTHOR} (Naztronomy)</a>')
+        author_label.setOpenExternalLinks(True)
+        outer.addWidget(author_label)
+
+        # Scrollable help text
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setReadOnly(True)
+        browser.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        browser.setHtml(f"""
+            <style>
+            body  {{ font-family: sans-serif; font-size: 13px; margin: 4px; }}
+            h3    {{ margin-bottom: 4px; margin-top: 14px; color: #2c7bb6; }}
+            h3:first-child {{ margin-top: 0; }}
+            ul    {{ margin-top: 2px; padding-left: 18px; }}
+            li    {{ margin-bottom: 3px; }}
+            .note {{ color: #888; font-style: italic; }}
+            </style>
+
+            <h3>General</h3>
+            <ul>
+            <li>You must have a <b>lights</b> subdirectory inside your working directory.</li>
+            <li>Calibration frames (<code>darks</code>, <code>flats</code>, <code>biases</code>)
+                are <b>optional</b> — place each type in its own subdirectory.</li>
+            <li>If only <b>one</b> calibration file is present, it is treated as a
+                <b>master</b> frame automatically.</li>
+            <li>Master frames are saved to a <b>masters/</b> directory with descriptive names.</li>
+            <li>Your telescope is <b>auto-detected</b> from the FITS header when possible;
+                you can override it in the dropdown.</li>
+            <li>Always <b>include logs</b> when asking for help. Click the download arrow at the
+                bottom of the console to export your logs.</li>
+            </ul>
+
+            <h3>DWARF Telescopes</h3>
+            <ul>
+            <li>No <code>lights</code> folder needed — drop into the folder containing
+                <code>shotsInfo.json</code> and the script offers to build one for you.</li>
+            <li>To use bias/flat/dark calibration, keep a copy of the telescope's
+                <b>CALI_FRAME/</b> directory in the parent of your selected directory; the
+                matching frames are fetched automatically.</li>
+            </ul>
+
+            <h3>Mosaics</h3>
+            <ul>
+            <li>A <b>local Astrometry Gaia catalog</b> is required for automatic mosaics.</li>
+            <li>If plate solving isn't available, the script falls back to regular star
+                registration (no mosaic).</li>
+            </ul>
+
+            <h3>Batching</h3>
+            <ul>
+            <li>If you have more than the default <b>{self.max_files_per_batch}</b> files, the
+                script automatically splits them into batches. You can set the batch count from
+                50 to {self.max_files_per_batch}.</li>
+            <li>When batching, intermediary files are cleaned up automatically even if
+                <i>Clean Up Files</i> is unchecked.</li>
+            <li>When batching, frames are automatically feathered during the final stack even if
+                <i>Feather</i> is unchecked.</li>
+            </ul>
+
+            <h3>Drizzle</h3>
+            <ul>
+            <li>Drizzle can improve resolution but <b>increases processing time</b> and file size.
+                The higher the drizzle, the longer it takes.</li>
+            <li>Drizzle may also produce black frames — check the <b>Black Frames Bug?</b> option
+                if you see a 'normalization' error in the logs.</li>
+            </ul>
+
+            <h3>SPCC</h3>
+            <ul>
+            <li>Spectrophotometric Color Calibration uses star colors for accurate color.</li>
+            <li>SPCC requires a plate-solved image; the script re-solves the stack before running it.</li>
+            <li>SPCC is disabled for telescopes whose sensor isn't mapped yet
+                (e.g. Celestron Origin, DwarfLab Draco) — it can be done manually.</li>
+            </ul>
+
+            <h3>Presets &amp; Config</h3>
+            <ul>
+            <li><b>Save/Load Presets</b> stores settings in a
+                <code>presets/naztronomy_smart_scope_presets.json</code> file in your working dir.</li>
+            <li>Your last-used settings are also remembered automatically between runs.</li>
+            </ul>
+
+            <h3>Troubleshooting</h3>
+            <ul>
+            <li>If you get an error with <b>feathering</b>, turn it off and try again.</li>
+            <li>If the logs show a <b>normalization</b> error, enable <b>Black Frames Bug?</b>
+                and try again.</li>
+            <li>When asking for help, please have the logs handy.</li>
+            </ul>
+            """)
+        outer.addWidget(browser)
+
+        # Social / community buttons
+        links_label = QLabel("<b>Community &amp; Support</b>")
+        outer.addWidget(links_label)
+
+        links_row = QHBoxLayout()
+        links_row.setSpacing(8)
+
+        social_buttons = [
+            ("YouTube", "#FF0000", f"{YOUTUBE}"),
+            ("Discord", "#5865F2", f"{DISCORD}"),
+            ("Patreon", "#FF424D", f"{PATREON}"),
+            ("Buy Me a Coffee", "#FFDD00", f"{BUY_ME_A_COFFEE}"),
+        ]
+
+        for label, color, url in social_buttons:
+            btn = QPushButton(label)
+            text_color = "#000" if color == "#FFDD00" else "#fff"
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {color}; color: {text_color};"
+                f" border: none; border-radius: 4px; padding: 6px 10px; font-weight: bold; }}"
+                f" QPushButton:hover {{ opacity: 0.85; border: 1px solid rgba(0,0,0,0.3); }}"
+            )
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(url)
+            btn.clicked.connect(
+                lambda checked, u=url: QDesktopServices.openUrl(QUrl(u))
+            )
+            links_row.addWidget(btn)
+
+        outer.addLayout(links_row)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(90)
+        close_btn.clicked.connect(dialog.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        outer.addLayout(btn_row)
+
+        dialog.exec()
 
     def _get_title_font(self):
         font = QFont()
