@@ -25,8 +25,13 @@ The following subdirectories are optional:
 """
 CHANGELOG:
 
-2.1.0 - Improve DWARF experience using code from DeepSkyLab (find lights/dark/bias/flat files and filter thanks to shotsInfo.json)
-2.0.7 - Refactored directory selection for better maintainability
+2.0.7 - Improve DWARF experience using code from DeepSkyLab (find lights/dark/bias/flat files and filter thanks to shotsInfo.json - @pasdeloup)
+      - Fix for Unistellar scopes (@nicastel)
+      - Refactored directory selection for better maintainability
+      - Fixed bkg and nbstars filtering
+      - Black frames bug checkbox is restored on load presets
+      - Persistent configs! On run, the current checkboxes are saved and restored automatically on next script run
+      - S50 Pro added to the list
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
@@ -101,7 +106,6 @@ import re
 from pathlib import Path
 from dataclasses import dataclass
 
-
 s.ensure_installed("PyQt6", "numpy", "astropy")
 from PyQt6.QtWidgets import (
     QApplication,
@@ -128,7 +132,6 @@ from sirilpy import LogColor, NoImageError
 from astropy.io import fits
 import numpy as np
 
-
 # from tkinter import filedialog
 
 APP_NAME = "Naztronomy - Smart Telescope Preprocessing"
@@ -141,6 +144,7 @@ TELESCOPES = [
     "ZWO Seestar S30",
     "ZWO Seestar S30 Pro",
     "ZWO Seestar S50",
+    "ZWO Seestar S50 Pro",
     "Dwarf Mini",
     "Dwarf 3",
     "Dwarf 2",
@@ -154,6 +158,7 @@ FILTER_OPTIONS_MAP = {
     "ZWO Seestar S30": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S30 Pro": ["No Filter (Broadband)", "LP (Narrowband)"],
     "ZWO Seestar S50": ["No Filter (Broadband)", "LP (Narrowband)"],
+    "ZWO Seestar S50 Pro": ["No Filter (Broadband)", "LP (Narrowband)"],
     "Dwarf Mini": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 3": ["Astro filter (UV/IR)", "Dual-Band"],
     "Dwarf 2": ["Astro filter (UV/IR)"],
@@ -173,6 +178,10 @@ FILTER_COMMANDS_MAP = {
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
     },
     "ZWO Seestar S50": {
+        "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
+        "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
+    },
+    "ZWO Seestar S50 Pro": {
         "No Filter (Broadband)": ["-oscfilter=UV/IR Block"],
         "LP (Narrowband)": ["-oscfilter=ZWO Seestar LP"],
     },
@@ -278,6 +287,10 @@ class PreprocessingInterface(QMainWindow):
         self.filter_options_map = FILTER_OPTIONS_MAP
         self.current_filter_options = self.filter_options_map["ZWO Seestar S50"]
 
+        # Persisted settings loaded from the shared config file (applied once the
+        # widgets exist). Populated by _load_config after connecting to Siril.
+        self._saved_settings: dict = {}
+
         try:
             self.siril.connect()
             self.siril.log("Connected to Siril", LogColor.GREEN)
@@ -292,6 +305,10 @@ class PreprocessingInterface(QMainWindow):
             return
 
         self.fits_extension = self.siril.get_siril_config("core", "extension")
+
+        # Load persisted settings from the shared config file (applied to the
+        # widgets after they are built, below).
+        self._load_config()
 
         self.astrometry_gaia_available = False
         try:
@@ -326,13 +343,13 @@ class PreprocessingInterface(QMainWindow):
 
         self.initial_message()
 
-        changed_cwd = self.check_directory(self.current_working_directory, True)  # a way not to run the prompting loop
+        changed_cwd = self.check_directory(
+            self.current_working_directory, True
+        )  # a way not to run the prompting loop
 
         if not changed_cwd:
             while True:
-                prompt_title = (
-                    "Select the parent directory containing the 'lights' directory (or the 'shotsInfo.json' file if you have a DWARF telescope)"
-                )
+                prompt_title = "Select the parent directory containing the 'lights' directory (or the 'shotsInfo.json' file if you have a DWARF telescope)"
 
                 selected_dir = QFileDialog.getExistingDirectory(
                     self,
@@ -355,6 +372,9 @@ class PreprocessingInterface(QMainWindow):
 
         self.load_dwarf(self.current_working_directory)
         self.create_widgets()
+        # Apply persisted settings now that the widgets exist. Done before FITS
+        # auto-detection so the telescope is still detected from the actual data.
+        self._apply_settings(self._saved_settings)
         # Initialize fits_files_count before creating widgets
         self.fits_files_count = 0
         self.set_telescope_from_fits()
@@ -367,7 +387,7 @@ class PreprocessingInterface(QMainWindow):
         os.chdir(directory)
         self.current_working_directory = directory
         self.cwd_label_text = f"Current working directory: {directory}"
-        if (directory == self.current_working_directory):
+        if directory == self.current_working_directory:
             self.siril.log(
                 f"Current working directory is valid: {self.current_working_directory}",
                 LogColor.GREEN,
@@ -378,7 +398,7 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
 
-    def check_directory(self, directory: str, is_initial_dir=False) -> bool: 
+    def check_directory(self, directory: str, is_initial_dir=False) -> bool:
         lights_directory = os.path.join(directory, "lights")
         if os.path.isdir(lights_directory):
             self.confirm_selected_directory(directory)
@@ -456,9 +476,12 @@ class PreprocessingInterface(QMainWindow):
         # Note: Order matters! Put more specific/longer strings first
         telescope_map = {
             "ZWO Seestar S30 Pro": "ZWO Seestar S30 Pro",
+            "ZWO Seestar S50 Pro": "ZWO Seestar S50 Pro",
             "ZWO Seestar S30": "ZWO Seestar S30",
+            "Seestar S50 Pro": "ZWO Seestar S50 Pro",
             "Seestar S50": "ZWO Seestar S50",
             "Seestar S30": "ZWO Seestar S30",
+            "S50 Pro": "ZWO Seestar S50 Pro",
             "S50": "ZWO Seestar S50",
             "DWARF mini": "Dwarf Mini",
             "DWARFIII": "Dwarf 3",
@@ -580,8 +603,8 @@ class PreprocessingInterface(QMainWindow):
                     telescope = "Odyssey"
 
                 # needed by siril to set properly the pixel size of the stacked image
-                hdr.set("XBINNING", 1) # add a XBINNING header
-                hdr.set("YBINNING", 1) # add a YBINNING header
+                hdr.set("XBINNING", 1)  # add a XBINNING header
+                hdr.set("YBINNING", 1)  # add a YBINNING header
 
                 if hdr["SOFTVER"].startswith("4.2") and telescope.startswith(
                     "eVscope"
@@ -605,9 +628,18 @@ class PreprocessingInterface(QMainWindow):
     def convert_files(self, dir_name):
         directory = os.path.join(self.current_working_directory, dir_name)
 
-        if not os.path.isdir(directory) and self.dwarf is not None and dir_name in ["biases", "flats", "darks"]:
-            self.siril.log(f"DWARF telescope: try to find {dir_name} into ../CALI_FRAME/", LogColor.BLUE)
-            self.dwarf.copy_calibration_files(dir_name) #  If Dwarf, first let's try to fetch the correct calibration files
+        if (
+            not os.path.isdir(directory)
+            and self.dwarf is not None
+            and dir_name in ["biases", "flats", "darks"]
+        ):
+            self.siril.log(
+                f"DWARF telescope: try to find {dir_name} into ../CALI_FRAME/",
+                LogColor.BLUE,
+            )
+            self.dwarf.copy_calibration_files(
+                dir_name
+            )  #  If Dwarf, first let's try to fetch the correct calibration files
 
         if os.path.isdir(directory):
             self.siril.cmd("cd", dir_name)
@@ -1186,7 +1218,7 @@ class PreprocessingInterface(QMainWindow):
 
         recoded_sensor = oscsensor
         """SPCC with oscsensor, filter, catalog, and whiteref."""
-        if oscsensor in ["ZWO Seestar S30 Pro"]:
+        if oscsensor in ["ZWO Seestar S30 Pro", "ZWO Seestar S50 Pro"]:
             recoded_sensor = "Sony IMX585"
         elif oscsensor in ["Dwarf 3"]:
             recoded_sensor = "Sony IMX678"
@@ -1345,10 +1377,19 @@ class PreprocessingInterface(QMainWindow):
         if new_options:
             self.filter_combo.setCurrentText(new_options[0])
 
-        if selected_scope[0:5] == "Dwarf" and self.dwarf is not None: # If Dwarf, try to autodetect the filter
+        if (
+            selected_scope[0:5] == "Dwarf" and self.dwarf is not None
+        ):  # If Dwarf, try to autodetect the filter
             filter = self.dwarf.dwarf_shots_info.ir.strip().lower()
-            if "dual" in filter or "duo" in filter or "band" in filter or "narrow" in filter:
-                self.filter_combo.setCurrentText(new_options[1]) # It seems to be Dual Band Filter
+            if (
+                "dual" in filter
+                or "duo" in filter
+                or "band" in filter
+                or "narrow" in filter
+            ):
+                self.filter_combo.setCurrentText(
+                    new_options[1]
+                )  # It seems to be Dual Band Filter
                 self.siril.log(
                     "Dual Band Filter detected",
                     LogColor.BLUE,
@@ -2051,6 +2092,9 @@ class PreprocessingInterface(QMainWindow):
             self.progress_bar.setVisible(False)
             return
 
+        # Persist the current selections as the new defaults for next launch.
+        self._save_config_defaults()
+
         # Start background thread
         self.worker = WorkerThread(self.run_processing_logic, **params)
         self.worker.finished.connect(self.on_processing_finished)
@@ -2270,6 +2314,8 @@ class PreprocessingInterface(QMainWindow):
                 pixel_fraction=pixel_fraction,
                 filter_roundness=filter_roundness,
                 filter_fwhm=filter_fwhm,
+                filter_bg=filter_bg,
+                filter_star_count=filter_star_count,
                 feather=feather,
                 feather_amount=feather_amount,
                 stack_weighting=stack_weighting,
@@ -2324,6 +2370,8 @@ class PreprocessingInterface(QMainWindow):
                     pixel_fraction=pixel_fraction,
                     filter_roundness=filter_roundness,
                     filter_fwhm=filter_fwhm,
+                    filter_bg=filter_bg,
+                    filter_star_count=filter_star_count,
                     feather=feather,
                     feather_amount=feather_amount,
                     stack_weighting=stack_weighting,
@@ -2686,9 +2734,9 @@ class PreprocessingInterface(QMainWindow):
         return file_name
 
     # Save and Load Presets code
-    def save_presets(self):
-        """Save current UI settings to a JSON file in the working directory."""
-        presets = {
+    def _collect_settings(self) -> dict:
+        """Snapshot every UI control as a JSON-serializable settings dict."""
+        return {
             "telescope": self.telescope_combo.currentText(),
             "filter": self.filter_combo.currentText(),
             # "catalog": self.catalog_combo.currentText(),
@@ -2712,7 +2760,12 @@ class PreprocessingInterface(QMainWindow):
             "weighting_method": self.weighting_method_combo.currentText(),
             "spcc": self.spcc_checkbox.isChecked(),
             "compression": self.compression_checkbox.isChecked(),
+            "black_frames_bug": self.scan_blackframes_checkbox.isChecked(),
         }
+
+    def save_presets(self):
+        """Save current UI settings to a JSON file in the working directory."""
+        presets = self._collect_settings()
 
         presets_dir = os.path.join(self.current_working_directory, "presets")
         os.makedirs(presets_dir, exist_ok=True)
@@ -2754,50 +2807,123 @@ class PreprocessingInterface(QMainWindow):
             with open(presets_file) as f:
                 presets = json.load(f)
 
-            # Set UI elements based on loaded presets
-            self.telescope_combo.setCurrentText(
-                presets.get("telescope", "ZWO Seestar S50")
-            )
-            self.filter_combo.setCurrentText(
-                presets.get("filter", "No Filter (Broadband)")
-            )
-            # self.catalog_combo.setCurrentText(presets.get("catalog", "localgaia"))
-            self.darks_checkbox.setChecked(presets.get("darks", False))
-            self.flats_checkbox.setChecked(presets.get("flats", False))
-            self.biases_checkbox.setChecked(presets.get("biases", False))
-            self.cleanup_files_checkbox.setChecked(presets.get("cleanup", False))
-            self.batch_size_spinbox.setValue(
-                presets.get("batch_size", self.max_files_per_batch)
-            )
-            self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
-            self.drizzle_group.setChecked(presets.get("drizzle", False))
-            self.drizzle_amount_spinbox.setValue(
-                presets.get("drizzle_amount", UI_DEFAULTS["drizzle_amount"])
-            )
-            self.pixel_fraction_spinbox.setValue(
-                presets.get("pixel_fraction", UI_DEFAULTS["pixel_fraction"])
-            )
-            self.filters_group.setChecked(presets.get("filters", False))
-            self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
-            self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
-            self.star_count_filter_spinbox.setValue(
-                presets.get("star_count_filter", 100.0)
-            )
-            self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
-            self.feather_group.setChecked(presets.get("feather", False))
-            self.feather_amount_spinbox.setValue(
-                presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
-            )
-            self.stack_weighting_group.setChecked(presets.get("stack_weighting", False))
-            self.weighting_method_combo.setCurrentText(
-                presets.get("weighting_method", "Noise")
-            )
-            self.spcc_checkbox.setChecked(presets.get("spcc", False))
-            self.compression_checkbox.setChecked(presets.get("compression", False))
+            self._apply_settings(presets)
 
             self.siril.log(f"Loaded presets from {presets_file}", LogColor.GREEN)
         except Exception as e:
             self.siril.log(f"Failed to load presets: {e}", LogColor.RED)
+
+    def _apply_settings(self, presets: dict):
+        """Apply a saved settings dict to the UI controls. Missing keys fall
+        back to each control's default."""
+        if not presets:
+            return
+        # Set UI elements based on loaded presets
+        self.telescope_combo.setCurrentText(presets.get("telescope", "ZWO Seestar S50"))
+        self.filter_combo.setCurrentText(presets.get("filter", "No Filter (Broadband)"))
+        # self.catalog_combo.setCurrentText(presets.get("catalog", "localgaia"))
+        self.darks_checkbox.setChecked(presets.get("darks", False))
+        self.flats_checkbox.setChecked(presets.get("flats", False))
+        self.biases_checkbox.setChecked(presets.get("biases", False))
+        self.cleanup_files_checkbox.setChecked(presets.get("cleanup", False))
+        self.batch_size_spinbox.setValue(
+            presets.get("batch_size", self.max_files_per_batch)
+        )
+        self.bg_extract_checkbox.setChecked(presets.get("bg_extract", False))
+        self.drizzle_group.setChecked(presets.get("drizzle", False))
+        self.drizzle_amount_spinbox.setValue(
+            presets.get("drizzle_amount", UI_DEFAULTS["drizzle_amount"])
+        )
+        self.pixel_fraction_spinbox.setValue(
+            presets.get("pixel_fraction", UI_DEFAULTS["pixel_fraction"])
+        )
+        self.filters_group.setChecked(presets.get("filters", False))
+        self.roundness_spinbox.setValue(presets.get("roundness", 3.0))
+        self.fwhm_spinbox.setValue(presets.get("fwhm", 3.0))
+        self.star_count_filter_spinbox.setValue(presets.get("star_count_filter", 100.0))
+        self.bg_filter_spinbox.setValue(presets.get("bg_filter", 100.0))
+        self.feather_group.setChecked(presets.get("feather", False))
+        self.feather_amount_spinbox.setValue(
+            presets.get("feather_amount", UI_DEFAULTS["feather_amount"])
+        )
+        self.stack_weighting_group.setChecked(presets.get("stack_weighting", False))
+        self.weighting_method_combo.setCurrentText(
+            presets.get("weighting_method", "Noise")
+        )
+        self.spcc_checkbox.setChecked(presets.get("spcc", False))
+        self.compression_checkbox.setChecked(presets.get("compression", False))
+        self.scan_blackframes_checkbox.setChecked(
+            presets.get("black_frames_bug", False)
+        )
+
+    # ── Persistent config (shared across Naztronomy scripts) ─────────────────
+    # Top-level key for this script's settings within the shared config file.
+    _CONFIG_SECTION = "smart_telescope"
+
+    def _config_path(self) -> "Path | None":
+        """Path to the shared Naztronomy scripts config JSON, or None.
+
+        The file lives in the Siril user config directory and is shared across
+        the Naztronomy scripts; this script reads/writes only its own
+        ``smart_telescope`` section so settings persist between runs.
+        """
+        try:
+            config_dir = self.siril.get_siril_configdir()
+        except Exception:
+            return None
+        if not config_dir:
+            return None
+        return Path(config_dir) / "naztronomy_scripts_config.json"
+
+    def _write_config_section(self, updates: dict) -> bool:
+        """Merge ``updates`` into this script's section of the shared config
+        file, preserving other scripts' sections and this section's other keys.
+        """
+        path = self._config_path()
+        if not path:
+            return False
+        data = {}
+        if path.is_file():
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, ValueError):
+                data = {}
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            section = {}
+        section.update(updates)
+        data[self._CONFIG_SECTION] = section
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            return True
+        except OSError as exc:
+            self.siril.log(f"Could not save config: {exc}", LogColor.SALMON)
+            return False
+
+    def _load_config(self):
+        """Load persisted settings from this script's config section into
+        ``self._saved_settings`` (applied after the widgets are built)."""
+        path = self._config_path()
+        if not path or not path.is_file():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        section = data.get(self._CONFIG_SECTION)
+        if isinstance(section, dict):
+            self._saved_settings = section
+
+    def _save_config_defaults(self):
+        """Persist the current UI settings as the new defaults."""
+        if self._write_config_section(self._collect_settings()):
+            self.siril.log(f"Saved settings to {self._config_path()}", LogColor.BLUE)
 
     def load_dwarf(self, directory: str) -> bool:
         if not os.path.exists(Path(os.path.join(directory, "shotsInfo.json"))):
@@ -2805,6 +2931,7 @@ class PreprocessingInterface(QMainWindow):
             return False
         self.dwarf = DwarfManager(directory, self.siril)
         return True
+
 
 @dataclass
 class DwarfShotsInfo:
@@ -2824,12 +2951,14 @@ class DwarfShotsInfo:
             return None
         return (self.min_temp + self.max_temp) / 2.0
 
+
 @dataclass
 class DwarfDarkMeta:
     exp_s: float
     gain: int
     binning: int
     temp_c: int
+
 
 class DwarfManager:
     # This class encapsulates code initially created by DeepSkyLab for his "DWARF Mini One‑Click Preprocess for Siril" script
@@ -2838,26 +2967,37 @@ class DwarfManager:
     def __init__(self, workdir: str, siril):
         self.siril = siril
         self.current_folder = Path(workdir)
-        self.dwarf_shots_info = self._read_shotsinfo(Path(os.path.join(self.current_folder, "shotsInfo.json")))
+        self.dwarf_shots_info = self._read_shotsinfo(
+            Path(os.path.join(self.current_folder, "shotsInfo.json"))
+        )
         self._DARK_RE = re.compile(
             r"dark_exp_(?P<exp>[0-9]+\.?[0-9]*)_gain_(?P<gain>[0-9]+)_bin_(?P<bin>[0-9]+)_(?P<temp>[0-9]+)C",
             re.IGNORECASE,
         )
-        self._TEMP_SUFFIX_RE = re.compile(r".*_[+-]?\d+C\.(fit|fits|fts)$", re.IGNORECASE)
+        self._TEMP_SUFFIX_RE = re.compile(
+            r".*_[+-]?\d+C\.(fit|fits|fts)$", re.IGNORECASE
+        )
         self.cam = self._detect_cam_name(workdir)
 
-    def _log(self, msg, color = LogColor.RED):
+    def _log(self, msg, color=LogColor.RED):
         self.siril.log(msg, color)
 
     def create_lights_folder(self) -> int:
         lights_directory = os.path.join(self.current_folder, "lights")
-        (light_files, _, _) = self._select_light_files()
+        light_files, _, _ = self._select_light_files()
         if len(light_files) == 0:
-            return 0 # early return don't create the dir
+            return 0  # early return don't create the dir
         os.makedirs(lights_directory, exist_ok=True)
         for light_file in light_files:
-            shutil.copy2(light_file, lights_directory)
-        self._log(f"{lights_directory} created, {len(light_files)} files copied in it", LogColor.GREEN)
+            dest_path = os.path.join(lights_directory, os.path.basename(light_file))
+            try:
+                os.symlink(light_file, dest_path)
+            except (OSError, NotImplementedError):
+                shutil.copy2(light_file, lights_directory)
+        self._log(
+            f"{lights_directory} created, {len(light_files)} files linked/copied in it",
+            LogColor.GREEN,
+        )
         return len(light_files)
 
     def _read_shotsinfo(self, shotsinfo_path: Path) -> DwarfShotsInfo:
@@ -2921,18 +3061,24 @@ class DwarfManager:
         parent = self.current_folder.parent / "CALI_FRAME"
 
         dwarf_cali_paths = {
-            'biases': parent / "bias",
-            'flats': parent / "flat",
-            'darks': parent / "dark" / self.cam
+            "biases": parent / "bias",
+            "flats": parent / "flat",
+            "darks": parent / "dark" / self.cam,
         }
 
         if dir_name == "darks":
             best_files = self._select_matching_darks(dwarf_cali_paths[dir_name])
             if len(best_files) > 0:
-                self.siril.log(f"Copy {len(best_files)} dark file(s) into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                self.siril.log(
+                    f"Copy {len(best_files)} dark file(s) into {(self.current_folder / dir_name).name}/",
+                    LogColor.GREEN,
+                )
                 os.makedirs(self.current_folder / dir_name, exist_ok=True)
                 for file in best_files:
-                    self.siril.log(f"Copy {file.absolute().name} into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                    self.siril.log(
+                        f"Copy {file.absolute().name} into {(self.current_folder / dir_name).name}/",
+                        LogColor.GREEN,
+                    )
                     shutil.copy2(file, self.current_folder / dir_name)
             else:
                 self.siril.log(f"Couldn't find matching darks", LogColor.SALMON)
@@ -2940,7 +3086,10 @@ class DwarfManager:
         elif dir_name in ["biases", "flats"]:
             best_directory = self._pick_best_calib_subfolder(dwarf_cali_paths[dir_name])
             if best_directory is not None:
-                self.siril.log(f"Copy {best_directory.absolute().name}/* into {(self.current_folder / dir_name).name}/", LogColor.GREEN)
+                self.siril.log(
+                    f"Copy {best_directory.absolute().name}/* into {(self.current_folder / dir_name).name}/",
+                    LogColor.GREEN,
+                )
                 shutil.copytree(best_directory, self.current_folder / dir_name)
 
         else:
@@ -2956,7 +3105,11 @@ class DwarfManager:
         if not parent.is_dir():
             return None
 
-        candidates = [p for p in parent.iterdir() if p.is_dir() and p.name.lower().startswith(cam_name.lower())]
+        candidates = [
+            p
+            for p in parent.iterdir()
+            if p.is_dir() and p.name.lower().startswith(cam_name.lower())
+        ]
 
         if not candidates:
             return None
@@ -3032,13 +3185,21 @@ class DwarfManager:
         # Prefer temps inside session range
         # Tiny bonus: matching dark temperature matters more than most people think (until it *really* does).
         if shots.min_temp is not None and shots.max_temp is not None:
-            in_range = [f for (f, m) in candidates if shots.min_temp <= m.temp_c <= shots.max_temp]
+            in_range = [
+                f
+                for (f, m) in candidates
+                if shots.min_temp <= m.temp_c <= shots.max_temp
+            ]
             if in_range:
                 return sorted(in_range)
 
         # Else closest to mean temp (or median)
         temps = [m.temp_c for (_, m) in candidates]
-        target_t = shots.mean_temp if shots.mean_temp is not None else sorted(temps)[len(temps) // 2]
+        target_t = (
+            shots.mean_temp
+            if shots.mean_temp is not None
+            else sorted(temps)[len(temps) // 2]
+        )
         best_dist = min(abs(m.temp_c - target_t) for (_, m) in candidates)
         chosen = [f for (f, m) in candidates if abs(m.temp_c - target_t) == best_dist]
         return sorted(chosen)
@@ -3115,10 +3276,14 @@ class DwarfManager:
 
         # Prefer classic DWARF raw-sub naming: ..._27C.fits
         temp_named = [p for p in nonstack if self._TEMP_SUFFIX_RE.match(p.name)]
-        candidates = temp_named if len(temp_named) >= max(5, len(nonstack) // 2) else nonstack
+        candidates = (
+            temp_named if len(temp_named) >= max(5, len(nonstack) // 2) else nonstack
+        )
 
         # Layer-count majority filter
-        layers: Dict[Path, Optional[int]] = {p: self._fits_layer_count(p) for p in candidates}
+        layers: Dict[Path, Optional[int]] = {
+            p: self._fits_layer_count(p) for p in candidates
+        }
         hist: Dict[int, int] = {}
         for _, n in layers.items():
             if n is None:
