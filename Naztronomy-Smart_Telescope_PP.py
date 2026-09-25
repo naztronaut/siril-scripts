@@ -32,6 +32,7 @@ CHANGELOG:
       - Black frames bug checkbox is restored on load presets
       - Persistent configs! On run, the current checkboxes are saved and restored automatically on next script run
       - S50 Pro added to the list
+      - Fix SPCC Platesolve Bug
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
@@ -1246,6 +1247,18 @@ class PreprocessingInterface(QMainWindow):
         else:
             # Default to UV/IR Block
             args.append("-oscfilter=UV/IR Block")
+
+        # SPCC requires a plate-solved image. The stacked result sometimes loses
+        # its WCS (or Siril doesn't recognise it as solved), so force a fresh
+        # solve first; continue to SPCC even if it fails so the error surfaces there.
+        try:
+            self.siril.cmd("platesolve", "-force")
+            self.siril.log("Plate solved image before SPCC", LogColor.GREEN)
+        except (s.CommandError, s.DataError, s.SirilError) as e:
+            self.siril.log(
+                f"Plate solve before SPCC failed: {e}. Attempting SPCC anyway.",
+                LogColor.SALMON,
+            )
 
         # Double Quote each argument due to potential spaces
         quoted_args = [f'"{arg}"' for arg in args]
