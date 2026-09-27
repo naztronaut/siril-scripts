@@ -1,5 +1,5 @@
 """
-(c) Nazmus Nasir 2025
+(c) Nazmus Nasir 2025-2026
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - Smart Telescope Preprocessing script
@@ -34,6 +34,7 @@ CHANGELOG:
       - S50 Pro added to the list
       - Fix SPCC Platesolve Bug
       - Copied over help section from the mono script
+      - Fix inefficient code
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
@@ -2445,7 +2446,6 @@ class PreprocessingInterface(QMainWindow):
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
 
-        # TODO: Stack calibration frames and copy to the various batch dirs
         if use_biases:
             converted = self.convert_files("biases")
             if converted:
@@ -2469,7 +2469,6 @@ class PreprocessingInterface(QMainWindow):
             check_interruption()
 
         # Check files in working directory/lights.
-        # create sub folders with more than 2048 divided by equal amounts
 
         lights_directory = "lights"
 
