@@ -11,9 +11,11 @@ A comprehensive Python script that automates the preprocessing workflow for smar
 - ZWO Seestar S30
 - ZWO Seestar S30 Pro
 - ZWO Seestar S50
+- ZWO Seestar S50 Pro
 - Dwarf Mini
 - Dwarf 2
 - Dwarf 3
+- Dwarflab Draco
 - Celestron Origin
 - Unistellar eVscope 1 / eQuinox 1
 - Unistellar eVscope 2 / eQuinox 2
