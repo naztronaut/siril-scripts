@@ -1370,11 +1370,7 @@ class PreprocessingInterface(QMainWindow):
                     continue
 
                 # Check if file starts with prefix_ or pp_flats_
-                if (
-                    f.startswith(prefix)
-                    or f.startswith(f"{prefix}_")
-                    or f.startswith("pp_flats_")
-                ):
+                if f.startswith((prefix, f"{prefix}_", "pp_flats_")):
                     file_path = os.path.join(process_dir, f)
                     if os.path.isfile(file_path):
                         # Retry loop for safe deletion
@@ -3172,9 +3168,6 @@ class DwarfManager:
         )
         self.cam = self._detect_cam_name(workdir)
 
-    def _log(self, msg, color=LogColor.RED):
-        self.siril.log(msg, color)
-
     def create_lights_folder(self) -> int:
         lights_directory = os.path.join(self.current_folder, "lights")
         light_files, _, _ = self._select_light_files()
@@ -3186,8 +3179,8 @@ class DwarfManager:
             try:
                 os.symlink(light_file, dest_path)
             except (OSError, NotImplementedError):
-                shutil.copy2(light_file, lights_directory)
-        self._log(
+                shutil.copy2(light_file, dest_path)
+        self.siril.log(
             f"{lights_directory} created, {len(light_files)} files linked/copied in it",
             LogColor.GREEN,
         )
@@ -3261,7 +3254,7 @@ class DwarfManager:
 
         if dir_name == "darks":
             best_files = self._select_matching_darks(dwarf_cali_paths[dir_name])
-            if len(best_files) > 0:
+            if best_files:
                 self.siril.log(
                     f"Copy {len(best_files)} dark file(s) into {(self.current_folder / dir_name).name}/",
                     LogColor.GREEN,
@@ -3283,7 +3276,9 @@ class DwarfManager:
                     f"Copy {best_directory.absolute().name}/* into {(self.current_folder / dir_name).name}/",
                     LogColor.GREEN,
                 )
-                shutil.copytree(best_directory, self.current_folder / dir_name)
+                shutil.copytree(
+                    best_directory, self.current_folder / dir_name, dirs_exist_ok=True
+                )
 
         else:
             self.siril.log(f"Unknown calibration type {dir_name}", LogColor.RED)
@@ -3344,12 +3339,10 @@ class DwarfManager:
             return None
 
     def _glob_fits(self, folder: Path) -> list[Path]:
-        exts = ("*.fit", "*.fits", "*.fts", "*.FIT", "*.FITS", "*.FTS")
-        out: list[Path] = []
-        for pat in exts:
-            out.extend(folder.glob(pat))
-        out = [p for p in out if p.is_file()]
-        return sorted(set(out))
+        exts = {".fit", ".fits", ".fts"}
+        return sorted(
+            p for p in folder.glob("*") if p.is_file() and p.suffix.lower() in exts
+        )
 
     def _select_matching_darks(self, dark_dir: Path) -> list[Path]:
         shots = self.dwarf_shots_info
@@ -3398,51 +3391,17 @@ class DwarfManager:
         return sorted(chosen)
 
     def _fits_layer_count(self, path: Path) -> int | None:
-        """Cheap FITS header peek to estimate # layers.
-
-        - NAXIS<=2 -> 1 layer
-        - NAXIS=3 and NAXIS3=3 -> 3 layers
+        """Cheap FITS header peek to estimate # layers (1 for 2D, NAXIS3 for 3D).
 
         Returns None if it can't parse.
         """
         try:
-            header_cards: list[str] = []
-            with path.open("rb") as f:
-                for _ in range(20):
-                    block = f.read(2880)
-                    if not block:
-                        break
-                    for i in range(0, len(block), 80):
-                        card = block[i : i + 80].decode("ascii", errors="ignore")
-                        header_cards.append(card)
-                        if card.startswith("END"):
-                            raise StopIteration
-        except StopIteration:
-            pass
-        except Exception:
+            header = fits.getheader(path)
+            if int(header.get("NAXIS", 2)) <= 2:
+                return 1
+            return int(header.get("NAXIS3", 1))
+        except (OSError, ValueError, KeyError):
             return None
-
-        kv: dict[str, str] = {}
-        for c in header_cards:
-            if "=" in c[:10]:
-                key = c[:8].strip()
-                val = c.split("=", 1)[1].split("/", 1)[0].strip()
-                kv[key] = val
-
-        try:
-            naxis = int(kv.get("NAXIS", "2"))
-        except Exception:
-            return None
-
-        if naxis <= 2:
-            return 1
-
-        try:
-            naxis3 = int(kv.get("NAXIS3", "1"))
-        except Exception:
-            naxis3 = 1
-
-        return naxis3
 
     def _select_light_files(self) -> tuple[list[Path], dict[int, int], list[Path]]:
         """Return (selected_subs, layer_hist, excluded_fits).
@@ -3478,17 +3437,15 @@ class DwarfManager:
             p: self._fits_layer_count(p) for p in candidates
         }
         hist: dict[int, int] = {}
-        for n in layers.values():
-            if n is not None:
-                hist[n] = hist.get(n, 0) + 1
+        for layer in layers.values():
+            if layer is not None:
+                hist[layer] = hist.get(layer, 0) + 1
 
         if hist:
-            majority = sorted(hist.items(), key=lambda kv: kv[1], reverse=True)[0][0]
-            selected = [p for p in candidates if layers.get(p, None) == majority]
-            # Any candidate with a different layer count is excluded
+            majority = max(hist.items(), key=lambda kv: kv[1])[0]
+            selected: list[Path] = []
             for p in candidates:
-                if layers.get(p, None) != majority:
-                    excluded.append(p)
+                (selected if layers.get(p) == majority else excluded).append(p)
         else:
             selected = candidates
 
