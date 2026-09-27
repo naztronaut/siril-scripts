@@ -35,6 +35,7 @@ CHANGELOG:
       - Fix SPCC Platesolve Bug
       - Copied over help section from the mono script
       - Fix inefficient code
+      - Fix for issue#109 - use full path instead of relative paths so symlinks don't break
 2.0.6 - Ignore dot files from macs
       - Fix black frames check bug
       - PR#75 - support compressed fits in lights dir
@@ -663,7 +664,7 @@ class PreprocessingInterface(QMainWindow):
             )  #  If Dwarf, first let's try to fetch the correct calibration files
 
         if os.path.isdir(directory):
-            self.siril.cmd("cd", dir_name)
+            self.siril.cmd("cd", f'"{directory}"')
             file_count = len(
                 [
                     name
@@ -699,7 +700,7 @@ class PreprocessingInterface(QMainWindow):
                     f"Copied master {dir_name} to process as {dir_name}_stacked.",
                     LogColor.BLUE,
                 )
-                self.siril.cmd("cd", "..")
+                self.siril.cmd("cd", f'"{self.current_working_directory}"')
                 # return false because there's no conversion
                 return False
             try:
@@ -719,7 +720,9 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(f"File conversion failed: {e}", LogColor.RED)
                 self.close_dialog()
 
-            self.siril.cmd("cd", "../process")
+            self.siril.cmd(
+                "cd", f'"{os.path.join(self.current_working_directory, "process")}"'
+            )
             self.siril.log(
                 f"Converted {file_count} {dir_name} files for processing!",
                 LogColor.GREEN,
