@@ -430,13 +430,9 @@ class PreprocessingInterface(QMainWindow):
             if answer == QMessageBox.StandardButton.Yes:
                 parent_dir = os.path.dirname(directory)
                 self.confirm_selected_directory(parent_dir)
-            return True
-        elif is_initial_dir:
-            self.siril.log(
-                f"Current working directory is invalid: {directory}, reprompting...",
-                LogColor.SALMON,
-            )
-            return False
+                return True
+            else:
+                return False
         elif self.load_dwarf(directory):
             msg = "You don't have 'lights' directory, but I've found a shotsinfo.json so you must be using a DWARF Telescope, do you want me to try to create the 'lights' directory for you and put your fits files in it?"
             file_number = 0
@@ -446,10 +442,19 @@ class PreprocessingInterface(QMainWindow):
             if file_number > 0:
                 self.confirm_selected_directory(directory)
                 return True
+            # DWARF folder found but no lights created; reprompt.
+            if is_initial_dir:
+                self.siril.log(
+                    f"Current working directory is invalid: {directory}, reprompting...",
+                    LogColor.SALMON,
+                )
+                return False
+        elif is_initial_dir:
             self.siril.log(
                 f"Current working directory is invalid: {directory}, reprompting...",
                 LogColor.SALMON,
             )
+            return False
 
         msg = f"The selected directory must contain either a subdirectory named 'lights' or a file 'shotsInfo.json' (DWARF telescope).\nYou selected: {directory}. Please try again."
         self.siril.log(msg, LogColor.SALMON)
