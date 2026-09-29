@@ -717,6 +717,7 @@ class PreprocessingInterface(QMainWindow):
             return
 
         self.fits_extension = self.siril.get_siril_config("core", "extension")
+        self.astrometry_net_available = self.local_astrometry_net_available()
         # home directory is unchanged
         self.home_directory = self.siril.get_siril_wd()
         self.current_working_directory = self.siril.get_siril_wd()
@@ -1765,8 +1766,40 @@ class PreprocessingInterface(QMainWindow):
                 f'No directory named "{image_type}" at this location. Make sure the working directory is correct.'
             )
 
+    def local_astrometry_net_available(self):
+        """Return True when Siril can find a local solve-field installation."""
+        configured_dir = ""
+        try:
+            configured_dir = self.siril.get_siril_config("core", "asnet_dir")
+        except (s.DataError, s.CommandError, s.SirilError):
+            pass
+
+        if configured_dir and configured_dir != "(not set)":
+            candidates = [
+                os.path.join(configured_dir, "solve-field"),
+                os.path.join(configured_dir, "solve-field.exe"),
+                os.path.join(configured_dir, "bin", "solve-field"),
+                os.path.join(configured_dir, "bin", "solve-field.exe"),
+            ]
+            if any(os.path.isfile(candidate) for candidate in candidates):
+                return True
+
+        if shutil.which("solve-field"):
+            return True
+
+        if sys.platform.startswith("win"):
+            ansvr_root = os.path.join(
+                os.environ.get("LOCALAPPDATA", ""), "cygwin_ansvr"
+            )
+            return any(
+                os.path.isfile(os.path.join(ansvr_root, "bin", executable))
+                for executable in ("solve-field", "solve-field.exe")
+            )
+
+        return False
+
     # Plate solve on sequence runs when file count < 2048
-    def seq_plate_solve(self, seq_name):
+    def seq_plate_solve(self, seq_name, use_astrometry_net=False):
         """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
         # self.siril.cmd("cd", "process")
         args = ["seqplatesolve", seq_name]
@@ -1778,6 +1811,23 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
             return True
         except (s.DataError, s.CommandError, s.SirilError) as e:
+            if use_astrometry_net and self.astrometry_net_available:
+                self.siril.log(
+                    f"Siril seqplatesolve reported a failure; retrying unsolved "
+                    f"frames with local astrometry.net (slower): {e}",
+                    LogColor.SALMON,
+                )
+                fallback_args = [arg for arg in args if arg != "-force"]
+                fallback_args.extend(["-localasnet", "-blindpos", "-blindres"])
+                try:
+                    self.siril.cmd(*fallback_args)
+                    self.siril.log(
+                        f"Astrometry.net fallback completed for {seq_name}",
+                        LogColor.GREEN,
+                    )
+                    return True
+                except (s.DataError, s.CommandError, s.SirilError) as fallback_error:
+                    e = fallback_error
             self.siril.log(
                 f"seqplatesolve failed, going to try regular registration: {e}",
                 LogColor.SALMON,
@@ -2589,6 +2639,17 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_check.setToolTip(bg_extract_tooltip)
         preprocessing_layout.addWidget(self.bg_extract_check)
 
+        self.astrometry_net_check = QCheckBox(
+            "Fall back to local astrometry.net for unsolved frames (slower)"
+        )
+        self.astrometry_net_check.setToolTip(
+            "After Siril's built-in sequence solve reports a failure, retry only "
+            "frames without an existing astrometric solution using local "
+            "astrometry.net. Requires suitable astrometry.net index files."
+        )
+        if self.astrometry_net_available:
+            preprocessing_layout.addWidget(self.astrometry_net_check)
+
         drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
         self.drizzle_checkbox = QCheckBox("Enable Drizzle")
         self.drizzle_checkbox.setToolTip(drizzle_tooltip)
@@ -2873,6 +2934,10 @@ class PreprocessingInterface(QMainWindow):
         process_btn.clicked.connect(
             lambda: self.run_script(
                 bg_extract=self.bg_extract_check.isChecked(),
+                use_astrometry_net=(
+                    self.astrometry_net_available
+                    and self.astrometry_net_check.isChecked()
+                ),
                 drizzle=self.drizzle_checkbox.isChecked(),
                 drizzle_amount=round(self.drizzle_amount_spinbox.value(), 1),
                 pixel_fraction=round(self.pixel_fraction_spinbox.value(), 2),
@@ -3399,6 +3464,10 @@ class PreprocessingInterface(QMainWindow):
         presets = {
             "dark_flats": self.dark_flats_check.isChecked(),
             "bg_extract": self.bg_extract_check.isChecked(),
+            "use_astrometry_net": (
+                self.astrometry_net_available
+                and self.astrometry_net_check.isChecked()
+            ),
             "drizzle": self.drizzle_checkbox.isChecked(),
             "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
             "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
@@ -3575,6 +3644,7 @@ class PreprocessingInterface(QMainWindow):
     def run_script(
         self,
         bg_extract: bool = False,
+        use_astrometry_net: bool = False,
         drizzle: bool = False,
         drizzle_amount: float = UI_DEFAULTS["drizzle_amount"],
         pixel_fraction: float = UI_DEFAULTS["pixel_fraction"],
@@ -3625,6 +3695,7 @@ class PreprocessingInterface(QMainWindow):
             f"Running script version {VERSION} with arguments:\n"
             f"dark_flats={self.dark_flats_check.isChecked()}\n"
             f"bg_extract={bg_extract}\n"
+            f"use_astrometry_net={use_astrometry_net}\n"
             f"drizzle={drizzle}\n"
             f"drizzle_amount={drizzle_amount}\n"
             f"pixel_fraction={pixel_fraction}\n"
@@ -3811,7 +3882,8 @@ class PreprocessingInterface(QMainWindow):
                     individual_seq_name = "bkg_" + individual_seq_name
 
                 individual_plate_solve_status = self.seq_plate_solve(
-                    seq_name=individual_seq_name
+                    seq_name=individual_seq_name,
+                    use_astrometry_net=use_astrometry_net,
                 )
 
                 if individual_plate_solve_status:
@@ -3956,7 +4028,10 @@ class PreprocessingInterface(QMainWindow):
                 self.seq_bg_extract(seq_name=seq_name)
                 seq_name = "bkg_" + seq_name
 
-            plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
+            plate_solve_status = self.seq_plate_solve(
+                seq_name=seq_name,
+                use_astrometry_net=use_astrometry_net,
+            )
 
             if plate_solve_status:
                 self.seq_apply_reg(
@@ -4096,7 +4171,10 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.cmd("link", "lights")
                 seq_name = "lights_"
 
-                plate_solve_ok = self.seq_plate_solve(seq_name=seq_name)
+                plate_solve_ok = self.seq_plate_solve(
+                    seq_name=seq_name,
+                    use_astrometry_net=use_astrometry_net,
+                )
                 if plate_solve_ok:
                     try:
                         self.siril.cmd(
@@ -4231,7 +4309,10 @@ class PreprocessingInterface(QMainWindow):
                         LogColor.BLUE,
                     )
                     try:
-                        self.seq_plate_solve(seq_name=seq_name)
+                        self.seq_plate_solve(
+                            seq_name=seq_name,
+                            use_astrometry_net=use_astrometry_net,
+                        )
                         # self.siril.cmd(
                         #     "seqplatesolve",
                         #     seq_name,
