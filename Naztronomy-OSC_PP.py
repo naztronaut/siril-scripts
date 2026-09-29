@@ -32,6 +32,8 @@ CHANGELOG:
       - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
       - Export sessions to an AstroBin acquisition CSV (with Bortle prompt)
       - Filter settings: add "abs" mode to pass an absolute threshold (no k/% suffix)
+      - Folder scan: collect loose FITS files found directly inside an unrecognised
+        folder as lights instead of silently dropping them
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -998,13 +1000,23 @@ class PreprocessingInterface(QMainWindow):
                                     ft, []
                                 ).extend(flist)
                 else:
-                    # Unrecognised dir — potential session boundary
-                    new_group = child if group_key is None else group_key
-                    for k, v in recurse(child, new_group).items():
-                        for ft, flist in v.items():
-                            sub_sessions.setdefault(k, {}).setdefault(ft, []).extend(
-                                flist
-                            )
+                    # Unrecognised dir — check for FITS files directly inside
+                    # (e.g. a target folder holding loose light frames). If found,
+                    # collect them as lights for the current group instead of
+                    # silently dropping them; otherwise treat the folder as a
+                    # potential session boundary and recurse deeper.
+                    direct_fits = sorted(
+                        f for f in child.iterdir() if f.is_file() and _is_fits_file(f)
+                    )
+                    if direct_fits:
+                        collected.setdefault("lights", []).extend(direct_fits)
+                    else:
+                        new_group = child if group_key is None else group_key
+                        for k, v in recurse(child, new_group).items():
+                            for ft, flist in v.items():
+                                sub_sessions.setdefault(k, {}).setdefault(
+                                    ft, []
+                                ).extend(flist)
 
             if collected:
                 gkey = group_key if group_key is not None else d
@@ -2636,8 +2648,8 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_group = QGroupBox("Optional Preprocessing Steps")
         preprocessing_layout = QVBoxLayout()
 
-        dark_flats_tooltip = "If your bias frames are dark flats instead, check this box. It'll be properly applied to the light frames during calibration."
-        self.dark_flats_check = QCheckBox("Using Dark Flats?")
+        dark_flats_tooltip = "Check this if your flats don't apply to your lights correctly. Uncheck it if you get a negative pixel error."
+        self.dark_flats_check = QCheckBox("Apply Bias to Lights")
         self.dark_flats_check.setToolTip(dark_flats_tooltip)
         preprocessing_layout.addWidget(self.dark_flats_check)
 
@@ -3503,8 +3515,7 @@ class PreprocessingInterface(QMainWindow):
             "dark_flats": self.dark_flats_check.isChecked(),
             "bg_extract": self.bg_extract_check.isChecked(),
             "use_astrometry_net": (
-                self.astrometry_net_available
-                and self.astrometry_net_check.isChecked()
+                self.astrometry_net_available and self.astrometry_net_check.isChecked()
             ),
             "drizzle": self.drizzle_checkbox.isChecked(),
             "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
