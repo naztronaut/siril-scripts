@@ -1,9 +1,9 @@
 """
-(c) Nazmus Nasir 2025
+(c) Nazmus Nasir 2025-2026
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - OSC Image Preprocessing script
-Version: 2.0.3
+Version: 2.0.4
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -30,6 +30,7 @@ CHANGELOG:
 2.0.4 - Add nbstacks to weighting
       - Persist Processing-tab settings between runs (shared naztronomy_scripts_config.json)
       - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
+      - Export sessions to an AstroBin acquisition CSV (with Bortle prompt)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -74,12 +75,14 @@ import sirilpy as s
 s.ensure_installed("PyQt6", "numpy", "astropy", "qt_themes", "pyside6", "qtpy")
 
 
+import csv
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import qt_themes
@@ -156,6 +159,223 @@ UI_DEFAULTS = {
 #   and you want to avoid the disk copy (e.g. large raw files on a trusted NAS).
 ALWAYS_SYMLINK: bool = False
 FRAME_TYPES = ("lights", "darks", "flats", "biases")
+
+
+# ── Light-frame metadata (AstroBin acquisition CSV export) ───────────────────
+# FITS extensions astropy can read for header metadata. Other input types (raw
+# camera files, etc.) fall back to parsing what they can from the file name.
+FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz", ".fts", ".fts.fz")
+
+
+def _is_fits_file(path) -> bool:
+    """Return True if `path` looks like a FITS file by extension."""
+    name = str(path).lower()
+    return any(name.endswith(ext) for ext in FITS_INPUT_EXTENSIONS)
+
+
+_EXPTIME_NAME_RE = re.compile(
+    r"exp(?:osure|time)?[\s_\-]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)?",
+    re.IGNORECASE,
+)
+_EXPTIME_NAME_RE_GENERIC = re.compile(
+    r"([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)\b",
+    re.IGNORECASE,
+)
+_TEMP_NAME_RE = re.compile(
+    r"(?:ccd[\s_\-]*temp|temp)[\s_=:\-]?(-?[0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
+_TEMP_NAME_RE_GENERIC = re.compile(
+    r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:deg)?\s*c(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def _read_fits_exptime(path) -> float | None:
+    """Return the exposure time (seconds) from a FITS EXPTIME/EXPOSURE header."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                for key in ("EXPTIME", "EXPOSURE"):
+                    value = header.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            continue
+    except Exception:
+        return None
+    return None
+
+
+def _read_fits_temp(path) -> float | None:
+    """Return the sensor temperature (°C) from a FITS CCD-TEMP header."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                for key in ("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "TEMP"):
+                    value = header.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            continue
+    except Exception:
+        return None
+    return None
+
+
+def _parse_exptime_from_name(name) -> float | None:
+    """Parse an exposure time (seconds) from a file name, or None."""
+    stem = Path(name).stem
+    match = _EXPTIME_NAME_RE.search(stem) or _EXPTIME_NAME_RE_GENERIC.search(stem)
+    if match:
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _parse_temp_from_name(name) -> float | None:
+    """Parse a sensor temperature (°C) from a file name, or None."""
+    stem = Path(name).stem
+    match = _TEMP_NAME_RE.search(stem) or _TEMP_NAME_RE_GENERIC.search(stem)
+    if match:
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _get_exptime_temp(path) -> tuple[float | None, float | None]:
+    """Return (exposure_seconds, temperature_C) for a frame.
+
+    FITS frames are read from their headers, falling back to the file name for
+    any value the header does not provide. Non-FITS frames are parsed from the
+    file name only.
+    """
+    if _is_fits_file(path):
+        exptime = _read_fits_exptime(path)
+        temp = _read_fits_temp(path)
+        if exptime is None:
+            exptime = _parse_exptime_from_name(path)
+        if temp is None:
+            temp = _parse_temp_from_name(path)
+        return exptime, temp
+    return _parse_exptime_from_name(path), _parse_temp_from_name(path)
+
+
+def _parse_dateobs_night(value) -> str | None:
+    """Convert a FITS DATE-OBS value to the acquisition-night date (YYYY-MM-DD).
+
+    DATE-OBS is a UTC timestamp at the start of the exposure. Subtracting 12
+    hours before taking the date rolls frames captured after midnight back into
+    the night the session started, which is the convention AstroBin expects.
+    Returns None when the value cannot be parsed.
+    """
+    if value in (None, ""):
+        return None
+    text = str(value).strip().rstrip("Z")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return None
+    return (dt - timedelta(hours=12)).date().isoformat()
+
+
+def _read_light_metadata(path) -> dict:
+    """Read AstroBin-relevant metadata from a single light frame's FITS header.
+
+    Returns a dict with any of: date, filterName, binning, gain, sensorCooling,
+    fNumber, duration. Missing values are omitted. Non-FITS frames yield only
+    what can be parsed from the file name.
+    """
+    meta: dict = {}
+    exptime, temp = _get_exptime_temp(path)
+    if exptime is not None:
+        meta["duration"] = exptime
+    if temp is not None:
+        meta["sensorCooling"] = temp
+
+    if not _is_fits_file(path):
+        return meta
+
+    try:
+        with fits.open(str(path)) as hdul:
+            header = {}
+            for hdu in hdul:
+                hdr = getattr(hdu, "header", None)
+                if hdr is not None:
+                    for key in hdr.keys():
+                        if key and key not in header:
+                            header[key] = hdr.get(key)
+    except Exception:
+        return meta
+
+    def _first(*keys):
+        for key in keys:
+            val = header.get(key)
+            if val not in (None, ""):
+                return val
+        return None
+
+    night = _parse_dateobs_night(_first("DATE-OBS", "DATE_OBS"))
+    if night:
+        meta["date"] = night
+
+    filter_name = _first("FILTER")
+    if filter_name not in (None, ""):
+        meta["filterName"] = str(filter_name).strip()
+
+    binning = _first("XBINNING", "BINNING", "BINX")
+    if binning not in (None, ""):
+        try:
+            meta["binning"] = int(float(binning))
+        except (TypeError, ValueError):
+            pass
+
+    gain = _first("GAIN", "EGAIN")
+    if gain not in (None, ""):
+        try:
+            meta["gain"] = float(gain)
+        except (TypeError, ValueError):
+            pass
+
+    if "sensorCooling" not in meta:
+        cooling = _first("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "SET-TEMP", "TEMP")
+        if cooling not in (None, ""):
+            try:
+                meta["sensorCooling"] = float(cooling)
+            except (TypeError, ValueError):
+                pass
+
+    fnumber = _first("FOCRATIO", "FNUMBER", "F-RATIO")
+    if fnumber not in (None, ""):
+        try:
+            meta["fNumber"] = float(fnumber)
+        except (TypeError, ValueError):
+            pass
+
+    if "duration" not in meta:
+        dur = _first("EXPTIME", "EXPOSURE")
+        if dur not in (None, ""):
+            try:
+                meta["duration"] = float(dur)
+            except (TypeError, ValueError):
+                pass
+
+    return meta
 
 
 @dataclass
@@ -514,6 +734,8 @@ class PreprocessingInterface(QMainWindow):
         # Persisted Processing-tab defaults, filled by _load_persistent_config
         # when a saved config exists; applied once the widgets are built below.
         self._saved_processing_settings: dict = {}
+        # Last Bortle selection used for the AstroBin CSV export.
+        self._last_bortle: str = ""
         self._load_persistent_config()
 
         self.session_dropdown = QComboBox()
@@ -2294,6 +2516,28 @@ class PreprocessingInterface(QMainWindow):
         self.file_listbox.viewport().setMouseTracking(True)
         session_content_layout.addWidget(self.file_listbox)
 
+        # Export sessions to an AstroBin acquisition CSV.
+        export_csv_btn = QPushButton("Export Sessions to CSV")
+        export_csv_btn.setToolTip(
+            "Export each session (date, filter name, frame counts, exposure,\n"
+            "gain, binning, cooling, f-number) to an AstroBin acquisition CSV\n"
+            "file. 'number' and 'duration' are always filled; other columns are\n"
+            "blank when the data is unavailable."
+        )
+        export_csv_btn.setStyleSheet(
+            "QPushButton {"
+            "    background-color: #6f42c1;"
+            "    color: white;"
+            "    border: none;"
+            "    padding: 6px 12px;"
+            "    border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #8250df; }"
+            "QPushButton:pressed { background-color: #5a32a3; }"
+        )
+        export_csv_btn.clicked.connect(self.export_sessions_csv)
+        session_content_layout.addWidget(export_csv_btn)
+
         file_buttons = QHBoxLayout()
         remove_btn = QPushButton("Remove Selected File(s)")
         remove_btn.clicked.connect(self.remove_selected_files)
@@ -2829,7 +3073,8 @@ class PreprocessingInterface(QMainWindow):
     _CONFIG_SECTION = "osc"
 
     def _load_persistent_config(self):
-        """Load the persisted OSC settings: the saved Processing-tab defaults."""
+        """Load the persisted OSC settings: the saved Processing-tab defaults
+        and the last Bortle selection."""
         path = self._config_path()
         if not path or not path.is_file():
             return
@@ -2844,6 +3089,7 @@ class PreprocessingInterface(QMainWindow):
         processing = section.get("processing")
         if isinstance(processing, dict):
             self._saved_processing_settings = processing
+        self._last_bortle = section.get("bortle", "") or ""
 
     def _write_config_section(self, updates: dict) -> bool:
         """Merge ``updates`` into this script's section of the shared config
@@ -2967,6 +3213,184 @@ class PreprocessingInterface(QMainWindow):
             self.siril.log(
                 "> Saved processing settings as the new defaults.", LogColor.BLUE
             )
+
+    # AstroBin acquisition CSV columns, in order. Only "number" and "duration"
+    # are mandatory; the rest are emitted (header always present) when the data
+    # is available and left blank otherwise.
+    _CSV_COLUMNS = (
+        "date",
+        "filter",
+        "filterName",
+        "number",
+        "duration",
+        "binning",
+        "gain",
+        "sensorCooling",
+        "fNumber",
+        "darks",
+        "flats",
+        "flatDarks",
+        "bias",
+        "bortle",
+    )
+
+    @staticmethod
+    def _csv_num(value):
+        """Format a number for CSV: drop a trailing .0 from whole numbers."""
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _session_csv_row(self, session) -> dict | None:
+        """Build one AstroBin CSV row from a session.
+
+        Returns None when the session has no lights (the row would then have no
+        mandatory 'number'/'duration').
+        """
+        if not session.lights:
+            return None
+
+        meta = _read_light_metadata(session.lights[0])
+
+        duration = meta.get("duration")
+        cooling = meta.get("sensorCooling")
+        row = {
+            "date": meta.get("date", ""),
+            "filter": "",  # AstroBin filter ID — not derivable from headers
+            "filterName": meta.get("filterName", ""),
+            "number": str(len(session.lights)),
+            "duration": self._csv_num(duration),
+            "binning": self._csv_num(meta.get("binning")),
+            "gain": self._csv_num(meta.get("gain")),
+            "sensorCooling": (
+                self._csv_num(round(cooling)) if cooling is not None else ""
+            ),
+            "fNumber": f"{meta['fNumber']:.2f}" if "fNumber" in meta else "",
+            "darks": str(len(session.darks)) if session.darks else "",
+            "flats": str(len(session.flats)) if session.flats else "",
+            "flatDarks": "",  # flat-darks are not tracked per session
+            "bias": str(len(session.biases)) if session.biases else "",
+            "bortle": "",  # sky quality — not derivable from headers
+        }
+        return row
+
+    def _prompt_bortle(self) -> str | None:
+        """Pop up a small dialog asking for the Bortle scale to apply to every
+        row. Returns the chosen value as a string ("" when 'Leave blank' is
+        selected), or None if the user cancels."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Bortle Sky Quality")
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel("Select the Bortle scale to apply to every session:")
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.addItem("", "")
+        bortle_descriptions = {
+            1: "Excellent dark-sky site",
+            2: "Typical truly dark site",
+            3: "Rural sky",
+            4: "Rural/suburban transition",
+            5: "Suburban sky",
+            6: "Bright suburban sky",
+            7: "Suburban/urban transition",
+            8: "City sky",
+            9: "Inner-city sky",
+        }
+        for value, desc in bortle_descriptions.items():
+            combo.addItem(f"{value} \u2014 {desc}", str(value))
+        # Pre-select the last used Bortle value, if one was saved.
+        saved_idx = combo.findData(self._last_bortle or "")
+        if saved_idx >= 0:
+            combo.setCurrentIndex(saved_idx)
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return combo.currentData()
+
+    def export_sessions_csv(self):
+        """Export all sessions with lights to an AstroBin acquisition CSV."""
+        rows = []
+        for session in self.sessions:
+            row = self._session_csv_row(session)
+            if row is not None:
+                rows.append(row)
+
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Export Sessions to CSV",
+                "No sessions with light frames to export.",
+            )
+            return
+
+        missing_duration = sum(1 for r in rows if not r["duration"])
+        if missing_duration:
+            self.siril.log(
+                f"> {missing_duration} session(s) have no detectable exposure "
+                "time; their 'duration' column will be blank.",
+                LogColor.SALMON,
+            )
+
+        # Ask for the Bortle sky-quality scale and apply it to every row.
+        bortle = self._prompt_bortle()
+        if bortle is None:
+            return  # user cancelled
+        # Remember the choice so it pre-fills next time.
+        self._last_bortle = bortle
+        self._write_config_section({"bortle": bortle})
+        for row in rows:
+            row["bortle"] = bortle
+
+        try:
+            start_dir = self.siril.get_siril_wd()
+        except Exception:
+            start_dir = ""
+        default_path = os.path.join(start_dir, "astrobin_acquisitions.csv")
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Sessions to CSV",
+            default_path,
+            "CSV Files (*.csv)",
+        )
+        if not save_path:
+            return
+        if not save_path.lower().endswith(".csv"):
+            save_path += ".csv"
+
+        try:
+            with open(save_path, "w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(self._CSV_COLUMNS))
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as exc:
+            self.siril.log(f"Failed to export CSV: {exc}", LogColor.RED)
+            QMessageBox.warning(
+                self,
+                "Export Sessions to CSV",
+                f"Could not write the CSV file:\n{exc}",
+            )
+            return
+
+        self.siril.log(
+            f"Exported {len(rows)} session(s) to {save_path}", LogColor.GREEN
+        )
 
     def save_presets(self, filepath=None):
         """Save current UI settings and session data to a preset file.
