@@ -31,6 +31,7 @@ CHANGELOG:
       - Persist Processing-tab settings between runs (shared naztronomy_scripts_config.json)
       - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
       - Export sessions to an AstroBin acquisition CSV (with Bortle prompt)
+      - Filter settings: add "abs" mode to pass an absolute threshold (no k/% suffix)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -1866,27 +1867,39 @@ class PreprocessingInterface(QMainWindow):
             "-kernel=square",
         ]
 
-        # Sigma or Percentage for each filter type (if enabled)
+        # Sigma (k), percentage (%), or absolute threshold (no suffix) per filter.
         if use_filter_round:
-            if self.roundness_mode_combo.currentText() == "σ":
+            mode = self.roundness_mode_combo.currentText()
+            if mode == "σ":
                 cmd_args.append(f"-filter-round={filter_round}k")
-            else:
+            elif mode == "%":
                 cmd_args.append(f"-filter-round={int(filter_round)}%")
+            else:
+                cmd_args.append(f"-filter-round={self.roundness_spinbox.value():g}")
         if use_filter_wfwhm:
-            if self.fwhm_mode_combo.currentText() == "σ":
+            mode = self.fwhm_mode_combo.currentText()
+            if mode == "σ":
                 cmd_args.append(f"-filter-wfwhm={filter_wfwhm}k")
-            else:
+            elif mode == "%":
                 cmd_args.append(f"-filter-wfwhm={int(filter_wfwhm)}%")
+            else:
+                cmd_args.append(f"-filter-wfwhm={self.fwhm_spinbox.value():g}")
         if use_filter_stars:
-            if self.stars_mode_combo.currentText() == "σ":
+            mode = self.stars_mode_combo.currentText()
+            if mode == "σ":
                 cmd_args.append(f"-filter-nbstars={filter_stars}k")
-            else:
+            elif mode == "%":
                 cmd_args.append(f"-filter-nbstars={int(filter_stars)}%")
-        if use_filter_bkg:
-            if self.bkg_mode_combo.currentText() == "σ":
-                cmd_args.append(f"-filter-bkg={filter_bkg}k")
             else:
+                cmd_args.append(f"-filter-nbstars={int(self.stars_spinbox.value())}")
+        if use_filter_bkg:
+            mode = self.bkg_mode_combo.currentText()
+            if mode == "σ":
+                cmd_args.append(f"-filter-bkg={filter_bkg}k")
+            elif mode == "%":
                 cmd_args.append(f"-filter-bkg={int(filter_bkg)}%")
+            else:
+                cmd_args.append(f"-filter-bkg={self.bkg_spinbox.value():g}")
 
         # If not doing a paneled mosaic, use max framing, otherwise crop down to reference frame so edges don't have ugly noise
         if not self.paneled_mosaic_radio.isChecked():
@@ -2715,8 +2728,8 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox.setEnabled(False)
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
         self.roundness_mode_combo = QComboBox()
-        self.roundness_mode_combo.addItems(["σ", "%"])
-        self.roundness_mode_combo.setFixedWidth(65)
+        self.roundness_mode_combo.addItems(["σ", "%", "abs"])
+        self.roundness_mode_combo.setFixedWidth(72)
         self.roundness_mode_combo.setEnabled(False)
         self.roundness_check.toggled.connect(self.roundness_spinbox.setEnabled)
         self.roundness_check.toggled.connect(self.roundness_mode_combo.setEnabled)
@@ -2745,8 +2758,8 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_spinbox.setEnabled(False)
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
         self.fwhm_mode_combo = QComboBox()
-        self.fwhm_mode_combo.addItems(["σ", "%"])
-        self.fwhm_mode_combo.setFixedWidth(65)
+        self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
+        self.fwhm_mode_combo.setFixedWidth(72)
         self.fwhm_mode_combo.setEnabled(False)
         self.fwhm_check.toggled.connect(self.fwhm_spinbox.setEnabled)
         self.fwhm_check.toggled.connect(self.fwhm_mode_combo.setEnabled)
@@ -2775,8 +2788,8 @@ class PreprocessingInterface(QMainWindow):
         self.stars_spinbox.setEnabled(False)
         self.stars_spinbox.setToolTip(stars_label_tooltip)
         self.stars_mode_combo = QComboBox()
-        self.stars_mode_combo.addItems(["σ", "%"])
-        self.stars_mode_combo.setFixedWidth(65)
+        self.stars_mode_combo.addItems(["σ", "%", "abs"])
+        self.stars_mode_combo.setFixedWidth(72)
         self.stars_mode_combo.setEnabled(False)
         self.stars_check.toggled.connect(self.stars_spinbox.setEnabled)
         self.stars_check.toggled.connect(self.stars_mode_combo.setEnabled)
@@ -2805,8 +2818,8 @@ class PreprocessingInterface(QMainWindow):
         self.bkg_spinbox.setEnabled(False)
         self.bkg_spinbox.setToolTip(bkg_label_tooltip)
         self.bkg_mode_combo = QComboBox()
-        self.bkg_mode_combo.addItems(["σ", "%"])
-        self.bkg_mode_combo.setFixedWidth(65)
+        self.bkg_mode_combo.addItems(["σ", "%", "abs"])
+        self.bkg_mode_combo.setFixedWidth(72)
         self.bkg_mode_combo.setEnabled(False)
         self.bkg_check.toggled.connect(self.bkg_spinbox.setEnabled)
         self.bkg_check.toggled.connect(self.bkg_mode_combo.setEnabled)
@@ -3105,19 +3118,44 @@ class PreprocessingInterface(QMainWindow):
             self.create_final_stack_check.setEnabled(True)
 
     def _on_filter_mode_changed(self, combo, spinbox):
-        """Update spinbox properties when filter mode changes between σ and %."""
-        if combo.currentText() == "σ":
+        """Update spinbox properties when filter mode changes between σ, % and abs."""
+        mode = combo.currentText()
+        if mode == "σ":
             spinbox.setRange(1, 4)
             spinbox.setSingleStep(0.1)
             spinbox.setDecimals(1)
             spinbox.setValue(3.0)
             spinbox.setSuffix(" σ")
-        else:
+        elif mode == "%":
             spinbox.setRange(1, 100)
             spinbox.setSingleStep(1)
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
+        else:  # abs — a raw threshold passed to Siril with no suffix
+            # Per-metric ranges: absolute thresholds differ wildly (roundness and
+            # background are 0–1, FWHM is in pixels, star count is in the 100s).
+            if spinbox is self.stars_spinbox:
+                spinbox.setRange(0, 100000)
+                spinbox.setSingleStep(10)
+                spinbox.setDecimals(0)
+                spinbox.setValue(100)
+            elif spinbox is self.fwhm_spinbox:
+                spinbox.setRange(0.0, 30.0)
+                spinbox.setSingleStep(0.1)
+                spinbox.setDecimals(2)
+                spinbox.setValue(3.0)
+            elif spinbox is self.bkg_spinbox:
+                spinbox.setRange(0.0, 1.0)
+                spinbox.setSingleStep(0.001)
+                spinbox.setDecimals(4)
+                spinbox.setValue(0.1)
+            else:  # roundness
+                spinbox.setRange(0.0, 1.0)
+                spinbox.setSingleStep(0.05)
+                spinbox.setDecimals(2)
+                spinbox.setValue(0.9)
+            spinbox.setSuffix("")
 
     def _config_path(self) -> Path | None:
         """Return the path to the shared Naztronomy scripts config JSON, or None.
