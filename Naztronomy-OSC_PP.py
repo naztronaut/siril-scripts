@@ -12,8 +12,8 @@ Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 Support me on Patreon: https://www.patreon.com/c/naztronomy
 Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
-This script is designed to process OSC images only at this time. An experimental monochrome feature is available in this script, however
-there are no guarantees.
+This script is designed to process OSC (one-shot color) images only. Monochrome data is
+handled by the separate Naztronomy-Mono-PP.py script.
 
 If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically
 plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
@@ -28,6 +28,8 @@ allows you to choose files from any folder and drive and they will all be consol
 """
 CHANGELOG:
 2.0.4 - Add nbstacks to weighting
+      - Persist Processing-tab settings between runs (shared naztronomy_scripts_config.json)
+      - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -509,6 +511,11 @@ class PreprocessingInterface(QMainWindow):
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
 
+        # Persisted Processing-tab defaults, filled by _load_persistent_config
+        # when a saved config exists; applied once the widgets are built below.
+        self._saved_processing_settings: dict = {}
+        self._load_persistent_config()
+
         self.session_dropdown = QComboBox()
         # self.update_dropdown()  # Fill it with sessions
         self.session_dropdown.setCurrentIndex(0)
@@ -519,6 +526,8 @@ class PreprocessingInterface(QMainWindow):
 
         # End Session
         self.create_widgets()
+        # Apply persisted Processing-tab defaults now that the widgets exist.
+        self._apply_processing_settings(self._saved_processing_settings)
         self.initialization_successful = True  # Flag to track successful initialization
 
     # Start session methods
@@ -1829,7 +1838,7 @@ class PreprocessingInterface(QMainWindow):
             "calibrate",
             f"{seq_name}",
         ]
-        if not self.drizzle_status and not self.mono_check.isChecked():
+        if not self.drizzle_status:
             cmd_args.append("-debayer")
 
         if os.path.exists(
@@ -2123,9 +2132,6 @@ class PreprocessingInterface(QMainWindow):
             <li><b>Create Paneled Mosaic</b>: Sessions are registered and stacked together
                 with overlap-normalisation to produce a seamless mosaic. Each session should
                 cover a different panel of the same field.</li>
-            <li><b>Mono (Experimental)</b>: For monochrome cameras. Frames are calibrated and
-                stacked individually per session and are <b>not combined</b>. Debayering is
-                skipped. A final mono_stacks folder is created where the stacked and registered mono sessions are saved.</li>
             </ul>
 
             <h3>Create Final Stack</h3>
@@ -2585,23 +2591,14 @@ class PreprocessingInterface(QMainWindow):
         )
         self.paneled_mosaic_radio.setEnabled(len(self.sessions) > 1)
 
-        self.mono_radio = QRadioButton("Mono (Experimental)")
-        self.mono_radio.setToolTip(
-            "Experimental: Process images as monochrome (no debayering). Use only for monochrome cameras or special processing needs. Sessions are processed individually — no combined stack is produced."
-        )
-        # Alias so all existing self.mono_check.isChecked() references keep working
-        self.mono_check = self.mono_radio
-
         self.target_mode_button_group = QButtonGroup()
         self.target_mode_button_group.addButton(self.single_target_radio)
         self.target_mode_button_group.addButton(self.multi_target_radio)
         self.target_mode_button_group.addButton(self.paneled_mosaic_radio)
-        self.target_mode_button_group.addButton(self.mono_radio)
 
         target_mode_layout.addWidget(self.single_target_radio)
         target_mode_layout.addWidget(self.multi_target_radio)
         target_mode_layout.addWidget(self.paneled_mosaic_radio)
-        target_mode_layout.addWidget(self.mono_radio)
         target_mode_box.setLayout(target_mode_layout)
         stacking_layout.addWidget(target_mode_box)
 
@@ -2791,7 +2788,7 @@ class PreprocessingInterface(QMainWindow):
         if self.paneled_mosaic_radio.isChecked():
             self.create_final_stack_check.setChecked(True)
             self.create_final_stack_check.setEnabled(False)
-        elif self.multi_target_radio.isChecked() or self.mono_radio.isChecked():
+        elif self.multi_target_radio.isChecked():
             self.create_final_stack_check.setChecked(False)
             self.create_final_stack_check.setEnabled(False)
         else:  # single target
@@ -2812,6 +2809,164 @@ class PreprocessingInterface(QMainWindow):
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
+
+    def _config_path(self) -> Path | None:
+        """Return the path to the shared Naztronomy scripts config JSON, or None.
+
+        The file lives in the Siril user config directory and is shared across
+        the Naztronomy scripts; this script reads/writes its own ``osc`` section
+        so the Processing-tab settings are remembered between runs.
+        """
+        try:
+            config_dir = self.siril.get_siril_configdir()
+        except Exception:
+            return None
+        if not config_dir:
+            return None
+        return Path(config_dir) / "naztronomy_scripts_config.json"
+
+    # Top-level key for this script's settings within the shared config file.
+    _CONFIG_SECTION = "osc"
+
+    def _load_persistent_config(self):
+        """Load the persisted OSC settings: the saved Processing-tab defaults."""
+        path = self._config_path()
+        if not path or not path.is_file():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            return
+        processing = section.get("processing")
+        if isinstance(processing, dict):
+            self._saved_processing_settings = processing
+
+    def _write_config_section(self, updates: dict) -> bool:
+        """Merge ``updates`` into this script's section of the shared config
+        file, preserving other scripts' sections and this section's other keys.
+        """
+        path = self._config_path()
+        if not path:
+            return False
+        data = {}
+        if path.is_file():
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, ValueError):
+                data = {}
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            section = {}
+        section.update(updates)
+        data[self._CONFIG_SECTION] = section
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            return True
+        except OSError as exc:
+            self.siril.log(f"> Could not save config: {exc}", LogColor.SALMON)
+            return False
+
+    def _collect_processing_settings(self) -> dict:
+        """Snapshot every Processing-tab control as a JSON-serializable dict."""
+        return {
+            "dark_flats": self.dark_flats_check.isChecked(),
+            "bg_extract": self.bg_extract_check.isChecked(),
+            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
+            "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
+            "feather": self.feather_checkbox.isChecked(),
+            "feather_amount": round(self.feather_amount_spinbox.value(), 0),
+            "filter_round": round(self.roundness_spinbox.value(), 1),
+            "filter_wfwhm": round(self.fwhm_spinbox.value(), 1),
+            "filter_stars": round(self.stars_spinbox.value(), 1),
+            "filter_bkg": round(self.bkg_spinbox.value(), 1),
+            "use_filter_round": self.roundness_check.isChecked(),
+            "use_filter_wfwhm": self.fwhm_check.isChecked(),
+            "use_filter_stars": self.stars_check.isChecked(),
+            "use_filter_bkg": self.bkg_check.isChecked(),
+            "filter_round_mode": self.roundness_mode_combo.currentText(),
+            "filter_wfwhm_mode": self.fwhm_mode_combo.currentText(),
+            "filter_stars_mode": self.stars_mode_combo.currentText(),
+            "filter_bkg_mode": self.bkg_mode_combo.currentText(),
+            "cleanup": self.cleanup_check.isChecked(),
+            "target_mode": (
+                "paneled"
+                if self.paneled_mosaic_radio.isChecked()
+                else "multi" if self.multi_target_radio.isChecked() else "single"
+            ),
+            "create_final_stack": self.create_final_stack_check.isChecked(),
+            "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
+            "output_norm": self.output_norm_check.isChecked(),
+            "stack_weighted": self.weight_stack_check.isChecked(),
+            "weighting_method": self.weight_method_combo.currentText(),
+        }
+
+    def _apply_processing_settings(self, presets: dict):
+        """Apply a saved Processing-tab settings dict to the controls. Missing
+        keys fall back to each control's default."""
+        if not presets:
+            return
+        self.dark_flats_check.setChecked(presets.get("dark_flats", False))
+        self.bg_extract_check.setChecked(presets.get("bg_extract", False))
+        self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+        self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
+        self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
+        self.feather_checkbox.setChecked(presets.get("feather", False))
+        self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
+        self.roundness_mode_combo.setCurrentText(presets.get("filter_round_mode", "σ"))
+        self.fwhm_mode_combo.setCurrentText(presets.get("filter_wfwhm_mode", "σ"))
+        self.stars_mode_combo.setCurrentText(presets.get("filter_stars_mode", "σ"))
+        self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "σ"))
+        self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
+        self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
+        self.stars_spinbox.setValue(presets.get("filter_stars", 3.0))
+        self.bkg_spinbox.setValue(presets.get("filter_bkg", 3.0))
+        self.roundness_check.setChecked(presets.get("use_filter_round", False))
+        self.fwhm_check.setChecked(presets.get("use_filter_wfwhm", False))
+        self.stars_check.setChecked(presets.get("use_filter_stars", False))
+        self.bkg_check.setChecked(presets.get("use_filter_bkg", False))
+        self.cleanup_check.setChecked(presets.get("cleanup", False))
+        target_mode = presets.get("target_mode", "single")
+        # Support legacy presets that used boolean fields
+        if target_mode == "single" and presets.get("paneled_mosaic", False):
+            target_mode = "paneled"
+        elif target_mode == "single" and presets.get("process_separately", False):
+            target_mode = "multi"
+        if target_mode == "paneled" and len(self.sessions) > 1:
+            self.paneled_mosaic_radio.setChecked(True)
+        elif target_mode == "multi" and len(self.sessions) > 1:
+            self.multi_target_radio.setChecked(True)
+        else:
+            self.single_target_radio.setChecked(True)
+        self.create_final_stack_check.setChecked(
+            presets.get("create_final_stack", True)
+        )
+        self.save_calibrated_lights_check.setChecked(
+            presets.get("save_calibrated_lights", False)
+        )
+        self.output_norm_check.setChecked(presets.get("output_norm", True))
+        self.weight_stack_check.setChecked(presets.get("stack_weighted", False))
+        self.weight_method_combo.setCurrentText(
+            presets.get("weighting_method", "Weighted FWHM")
+        )
+
+    def _save_processing_defaults(self):
+        """Persist the current Processing-tab settings as the new defaults."""
+        if self._write_config_section(
+            {"processing": self._collect_processing_settings()}
+        ):
+            self.siril.log(
+                "> Saved processing settings as the new defaults.", LogColor.BLUE
+            )
 
     def save_presets(self, filepath=None):
         """Save current UI settings and session data to a preset file.
@@ -2841,11 +2996,7 @@ class PreprocessingInterface(QMainWindow):
             "target_mode": (
                 "paneled"
                 if self.paneled_mosaic_radio.isChecked()
-                else (
-                    "multi"
-                    if self.multi_target_radio.isChecked()
-                    else "mono" if self.mono_radio.isChecked() else "single"
-                )
+                else "multi" if self.multi_target_radio.isChecked() else "single"
             ),
             "create_final_stack": self.create_final_stack_check.isChecked(),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
@@ -2944,61 +3095,7 @@ class PreprocessingInterface(QMainWindow):
                 presets = json.load(f)
 
                 # Load UI settings
-                self.dark_flats_check.setChecked(presets.get("dark_flats", False))
-                self.bg_extract_check.setChecked(presets.get("bg_extract", False))
-                self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
-                self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
-                self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
-                self.feather_checkbox.setChecked(presets.get("feather", False))
-                self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
-                self.roundness_mode_combo.setCurrentText(
-                    presets.get("filter_round_mode", "σ")
-                )
-                self.fwhm_mode_combo.setCurrentText(
-                    presets.get("filter_wfwhm_mode", "σ")
-                )
-                self.stars_mode_combo.setCurrentText(
-                    presets.get("filter_stars_mode", "σ")
-                )
-                self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "σ"))
-                self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
-                self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
-                self.stars_spinbox.setValue(presets.get("filter_stars", 3.0))
-                self.bkg_spinbox.setValue(presets.get("filter_bkg", 3.0))
-                self.roundness_check.setChecked(presets.get("use_filter_round", False))
-                self.fwhm_check.setChecked(presets.get("use_filter_wfwhm", False))
-                self.stars_check.setChecked(presets.get("use_filter_stars", False))
-                self.bkg_check.setChecked(presets.get("use_filter_bkg", False))
-                self.cleanup_check.setChecked(presets.get("cleanup", False))
-                target_mode = presets.get("target_mode", "single")
-                # Support legacy presets that used boolean fields
-                if target_mode == "single" and presets.get("paneled_mosaic", False):
-                    target_mode = "paneled"
-                elif target_mode == "single" and presets.get(
-                    "process_separately", False
-                ):
-                    target_mode = "multi"
-                elif target_mode == "single" and presets.get("mono", False):
-                    target_mode = "mono"
-                if target_mode == "paneled" and len(self.sessions) > 1:
-                    self.paneled_mosaic_radio.setChecked(True)
-                elif target_mode == "multi" and len(self.sessions) > 1:
-                    self.multi_target_radio.setChecked(True)
-                elif target_mode == "mono":
-                    self.mono_radio.setChecked(True)
-                else:
-                    self.single_target_radio.setChecked(True)
-                self.create_final_stack_check.setChecked(
-                    presets.get("create_final_stack", True)
-                )
-                self.save_calibrated_lights_check.setChecked(
-                    presets.get("save_calibrated_lights", False)
-                )
-                self.output_norm_check.setChecked(presets.get("output_norm", True))
-                self.weight_stack_check.setChecked(presets.get("stack_weighted", False))
-                self.weight_method_combo.setCurrentText(
-                    presets.get("weighting_method", "Weighted FWHM")
-                )
+                self._apply_processing_settings(presets)
 
                 # Load session data
                 sessions_data = presets.get("sessions", [])
@@ -3097,6 +3194,9 @@ class PreprocessingInterface(QMainWindow):
             )
             return
 
+        # Persist the current Processing-tab selections as the new defaults.
+        self._save_processing_defaults()
+
         self.siril.log(
             f"Running script version {VERSION} with arguments:\n"
             f"dark_flats={self.dark_flats_check.isChecked()}\n"
@@ -3116,7 +3216,7 @@ class PreprocessingInterface(QMainWindow):
             f"paneled_mosaic={paneled_mosaic}\n"
             f"create_final_stack={self.create_final_stack_check.isChecked()}\n"
             f"save_calibrated_lights={self.save_calibrated_lights_check.isChecked()}\n"
-            f"target_mode={'paneled mosaic' if self.paneled_mosaic_radio.isChecked() else 'multi target' if self.multi_target_radio.isChecked() else 'mono' if self.mono_radio.isChecked() else 'single target'}\n"
+            f"target_mode={'paneled mosaic' if self.paneled_mosaic_radio.isChecked() else 'multi target' if self.multi_target_radio.isChecked() else 'single target'}\n"
             f"stack_weighted={stack_weighted} method={weighting_method}\n"
             f"output_norm={output_norm}\n"
             f"build={VERSION}-{BUILD}",
@@ -3129,12 +3229,11 @@ class PreprocessingInterface(QMainWindow):
             os.path.exists("sessions")
             or os.path.exists("process")
             or os.path.exists("collected_lights")
-            or os.path.exists("mono_stacks")
             or os.path.exists("individual_stacks")
             or os.path.exists("paneled_mosaic_process")
             or os.path.exists("final_stack_process")
         ):
-            msg = """One or more old processing directories found (sessions, process, collected_lights, mono_stacks, individual_stacks, paneled_mosaic_process). 
+            msg = """One or more old processing directories found (sessions, process, collected_lights, individual_stacks, paneled_mosaic_process). 
                 \nDo you want to delete them and start fresh?
                 \nNote: There is no way to recover this data if you choose 'Yes'."""
             answer = QMessageBox.question(
@@ -3154,11 +3253,6 @@ class PreprocessingInterface(QMainWindow):
                     shutil.rmtree("collected_lights", ignore_errors=True)
                     self.siril.log(
                         "Cleaned up old collected_lights directory", LogColor.BLUE
-                    )
-                if os.path.exists("mono_stacks"):
-                    shutil.rmtree("mono_stacks", ignore_errors=True)
-                    self.siril.log(
-                        "Cleaned up old mono_stacks directory", LogColor.BLUE
                     )
                 if os.path.exists("individual_stacks"):
                     shutil.rmtree("individual_stacks", ignore_errors=True)
@@ -3197,7 +3291,6 @@ class PreprocessingInterface(QMainWindow):
             self.single_target_radio.isChecked()
             and self.create_final_stack_check.isChecked()
             and not save_calibrated_lights
-            and not self.mono_check.isChecked()
         )
 
         for idx, session in enumerate(
@@ -3275,20 +3368,14 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
 
-            # Process separately if requested or mono is selected
+            # Process separately if requested (multi target / paneled mosaic) or a
+            # single-target final stack is built from per-session stacks.
             # IF paneled mosaic, create the individual stacks dir and images in there for later processing
-            if (
-                process_separately
-                or self.mono_check.isChecked()
-                or needs_per_session_stack
-            ):
+            if process_separately or needs_per_session_stack:
                 # Create individual_stacks directory
-                dirname = (
-                    "mono_stacks"
-                    if self.mono_check.isChecked()
-                    else "individual_stacks"
+                individual_stacks_dir = os.path.join(
+                    self.home_directory, "individual_stacks"
                 )
-                individual_stacks_dir = os.path.join(self.home_directory, dirname)
                 os.makedirs(individual_stacks_dir, exist_ok=True)
 
                 # Process this session individually
@@ -3372,11 +3459,7 @@ class PreprocessingInterface(QMainWindow):
                     "process",
                     f"{individual_file_name}{self.fits_extension}",
                 )
-                new_dst_filename = (
-                    "mono_" + individual_file_name
-                    if self.mono_check.isChecked()
-                    else individual_file_name
-                )
+                new_dst_filename = individual_file_name
                 dst_individual = os.path.join(
                     individual_stacks_dir, f"{new_dst_filename}{self.fits_extension}"
                 )
@@ -3409,111 +3492,7 @@ class PreprocessingInterface(QMainWindow):
             self.siril.cmd("close")
             time.sleep(3)  # Small delay to ensure Siril processes the command
 
-        if self.mono_check.isChecked():
-            # TODO: If mono, go into the mono_stacks directory and combine all session stacks into one sequence and register them but not stack
-            self.siril.log(
-                "Mono checked: " + str(self.mono_check.isChecked()), LogColor.BLUE
-            )
-            mono_dir = "mono_stacks"
-            fits_files = [
-                fname
-                for fname in os.listdir(mono_dir)
-                if fname.startswith("mono_")
-                and fname.endswith(self.fits_extension)
-                and not fname.startswith(".")
-            ]
-            self.siril.log(
-                f"Found {len(fits_files)} mono_*.fits files in {mono_dir}",
-                LogColor.BLUE,
-            )
-            if len(fits_files) > 1:
-                self.siril.cmd("cd", f'"{mono_dir}"')
-                cwd = self.siril.get_siril_wd()
-                # Move all mono_*.fits files into a "lights" folder
-                mono_lights_dir = os.path.join(mono_dir, "lights")
-                os.makedirs(mono_lights_dir, exist_ok=True)
-                for fname in fits_files:
-                    src = os.path.join(mono_dir, fname)
-                    dst = os.path.join(mono_lights_dir, fname)
-                    shutil.copy2(src, dst)
-
-                # Call the convert command on the lights folder
-                args = ["convert", "lights", "-out=../mono_process"]
-                self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
-                self.siril.cmd(*args)
-
-                # Go into the process directory
-                self.siril.cmd("cd", "../mono_process")
-
-                # Register and apply registration to the lights_ sequence
-                seq_name = "lights_"
-                cmd_args = ["register", seq_name, "-2pass"]
-                try:
-                    self.siril.cmd(*cmd_args)
-                except (s.DataError, s.CommandError, s.SirilError) as e:
-                    self.siril.log(f"Data error occurred: {e}", LogColor.RED)
-
-                cmd_args = ["seqapplyreg", seq_name]
-
-                self.siril.log(
-                    "Command arguments: " + " ".join(cmd_args), LogColor.BLUE
-                )
-
-                try:
-                    self.siril.cmd(*cmd_args)
-                except (s.DataError, s.CommandError, s.SirilError) as e:
-                    self.siril.log(f"Data error occurred: {e}", LogColor.RED)
-
-                self.siril.log(
-                    f"Applied existing registration to seq {seq_name}", LogColor.GREEN
-                )
-
-                # Read the lights_conversion.txt file
-                conversion_file = os.path.join(
-                    os.getcwd(), "mono_process", "lights_conversion.txt"
-                )
-                self.siril.log(
-                    f"Looking for lights_conversion.txt in: {os.getcwd()}, {conversion_file}",
-                    LogColor.BLUE,
-                )
-                if os.path.exists(conversion_file):
-                    with open(conversion_file, "r") as f:
-                        print(f"Opened conversion file: {conversion_file}")
-                        for line in f:
-                            if "->" in line:
-                                src_path, dest_path = line.strip().split(" -> ")
-                                src_path = src_path.strip("'")
-                                dest_path = dest_path.strip("'")
-
-                                # Get the original filename from the source path
-                                original_name = os.path.basename(src_path)
-
-                                # Create new filename with 'r_' prefix
-                                new_name = "r_" + original_name
-                                # Get the destination file (lights_xxxxx.fits)
-                                dest_file = os.path.basename(dest_path)
-                                # Full path to the registered file (r_lights_xxxxx.fits)
-                                registered_file = os.path.join(
-                                    os.getcwd(), "mono_process", "r_" + dest_file
-                                )
-                                # New destination in mono_stacks
-                                final_dest = os.path.join(mono_dir, new_name)
-                                # Move the file if it exists
-                                if os.path.exists(registered_file):
-                                    shutil.move(registered_file, final_dest)
-                                    self.siril.log(
-                                        f"Moved {registered_file} to {final_dest}",
-                                        LogColor.BLUE,
-                                    )
-                else:
-                    self.siril.log("lights_conversion.txt not found", LogColor.SALMON)
-                self.siril.cmd("cd", "../")
-
-        if (
-            not self.mono_check.isChecked()
-            and self.create_final_stack_check.isChecked()
-            and save_calibrated_lights
-        ):
+        if self.create_final_stack_check.isChecked() and save_calibrated_lights:
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
             self.current_working_directory = self.siril.get_siril_wd()
             # Create a new sequence for each session
@@ -3625,8 +3604,7 @@ class PreprocessingInterface(QMainWindow):
             file_name = self.save_image("_og")
             self.load_image(image_name=file_name)
         elif (
-            not self.mono_check.isChecked()
-            and self.create_final_stack_check.isChecked()
+            self.create_final_stack_check.isChecked()
             and self.multi_target_radio.isChecked()
         ):
             self.siril.log(
@@ -3755,14 +3733,10 @@ class PreprocessingInterface(QMainWindow):
                     f"Looking for individual stacks in: {individual_stacks_dir}",
                     LogColor.BLUE,
                 )
-                # Look for individual stack files (not prefixed with "mono_" unless mono is checked)
-                search_prefix = "mono_" if self.mono_check.isChecked() else ""
                 fits_files = [
                     fname
                     for fname in os.listdir(individual_stacks_dir)
-                    if fname.endswith(self.fits_extension)
-                    and fname.startswith(search_prefix)
-                    and not fname.startswith(".")
+                    if fname.endswith(self.fits_extension) and not fname.startswith(".")
                 ]
 
                 self.siril.log(
@@ -3991,19 +3965,6 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(
                     f"Collected Lights Dir not found, skipping: {e}", LogColor.SALMON
                 )
-
-            if self.mono_check.isChecked():
-                shutil.rmtree(
-                    os.path.join(self.current_working_directory, "mono_process"),
-                    ignore_errors=True,
-                )
-                shutil.rmtree(
-                    os.path.join(
-                        self.current_working_directory, "mono_stacks", "lights"
-                    ),
-                    ignore_errors=True,
-                )
-                self.siril.log("Cleaned up mono_process directory", LogColor.BLUE)
 
             # Clean up paneled_mosaic_process but preserve individual_stacks
             paneled_mosaic_process_dir = os.path.join(
