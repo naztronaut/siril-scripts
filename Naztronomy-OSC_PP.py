@@ -27,7 +27,7 @@ allows you to choose files from any folder and drive and they will all be consol
 
 """
 CHANGELOG:
-2.0.4 - forcing nbstack weights for stacking stacks without doing collected lights
+2.0.4 - Add nbstacks to weighting
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -63,73 +63,71 @@ CHANGELOG:
 """
 
 
-from pathlib import Path
 import shutil
+from pathlib import Path
+
 import sirilpy as s
 
 # Themes requirements: qt_themes, pyside6, qtpy
 s.ensure_installed("PyQt6", "numpy", "astropy", "qt_themes", "pyside6", "qtpy")
 
 
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+
+import numpy as np
+import qt_themes
+from astropy.io import fits
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QComboBox,
-    QFrame,
-    QListWidget,
-    QListWidgetItem,
-    QSpinBox,
-    QDoubleSpinBox,
-    QCheckBox,
-    QRadioButton,
-    QButtonGroup,
-    QTabWidget,
-    QGroupBox,
-    QFileDialog,
-    QMessageBox,
-    QAbstractItemView,
-    QToolButton,
-    QMenu,
-    QDialog,
-    QTextBrowser,
-    QSizePolicy,
-    QScrollArea,
-    QStyledItemDelegate,
-    QStyle,
-)
 from PyQt6.QtGui import (
-    QFont,
-    QShortcut,
-    QKeySequence,
     QAction,
+    QBrush,
+    QColor,
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
+    QFont,
     QPainter,
-    QColor,
-    QBrush,
 )
-from datetime import datetime
-import time
-import os
-import sys
-import json
-import qt_themes
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QTabWidget,
+    QTextBrowser,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 from sirilpy import LogColor, NoImageError
-from astropy.io import fits
-import numpy as np
-from dataclasses import dataclass, field
-from typing import List, Dict
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
-VERSION = "2.0.3"
-BUILD = "20260430"
+VERSION = "2.0.4"
+BUILD = "20260930"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -160,17 +158,17 @@ FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
 @dataclass
 class Session:
-    lights: List[Path] = field(default_factory=list)
-    darks: List[Path] = field(default_factory=list)
-    flats: List[Path] = field(default_factory=list)
-    biases: List[Path] = field(default_factory=list)
+    lights: list[Path] = field(default_factory=list)
+    darks: list[Path] = field(default_factory=list)
+    flats: list[Path] = field(default_factory=list)
+    biases: list[Path] = field(default_factory=list)
 
-    def add_files(self, image_type: str, file_paths: List[Path]):
+    def add_files(self, image_type: str, file_paths: list[Path]):
         if not hasattr(self, image_type):
             raise ValueError(f"Unknown frame type: {image_type}")
         getattr(self, image_type).extend(file_paths)
 
-    def get_file_lists(self) -> Dict[str, List[Path]]:
+    def get_file_lists(self) -> dict[str, list[Path]]:
         return {
             "lights": self.lights,
             "darks": self.darks,
@@ -178,12 +176,12 @@ class Session:
             "biases": self.biases,
         }
 
-    def get_files_by_type(self, image_type: str) -> List[Path]:
+    def get_files_by_type(self, image_type: str) -> list[Path]:
         if not hasattr(self, image_type):
             raise ValueError(f"Unknown frame type: {image_type}")
         return getattr(self, image_type)
 
-    def get_file_count(self) -> Dict[str, int]:
+    def get_file_count(self) -> dict[str, int]:
         return {
             "lights": len(self.lights),
             "darks": len(self.darks),
@@ -565,7 +563,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             raise IndexError("Session index out of range.")
 
-    def get_all_sessions(self) -> List[Session]:
+    def get_all_sessions(self) -> list[Session]:
         """
         Return a copy of the list of all sessions.
 
@@ -588,7 +586,7 @@ class PreprocessingInterface(QMainWindow):
             session.reset()
         return self.sessions
 
-    def remove_session_by_index(self, index: int) -> List[Session]:
+    def remove_session_by_index(self, index: int) -> list[Session]:
         """
         Remove the session at the given index from the list of sessions.
 
@@ -607,7 +605,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             raise IndexError("Session index out of range.")
 
-    def add_session(self, session: Session) -> List[Session]:
+    def add_session(self, session: Session) -> list[Session]:
         """
         Add a session to the list of sessions.
 
@@ -620,7 +618,7 @@ class PreprocessingInterface(QMainWindow):
         self.sessions.append(session)
         return self.sessions
 
-    def update_session(self, index: int, session: Session) -> List[Session]:
+    def update_session(self, index: int, session: Session) -> list[Session]:
         """
         Update the session at the given index in the list of sessions.
 
@@ -641,7 +639,7 @@ class PreprocessingInterface(QMainWindow):
             raise IndexError("Session index out of range.")
 
     def add_files_to_session(
-        self, session: Session, file_type: str, file_paths: List[Path]
+        self, session: Session, file_type: str, file_paths: list[Path]
     ) -> None:
         if file_type not in FRAME_TYPES:
             raise ValueError(f"Unknown frame type: {file_type}")
@@ -1533,9 +1531,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             self.siril.error_messagebox(f"Directory {directory} does not exist", True)
             raise NoImageError(
-                (
-                    f'No directory named "{image_type}" at this location. Make sure the working directory is correct.'
-                )
+                f'No directory named "{image_type}" at this location. Make sure the working directory is correct.'
             )
 
     # Plate solve on sequence runs when file count < 2048
@@ -2010,11 +2006,7 @@ class PreprocessingInterface(QMainWindow):
                 continue
 
             # Check if file starts with prefix_ or pp_flats_
-            if (
-                f.startswith(prefix)
-                or f.startswith(f"{prefix}_")
-                or f.startswith("pp_flats_")
-            ):
+            if f.startswith((prefix, f"{prefix}_", "pp_flats_")):
                 file_path = os.path.join(process_dir, f)
                 if os.path.isfile(file_path):
                     # print(f"Removing: {file_path}")
@@ -3043,7 +3035,7 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.GREEN,
                 )
         except Exception as e:
-            self.siril.log(f"Error loading presets: {str(e)}", LogColor.RED)
+            self.siril.log(f"Error loading presets: {e!s}", LogColor.RED)
 
     def load_presets_from(self):
         """Load presets from a user-chosen file."""
@@ -3734,8 +3726,8 @@ class PreprocessingInterface(QMainWindow):
                     # Combining per-session masters: always weight by how many
                     # subs went into each master (STACKCNT) so longer sessions
                     # contribute proportionally more. Overrides the UI setting.
-                    stack_weighted=True,
-                    weighting_method="Number of Frames",
+                    stack_weighted=stack_weighted,
+                    weighting_method=weighting_method,
                 )
                 self.load_image(image_name="final_stacked")
                 self.siril.cmd("cd", f'"{self.home_directory}"')
@@ -3959,7 +3951,7 @@ class PreprocessingInterface(QMainWindow):
                     )
             else:
                 self.siril.log(
-                    f"Individual stacks directory not found, skipping paneled mosaic",
+                    "Individual stacks directory not found, skipping paneled mosaic",
                     LogColor.SALMON,
                 )
 
@@ -4067,7 +4059,7 @@ def main():
             # User canceled during initialization - exit gracefully
             sys.exit(0)
     except Exception as e:
-        print(f"Error initializing application: {str(e)}")
+        print(f"Error initializing application: {e!s}")
         sys.exit(1)
 
 
