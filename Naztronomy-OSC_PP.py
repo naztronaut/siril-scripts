@@ -1,9 +1,9 @@
 """
-(c) Nazmus Nasir 2025
+(c) Nazmus Nasir 2025-2026
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - OSC Image Preprocessing script
-Version: 2.0.3
+Version: 2.0.4
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -12,8 +12,8 @@ Join discord for support and discussion: https://discord.gg/yXKqrawpjr
 Support me on Patreon: https://www.patreon.com/c/naztronomy
 Support me on Buy me a Coffee: https://www.buymeacoffee.com/naztronomy
 
-This script is designed to process OSC images only at this time. An experimental monochrome feature is available in this script, however
-there are no guarantees.
+This script is designed to process OSC (one-shot color) images only. Monochrome data is
+handled by the separate Naztronomy-Mono-PP.py script.
 
 If your images have the correct headers (RA/DEC coordinates, focal length, pixel size, etc.), this script can automatically
 plate solve and stitch mosaics. If you are using data without the correct headers, it will do a star alignment on a reference frame (.e.g no mosaics).
@@ -27,7 +27,10 @@ allows you to choose files from any folder and drive and they will all be consol
 
 """
 CHANGELOG:
-
+2.0.4 - Add nbstacks to weighting
+      - Persist Processing-tab settings between runs (shared naztronomy_scripts_config.json)
+      - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
+      - Export sessions to an AstroBin acquisition CSV (with Bortle prompt)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -63,73 +66,73 @@ CHANGELOG:
 """
 
 
-from pathlib import Path
 import shutil
+from pathlib import Path
+
 import sirilpy as s
 
 # Themes requirements: qt_themes, pyside6, qtpy
 s.ensure_installed("PyQt6", "numpy", "astropy", "qt_themes", "pyside6", "qtpy")
 
 
+import csv
+import json
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+import numpy as np
+import qt_themes
+from astropy.io import fits
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QComboBox,
-    QFrame,
-    QListWidget,
-    QListWidgetItem,
-    QSpinBox,
-    QDoubleSpinBox,
-    QCheckBox,
-    QRadioButton,
-    QButtonGroup,
-    QTabWidget,
-    QGroupBox,
-    QFileDialog,
-    QMessageBox,
-    QAbstractItemView,
-    QToolButton,
-    QMenu,
-    QDialog,
-    QTextBrowser,
-    QSizePolicy,
-    QScrollArea,
-    QStyledItemDelegate,
-    QStyle,
-)
 from PyQt6.QtGui import (
-    QFont,
-    QShortcut,
-    QKeySequence,
     QAction,
+    QBrush,
+    QColor,
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
+    QFont,
     QPainter,
-    QColor,
-    QBrush,
 )
-from datetime import datetime
-import time
-import os
-import sys
-import json
-import qt_themes
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QTabWidget,
+    QTextBrowser,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 from sirilpy import LogColor, NoImageError
-from astropy.io import fits
-import numpy as np
-from dataclasses import dataclass, field
-from typing import List, Dict
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
-VERSION = "2.0.3"
-BUILD = "20260430"
+VERSION = "2.0.4"
+BUILD = "20260930"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -158,19 +161,236 @@ ALWAYS_SYMLINK: bool = False
 FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
 
+# ── Light-frame metadata (AstroBin acquisition CSV export) ───────────────────
+# FITS extensions astropy can read for header metadata. Other input types (raw
+# camera files, etc.) fall back to parsing what they can from the file name.
+FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz", ".fts", ".fts.fz")
+
+
+def _is_fits_file(path) -> bool:
+    """Return True if `path` looks like a FITS file by extension."""
+    name = str(path).lower()
+    return any(name.endswith(ext) for ext in FITS_INPUT_EXTENSIONS)
+
+
+_EXPTIME_NAME_RE = re.compile(
+    r"exp(?:osure|time)?[\s_\-]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)?",
+    re.IGNORECASE,
+)
+_EXPTIME_NAME_RE_GENERIC = re.compile(
+    r"([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)\b",
+    re.IGNORECASE,
+)
+_TEMP_NAME_RE = re.compile(
+    r"(?:ccd[\s_\-]*temp|temp)[\s_=:\-]?(-?[0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
+_TEMP_NAME_RE_GENERIC = re.compile(
+    r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:deg)?\s*c(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def _read_fits_exptime(path) -> float | None:
+    """Return the exposure time (seconds) from a FITS EXPTIME/EXPOSURE header."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                for key in ("EXPTIME", "EXPOSURE"):
+                    value = header.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            continue
+    except Exception:
+        return None
+    return None
+
+
+def _read_fits_temp(path) -> float | None:
+    """Return the sensor temperature (°C) from a FITS CCD-TEMP header."""
+    try:
+        with fits.open(str(path)) as hdul:
+            for hdu in hdul:
+                header = getattr(hdu, "header", None)
+                if header is None:
+                    continue
+                for key in ("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "TEMP"):
+                    value = header.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            continue
+    except Exception:
+        return None
+    return None
+
+
+def _parse_exptime_from_name(name) -> float | None:
+    """Parse an exposure time (seconds) from a file name, or None."""
+    stem = Path(name).stem
+    match = _EXPTIME_NAME_RE.search(stem) or _EXPTIME_NAME_RE_GENERIC.search(stem)
+    if match:
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _parse_temp_from_name(name) -> float | None:
+    """Parse a sensor temperature (°C) from a file name, or None."""
+    stem = Path(name).stem
+    match = _TEMP_NAME_RE.search(stem) or _TEMP_NAME_RE_GENERIC.search(stem)
+    if match:
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _get_exptime_temp(path) -> tuple[float | None, float | None]:
+    """Return (exposure_seconds, temperature_C) for a frame.
+
+    FITS frames are read from their headers, falling back to the file name for
+    any value the header does not provide. Non-FITS frames are parsed from the
+    file name only.
+    """
+    if _is_fits_file(path):
+        exptime = _read_fits_exptime(path)
+        temp = _read_fits_temp(path)
+        if exptime is None:
+            exptime = _parse_exptime_from_name(path)
+        if temp is None:
+            temp = _parse_temp_from_name(path)
+        return exptime, temp
+    return _parse_exptime_from_name(path), _parse_temp_from_name(path)
+
+
+def _parse_dateobs_night(value) -> str | None:
+    """Convert a FITS DATE-OBS value to the acquisition-night date (YYYY-MM-DD).
+
+    DATE-OBS is a UTC timestamp at the start of the exposure. Subtracting 12
+    hours before taking the date rolls frames captured after midnight back into
+    the night the session started, which is the convention AstroBin expects.
+    Returns None when the value cannot be parsed.
+    """
+    if value in (None, ""):
+        return None
+    text = str(value).strip().rstrip("Z")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return None
+    return (dt - timedelta(hours=12)).date().isoformat()
+
+
+def _read_light_metadata(path) -> dict:
+    """Read AstroBin-relevant metadata from a single light frame's FITS header.
+
+    Returns a dict with any of: date, filterName, binning, gain, sensorCooling,
+    fNumber, duration. Missing values are omitted. Non-FITS frames yield only
+    what can be parsed from the file name.
+    """
+    meta: dict = {}
+    exptime, temp = _get_exptime_temp(path)
+    if exptime is not None:
+        meta["duration"] = exptime
+    if temp is not None:
+        meta["sensorCooling"] = temp
+
+    if not _is_fits_file(path):
+        return meta
+
+    try:
+        with fits.open(str(path)) as hdul:
+            header = {}
+            for hdu in hdul:
+                hdr = getattr(hdu, "header", None)
+                if hdr is not None:
+                    for key in hdr.keys():
+                        if key and key not in header:
+                            header[key] = hdr.get(key)
+    except Exception:
+        return meta
+
+    def _first(*keys):
+        for key in keys:
+            val = header.get(key)
+            if val not in (None, ""):
+                return val
+        return None
+
+    night = _parse_dateobs_night(_first("DATE-OBS", "DATE_OBS"))
+    if night:
+        meta["date"] = night
+
+    filter_name = _first("FILTER")
+    if filter_name not in (None, ""):
+        meta["filterName"] = str(filter_name).strip()
+
+    binning = _first("XBINNING", "BINNING", "BINX")
+    if binning not in (None, ""):
+        try:
+            meta["binning"] = int(float(binning))
+        except (TypeError, ValueError):
+            pass
+
+    gain = _first("GAIN", "EGAIN")
+    if gain not in (None, ""):
+        try:
+            meta["gain"] = float(gain)
+        except (TypeError, ValueError):
+            pass
+
+    if "sensorCooling" not in meta:
+        cooling = _first("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "SET-TEMP", "TEMP")
+        if cooling not in (None, ""):
+            try:
+                meta["sensorCooling"] = float(cooling)
+            except (TypeError, ValueError):
+                pass
+
+    fnumber = _first("FOCRATIO", "FNUMBER", "F-RATIO")
+    if fnumber not in (None, ""):
+        try:
+            meta["fNumber"] = float(fnumber)
+        except (TypeError, ValueError):
+            pass
+
+    if "duration" not in meta:
+        dur = _first("EXPTIME", "EXPOSURE")
+        if dur not in (None, ""):
+            try:
+                meta["duration"] = float(dur)
+            except (TypeError, ValueError):
+                pass
+
+    return meta
+
+
 @dataclass
 class Session:
-    lights: List[Path] = field(default_factory=list)
-    darks: List[Path] = field(default_factory=list)
-    flats: List[Path] = field(default_factory=list)
-    biases: List[Path] = field(default_factory=list)
+    lights: list[Path] = field(default_factory=list)
+    darks: list[Path] = field(default_factory=list)
+    flats: list[Path] = field(default_factory=list)
+    biases: list[Path] = field(default_factory=list)
 
-    def add_files(self, image_type: str, file_paths: List[Path]):
+    def add_files(self, image_type: str, file_paths: list[Path]):
         if not hasattr(self, image_type):
             raise ValueError(f"Unknown frame type: {image_type}")
         getattr(self, image_type).extend(file_paths)
 
-    def get_file_lists(self) -> Dict[str, List[Path]]:
+    def get_file_lists(self) -> dict[str, list[Path]]:
         return {
             "lights": self.lights,
             "darks": self.darks,
@@ -178,12 +398,12 @@ class Session:
             "biases": self.biases,
         }
 
-    def get_files_by_type(self, image_type: str) -> List[Path]:
+    def get_files_by_type(self, image_type: str) -> list[Path]:
         if not hasattr(self, image_type):
             raise ValueError(f"Unknown frame type: {image_type}")
         return getattr(self, image_type)
 
-    def get_file_count(self) -> Dict[str, int]:
+    def get_file_count(self) -> dict[str, int]:
         return {
             "lights": len(self.lights),
             "darks": len(self.darks),
@@ -512,6 +732,13 @@ class PreprocessingInterface(QMainWindow):
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
 
+        # Persisted Processing-tab defaults, filled by _load_persistent_config
+        # when a saved config exists; applied once the widgets are built below.
+        self._saved_processing_settings: dict = {}
+        # Last Bortle selection used for the AstroBin CSV export.
+        self._last_bortle: str = ""
+        self._load_persistent_config()
+
         self.session_dropdown = QComboBox()
         # self.update_dropdown()  # Fill it with sessions
         self.session_dropdown.setCurrentIndex(0)
@@ -522,6 +749,8 @@ class PreprocessingInterface(QMainWindow):
 
         # End Session
         self.create_widgets()
+        # Apply persisted Processing-tab defaults now that the widgets exist.
+        self._apply_processing_settings(self._saved_processing_settings)
         self.initialization_successful = True  # Flag to track successful initialization
 
     # Start session methods
@@ -566,7 +795,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             raise IndexError("Session index out of range.")
 
-    def get_all_sessions(self) -> List[Session]:
+    def get_all_sessions(self) -> list[Session]:
         """
         Return a copy of the list of all sessions.
 
@@ -589,7 +818,7 @@ class PreprocessingInterface(QMainWindow):
             session.reset()
         return self.sessions
 
-    def remove_session_by_index(self, index: int) -> List[Session]:
+    def remove_session_by_index(self, index: int) -> list[Session]:
         """
         Remove the session at the given index from the list of sessions.
 
@@ -608,7 +837,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             raise IndexError("Session index out of range.")
 
-    def add_session(self, session: Session) -> List[Session]:
+    def add_session(self, session: Session) -> list[Session]:
         """
         Add a session to the list of sessions.
 
@@ -621,7 +850,7 @@ class PreprocessingInterface(QMainWindow):
         self.sessions.append(session)
         return self.sessions
 
-    def update_session(self, index: int, session: Session) -> List[Session]:
+    def update_session(self, index: int, session: Session) -> list[Session]:
         """
         Update the session at the given index in the list of sessions.
 
@@ -642,7 +871,7 @@ class PreprocessingInterface(QMainWindow):
             raise IndexError("Session index out of range.")
 
     def add_files_to_session(
-        self, session: Session, file_type: str, file_paths: List[Path]
+        self, session: Session, file_type: str, file_paths: list[Path]
     ) -> None:
         if file_type not in FRAME_TYPES:
             raise ValueError(f"Unknown frame type: {file_type}")
@@ -1028,7 +1257,9 @@ class PreprocessingInterface(QMainWindow):
             for ft_map in pending_single_sessions.values():
                 for ft, ft_files in ft_map.items():
                     if ft.startswith("_stacked_"):
-                        stacked_additions.setdefault(ft[len("_stacked_"):], []).extend(ft_files)
+                        stacked_additions.setdefault(ft[len("_stacked_") :], []).extend(
+                            ft_files
+                        )
                     else:
                         folder_additions.setdefault(ft, []).extend(ft_files)
         elif pending_single_sessions:
@@ -1302,8 +1533,13 @@ class PreprocessingInterface(QMainWindow):
 
                     if ALWAYS_SYMLINK or same_drive:
                         try:
-                            os.symlink(src.resolve(strict=False), dest_path.resolve(strict=False))
-                            self.siril.log(f"Symlinked {file} to {dest_path}", LogColor.BLUE)
+                            os.symlink(
+                                src.resolve(strict=False),
+                                dest_path.resolve(strict=False),
+                            )
+                            self.siril.log(
+                                f"Symlinked {file} to {dest_path}", LogColor.BLUE
+                            )
                             continue
                         except (OSError, NotImplementedError):
                             pass  # fall through to copy
@@ -1439,6 +1675,7 @@ class PreprocessingInterface(QMainWindow):
         if os.path.isdir(directory):
             print(f"Found directory for {image_type}: {directory}")
             self.siril.cmd("cd", f'"{directory}"')
+
             # Ignore hidden files and dirs.
             # Also accept symlinks: os.path.isfile() silently returns False for
             # symlinks whose targets live on an untrusted mount (WinError 448).
@@ -1526,9 +1763,7 @@ class PreprocessingInterface(QMainWindow):
         else:
             self.siril.error_messagebox(f"Directory {directory} does not exist", True)
             raise NoImageError(
-                (
-                    f'No directory named "{image_type}" at this location. Make sure the working directory is correct.'
-                )
+                f'No directory named "{image_type}" at this location. Make sure the working directory is correct.'
             )
 
     def local_astrometry_net_available(self):
@@ -1875,7 +2110,7 @@ class PreprocessingInterface(QMainWindow):
             "calibrate",
             f"{seq_name}",
         ]
-        if not self.drizzle_status and not self.mono_check.isChecked():
+        if not self.drizzle_status:
             cmd_args.append("-debayer")
 
         if os.path.exists(
@@ -1955,6 +2190,7 @@ class PreprocessingInterface(QMainWindow):
                 "Number of Stars": "nbstars",
                 "Weighted FWHM": "wfwhm",
                 "Noise": "noise",
+                "Number of Frames": "nbstack",
             }
             weight_option = weighting_map.get(weighting_method, "wfwhm")
             cmd_args.append(f"-weight={weight_option}")
@@ -2051,11 +2287,7 @@ class PreprocessingInterface(QMainWindow):
                 continue
 
             # Check if file starts with prefix_ or pp_flats_
-            if (
-                f.startswith(prefix)
-                or f.startswith(f"{prefix}_")
-                or f.startswith("pp_flats_")
-            ):
+            if f.startswith((prefix, f"{prefix}_", "pp_flats_")):
                 file_path = os.path.join(process_dir, f)
                 if os.path.isfile(file_path):
                     # print(f"Removing: {file_path}")
@@ -2172,9 +2404,6 @@ class PreprocessingInterface(QMainWindow):
             <li><b>Create Paneled Mosaic</b>: Sessions are registered and stacked together
                 with overlap-normalisation to produce a seamless mosaic. Each session should
                 cover a different panel of the same field.</li>
-            <li><b>Mono (Experimental)</b>: For monochrome cameras. Frames are calibrated and
-                stacked individually per session and are <b>not combined</b>. Debayering is
-                skipped. A final mono_stacks folder is created where the stacked and registered mono sessions are saved.</li>
             </ul>
 
             <h3>Create Final Stack</h3>
@@ -2336,6 +2565,28 @@ class PreprocessingInterface(QMainWindow):
         self.file_listbox.setItemDelegate(FileListDelegate(self.file_listbox))
         self.file_listbox.viewport().setMouseTracking(True)
         session_content_layout.addWidget(self.file_listbox)
+
+        # Export sessions to an AstroBin acquisition CSV.
+        export_csv_btn = QPushButton("Export Sessions to CSV")
+        export_csv_btn.setToolTip(
+            "Export each session (date, filter name, frame counts, exposure,\n"
+            "gain, binning, cooling, f-number) to an AstroBin acquisition CSV\n"
+            "file. 'number' and 'duration' are always filled; other columns are\n"
+            "blank when the data is unavailable."
+        )
+        export_csv_btn.setStyleSheet(
+            "QPushButton {"
+            "    background-color: #6f42c1;"
+            "    color: white;"
+            "    border: none;"
+            "    padding: 6px 12px;"
+            "    border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #8250df; }"
+            "QPushButton:pressed { background-color: #5a32a3; }"
+        )
+        export_csv_btn.clicked.connect(self.export_sessions_csv)
+        session_content_layout.addWidget(export_csv_btn)
 
         file_buttons = QHBoxLayout()
         remove_btn = QPushButton("Remove Selected File(s)")
@@ -2645,23 +2896,14 @@ class PreprocessingInterface(QMainWindow):
         )
         self.paneled_mosaic_radio.setEnabled(len(self.sessions) > 1)
 
-        self.mono_radio = QRadioButton("Mono (Experimental)")
-        self.mono_radio.setToolTip(
-            "Experimental: Process images as monochrome (no debayering). Use only for monochrome cameras or special processing needs. Sessions are processed individually — no combined stack is produced."
-        )
-        # Alias so all existing self.mono_check.isChecked() references keep working
-        self.mono_check = self.mono_radio
-
         self.target_mode_button_group = QButtonGroup()
         self.target_mode_button_group.addButton(self.single_target_radio)
         self.target_mode_button_group.addButton(self.multi_target_radio)
         self.target_mode_button_group.addButton(self.paneled_mosaic_radio)
-        self.target_mode_button_group.addButton(self.mono_radio)
 
         target_mode_layout.addWidget(self.single_target_radio)
         target_mode_layout.addWidget(self.multi_target_radio)
         target_mode_layout.addWidget(self.paneled_mosaic_radio)
-        target_mode_layout.addWidget(self.mono_radio)
         target_mode_box.setLayout(target_mode_layout)
         stacking_layout.addWidget(target_mode_box)
 
@@ -2855,7 +3097,7 @@ class PreprocessingInterface(QMainWindow):
         if self.paneled_mosaic_radio.isChecked():
             self.create_final_stack_check.setChecked(True)
             self.create_final_stack_check.setEnabled(False)
-        elif self.multi_target_radio.isChecked() or self.mono_radio.isChecked():
+        elif self.multi_target_radio.isChecked():
             self.create_final_stack_check.setChecked(False)
             self.create_final_stack_check.setEnabled(False)
         else:  # single target
@@ -2876,6 +3118,344 @@ class PreprocessingInterface(QMainWindow):
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
+
+    def _config_path(self) -> Path | None:
+        """Return the path to the shared Naztronomy scripts config JSON, or None.
+
+        The file lives in the Siril user config directory and is shared across
+        the Naztronomy scripts; this script reads/writes its own ``osc`` section
+        so the Processing-tab settings are remembered between runs.
+        """
+        try:
+            config_dir = self.siril.get_siril_configdir()
+        except Exception:
+            return None
+        if not config_dir:
+            return None
+        return Path(config_dir) / "naztronomy_scripts_config.json"
+
+    # Top-level key for this script's settings within the shared config file.
+    _CONFIG_SECTION = "osc"
+
+    def _load_persistent_config(self):
+        """Load the persisted OSC settings: the saved Processing-tab defaults
+        and the last Bortle selection."""
+        path = self._config_path()
+        if not path or not path.is_file():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            return
+        processing = section.get("processing")
+        if isinstance(processing, dict):
+            self._saved_processing_settings = processing
+        self._last_bortle = section.get("bortle", "") or ""
+
+    def _write_config_section(self, updates: dict) -> bool:
+        """Merge ``updates`` into this script's section of the shared config
+        file, preserving other scripts' sections and this section's other keys.
+        """
+        path = self._config_path()
+        if not path:
+            return False
+        data = {}
+        if path.is_file():
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, ValueError):
+                data = {}
+        section = data.get(self._CONFIG_SECTION)
+        if not isinstance(section, dict):
+            section = {}
+        section.update(updates)
+        data[self._CONFIG_SECTION] = section
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            return True
+        except OSError as exc:
+            self.siril.log(f"> Could not save config: {exc}", LogColor.SALMON)
+            return False
+
+    def _collect_processing_settings(self) -> dict:
+        """Snapshot every Processing-tab control as a JSON-serializable dict."""
+        return {
+            "dark_flats": self.dark_flats_check.isChecked(),
+            "bg_extract": self.bg_extract_check.isChecked(),
+            "drizzle": self.drizzle_checkbox.isChecked(),
+            "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
+            "pixel_fraction": round(self.pixel_fraction_spinbox.value(), 2),
+            "feather": self.feather_checkbox.isChecked(),
+            "feather_amount": round(self.feather_amount_spinbox.value(), 0),
+            "filter_round": round(self.roundness_spinbox.value(), 1),
+            "filter_wfwhm": round(self.fwhm_spinbox.value(), 1),
+            "filter_stars": round(self.stars_spinbox.value(), 1),
+            "filter_bkg": round(self.bkg_spinbox.value(), 1),
+            "use_filter_round": self.roundness_check.isChecked(),
+            "use_filter_wfwhm": self.fwhm_check.isChecked(),
+            "use_filter_stars": self.stars_check.isChecked(),
+            "use_filter_bkg": self.bkg_check.isChecked(),
+            "filter_round_mode": self.roundness_mode_combo.currentText(),
+            "filter_wfwhm_mode": self.fwhm_mode_combo.currentText(),
+            "filter_stars_mode": self.stars_mode_combo.currentText(),
+            "filter_bkg_mode": self.bkg_mode_combo.currentText(),
+            "cleanup": self.cleanup_check.isChecked(),
+            "target_mode": (
+                "paneled"
+                if self.paneled_mosaic_radio.isChecked()
+                else "multi" if self.multi_target_radio.isChecked() else "single"
+            ),
+            "create_final_stack": self.create_final_stack_check.isChecked(),
+            "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
+            "output_norm": self.output_norm_check.isChecked(),
+            "stack_weighted": self.weight_stack_check.isChecked(),
+            "weighting_method": self.weight_method_combo.currentText(),
+        }
+
+    def _apply_processing_settings(self, presets: dict):
+        """Apply a saved Processing-tab settings dict to the controls. Missing
+        keys fall back to each control's default."""
+        if not presets:
+            return
+        self.dark_flats_check.setChecked(presets.get("dark_flats", False))
+        self.bg_extract_check.setChecked(presets.get("bg_extract", False))
+        self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
+        self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
+        self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
+        self.feather_checkbox.setChecked(presets.get("feather", False))
+        self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
+        self.roundness_mode_combo.setCurrentText(presets.get("filter_round_mode", "σ"))
+        self.fwhm_mode_combo.setCurrentText(presets.get("filter_wfwhm_mode", "σ"))
+        self.stars_mode_combo.setCurrentText(presets.get("filter_stars_mode", "σ"))
+        self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "σ"))
+        self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
+        self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
+        self.stars_spinbox.setValue(presets.get("filter_stars", 3.0))
+        self.bkg_spinbox.setValue(presets.get("filter_bkg", 3.0))
+        self.roundness_check.setChecked(presets.get("use_filter_round", False))
+        self.fwhm_check.setChecked(presets.get("use_filter_wfwhm", False))
+        self.stars_check.setChecked(presets.get("use_filter_stars", False))
+        self.bkg_check.setChecked(presets.get("use_filter_bkg", False))
+        self.cleanup_check.setChecked(presets.get("cleanup", False))
+        target_mode = presets.get("target_mode", "single")
+        # Support legacy presets that used boolean fields
+        if target_mode == "single" and presets.get("paneled_mosaic", False):
+            target_mode = "paneled"
+        elif target_mode == "single" and presets.get("process_separately", False):
+            target_mode = "multi"
+        if target_mode == "paneled" and len(self.sessions) > 1:
+            self.paneled_mosaic_radio.setChecked(True)
+        elif target_mode == "multi" and len(self.sessions) > 1:
+            self.multi_target_radio.setChecked(True)
+        else:
+            self.single_target_radio.setChecked(True)
+        self.create_final_stack_check.setChecked(
+            presets.get("create_final_stack", True)
+        )
+        self.save_calibrated_lights_check.setChecked(
+            presets.get("save_calibrated_lights", False)
+        )
+        self.output_norm_check.setChecked(presets.get("output_norm", True))
+        self.weight_stack_check.setChecked(presets.get("stack_weighted", False))
+        self.weight_method_combo.setCurrentText(
+            presets.get("weighting_method", "Weighted FWHM")
+        )
+
+    def _save_processing_defaults(self):
+        """Persist the current Processing-tab settings as the new defaults."""
+        if self._write_config_section(
+            {"processing": self._collect_processing_settings()}
+        ):
+            self.siril.log(
+                "> Saved processing settings as the new defaults.", LogColor.BLUE
+            )
+
+    # AstroBin acquisition CSV columns, in order. Only "number" and "duration"
+    # are mandatory; the rest are emitted (header always present) when the data
+    # is available and left blank otherwise.
+    _CSV_COLUMNS = (
+        "date",
+        "filter",
+        "filterName",
+        "number",
+        "duration",
+        "binning",
+        "gain",
+        "sensorCooling",
+        "fNumber",
+        "darks",
+        "flats",
+        "flatDarks",
+        "bias",
+        "bortle",
+    )
+
+    @staticmethod
+    def _csv_num(value):
+        """Format a number for CSV: drop a trailing .0 from whole numbers."""
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _session_csv_row(self, session) -> dict | None:
+        """Build one AstroBin CSV row from a session.
+
+        Returns None when the session has no lights (the row would then have no
+        mandatory 'number'/'duration').
+        """
+        if not session.lights:
+            return None
+
+        meta = _read_light_metadata(session.lights[0])
+
+        duration = meta.get("duration")
+        cooling = meta.get("sensorCooling")
+        row = {
+            "date": meta.get("date", ""),
+            "filter": "",  # AstroBin filter ID — not derivable from headers
+            "filterName": meta.get("filterName", ""),
+            "number": str(len(session.lights)),
+            "duration": self._csv_num(duration),
+            "binning": self._csv_num(meta.get("binning")),
+            "gain": self._csv_num(meta.get("gain")),
+            "sensorCooling": (
+                self._csv_num(round(cooling)) if cooling is not None else ""
+            ),
+            "fNumber": f"{meta['fNumber']:.2f}" if "fNumber" in meta else "",
+            "darks": str(len(session.darks)) if session.darks else "",
+            "flats": str(len(session.flats)) if session.flats else "",
+            "flatDarks": "",  # flat-darks are not tracked per session
+            "bias": str(len(session.biases)) if session.biases else "",
+            "bortle": "",  # sky quality — not derivable from headers
+        }
+        return row
+
+    def _prompt_bortle(self) -> str | None:
+        """Pop up a small dialog asking for the Bortle scale to apply to every
+        row. Returns the chosen value as a string ("" when 'Leave blank' is
+        selected), or None if the user cancels."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Bortle Sky Quality")
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel("Select the Bortle scale to apply to every session:")
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.addItem("", "")
+        bortle_descriptions = {
+            1: "Excellent dark-sky site",
+            2: "Typical truly dark site",
+            3: "Rural sky",
+            4: "Rural/suburban transition",
+            5: "Suburban sky",
+            6: "Bright suburban sky",
+            7: "Suburban/urban transition",
+            8: "City sky",
+            9: "Inner-city sky",
+        }
+        for value, desc in bortle_descriptions.items():
+            combo.addItem(f"{value} \u2014 {desc}", str(value))
+        # Pre-select the last used Bortle value, if one was saved.
+        saved_idx = combo.findData(self._last_bortle or "")
+        if saved_idx >= 0:
+            combo.setCurrentIndex(saved_idx)
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return combo.currentData()
+
+    def export_sessions_csv(self):
+        """Export all sessions with lights to an AstroBin acquisition CSV."""
+        rows = []
+        for session in self.sessions:
+            row = self._session_csv_row(session)
+            if row is not None:
+                rows.append(row)
+
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Export Sessions to CSV",
+                "No sessions with light frames to export.",
+            )
+            return
+
+        missing_duration = sum(1 for r in rows if not r["duration"])
+        if missing_duration:
+            self.siril.log(
+                f"> {missing_duration} session(s) have no detectable exposure "
+                "time; their 'duration' column will be blank.",
+                LogColor.SALMON,
+            )
+
+        # Ask for the Bortle sky-quality scale and apply it to every row.
+        bortle = self._prompt_bortle()
+        if bortle is None:
+            return  # user cancelled
+        # Remember the choice so it pre-fills next time.
+        self._last_bortle = bortle
+        self._write_config_section({"bortle": bortle})
+        for row in rows:
+            row["bortle"] = bortle
+
+        try:
+            start_dir = self.siril.get_siril_wd()
+        except Exception:
+            start_dir = ""
+        default_path = os.path.join(start_dir, "astrobin_acquisitions.csv")
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Sessions to CSV",
+            default_path,
+            "CSV Files (*.csv)",
+        )
+        if not save_path:
+            return
+        if not save_path.lower().endswith(".csv"):
+            save_path += ".csv"
+
+        try:
+            with open(save_path, "w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(self._CSV_COLUMNS))
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as exc:
+            self.siril.log(f"Failed to export CSV: {exc}", LogColor.RED)
+            QMessageBox.warning(
+                self,
+                "Export Sessions to CSV",
+                f"Could not write the CSV file:\n{exc}",
+            )
+            return
+
+        self.siril.log(
+            f"Exported {len(rows)} session(s) to {save_path}", LogColor.GREEN
+        )
 
     def save_presets(self, filepath=None):
         """Save current UI settings and session data to a preset file.
@@ -2909,11 +3489,7 @@ class PreprocessingInterface(QMainWindow):
             "target_mode": (
                 "paneled"
                 if self.paneled_mosaic_radio.isChecked()
-                else (
-                    "multi"
-                    if self.multi_target_radio.isChecked()
-                    else "mono" if self.mono_radio.isChecked() else "single"
-                )
+                else "multi" if self.multi_target_radio.isChecked() else "single"
             ),
             "create_final_stack": self.create_final_stack_check.isChecked(),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
@@ -3012,65 +3588,7 @@ class PreprocessingInterface(QMainWindow):
                 presets = json.load(f)
 
                 # Load UI settings
-                self.dark_flats_check.setChecked(presets.get("dark_flats", False))
-                self.bg_extract_check.setChecked(presets.get("bg_extract", False))
-                self.astrometry_net_check.setChecked(
-                    self.astrometry_net_available
-                    and presets.get("use_astrometry_net", False)
-                )
-                self.drizzle_checkbox.setChecked(presets.get("drizzle", False))
-                self.drizzle_amount_spinbox.setValue(presets.get("drizzle_amount", 1.0))
-                self.pixel_fraction_spinbox.setValue(presets.get("pixel_fraction", 1.0))
-                self.feather_checkbox.setChecked(presets.get("feather", False))
-                self.feather_amount_spinbox.setValue(presets.get("feather_amount", 20))
-                self.roundness_mode_combo.setCurrentText(
-                    presets.get("filter_round_mode", "σ")
-                )
-                self.fwhm_mode_combo.setCurrentText(
-                    presets.get("filter_wfwhm_mode", "σ")
-                )
-                self.stars_mode_combo.setCurrentText(
-                    presets.get("filter_stars_mode", "σ")
-                )
-                self.bkg_mode_combo.setCurrentText(presets.get("filter_bkg_mode", "σ"))
-                self.roundness_spinbox.setValue(presets.get("filter_round", 3.0))
-                self.fwhm_spinbox.setValue(presets.get("filter_wfwhm", 3.0))
-                self.stars_spinbox.setValue(presets.get("filter_stars", 3.0))
-                self.bkg_spinbox.setValue(presets.get("filter_bkg", 3.0))
-                self.roundness_check.setChecked(presets.get("use_filter_round", False))
-                self.fwhm_check.setChecked(presets.get("use_filter_wfwhm", False))
-                self.stars_check.setChecked(presets.get("use_filter_stars", False))
-                self.bkg_check.setChecked(presets.get("use_filter_bkg", False))
-                self.cleanup_check.setChecked(presets.get("cleanup", False))
-                target_mode = presets.get("target_mode", "single")
-                # Support legacy presets that used boolean fields
-                if target_mode == "single" and presets.get("paneled_mosaic", False):
-                    target_mode = "paneled"
-                elif target_mode == "single" and presets.get(
-                    "process_separately", False
-                ):
-                    target_mode = "multi"
-                elif target_mode == "single" and presets.get("mono", False):
-                    target_mode = "mono"
-                if target_mode == "paneled" and len(self.sessions) > 1:
-                    self.paneled_mosaic_radio.setChecked(True)
-                elif target_mode == "multi" and len(self.sessions) > 1:
-                    self.multi_target_radio.setChecked(True)
-                elif target_mode == "mono":
-                    self.mono_radio.setChecked(True)
-                else:
-                    self.single_target_radio.setChecked(True)
-                self.create_final_stack_check.setChecked(
-                    presets.get("create_final_stack", True)
-                )
-                self.save_calibrated_lights_check.setChecked(
-                    presets.get("save_calibrated_lights", False)
-                )
-                self.output_norm_check.setChecked(presets.get("output_norm", True))
-                self.weight_stack_check.setChecked(presets.get("stack_weighted", False))
-                self.weight_method_combo.setCurrentText(
-                    presets.get("weighting_method", "Weighted FWHM")
-                )
+                self._apply_processing_settings(presets)
 
                 # Load session data
                 sessions_data = presets.get("sessions", [])
@@ -3107,7 +3625,7 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.GREEN,
                 )
         except Exception as e:
-            self.siril.log(f"Error loading presets: {str(e)}", LogColor.RED)
+            self.siril.log(f"Error loading presets: {e!s}", LogColor.RED)
 
     def load_presets_from(self):
         """Load presets from a user-chosen file."""
@@ -3170,6 +3688,9 @@ class PreprocessingInterface(QMainWindow):
             )
             return
 
+        # Persist the current Processing-tab selections as the new defaults.
+        self._save_processing_defaults()
+
         self.siril.log(
             f"Running script version {VERSION} with arguments:\n"
             f"dark_flats={self.dark_flats_check.isChecked()}\n"
@@ -3190,7 +3711,7 @@ class PreprocessingInterface(QMainWindow):
             f"paneled_mosaic={paneled_mosaic}\n"
             f"create_final_stack={self.create_final_stack_check.isChecked()}\n"
             f"save_calibrated_lights={self.save_calibrated_lights_check.isChecked()}\n"
-            f"target_mode={'paneled mosaic' if self.paneled_mosaic_radio.isChecked() else 'multi target' if self.multi_target_radio.isChecked() else 'mono' if self.mono_radio.isChecked() else 'single target'}\n"
+            f"target_mode={'paneled mosaic' if self.paneled_mosaic_radio.isChecked() else 'multi target' if self.multi_target_radio.isChecked() else 'single target'}\n"
             f"stack_weighted={stack_weighted} method={weighting_method}\n"
             f"output_norm={output_norm}\n"
             f"build={VERSION}-{BUILD}",
@@ -3203,12 +3724,11 @@ class PreprocessingInterface(QMainWindow):
             os.path.exists("sessions")
             or os.path.exists("process")
             or os.path.exists("collected_lights")
-            or os.path.exists("mono_stacks")
             or os.path.exists("individual_stacks")
             or os.path.exists("paneled_mosaic_process")
             or os.path.exists("final_stack_process")
         ):
-            msg = """One or more old processing directories found (sessions, process, collected_lights, mono_stacks, individual_stacks, paneled_mosaic_process). 
+            msg = """One or more old processing directories found (sessions, process, collected_lights, individual_stacks, paneled_mosaic_process). 
                 \nDo you want to delete them and start fresh?
                 \nNote: There is no way to recover this data if you choose 'Yes'."""
             answer = QMessageBox.question(
@@ -3228,11 +3748,6 @@ class PreprocessingInterface(QMainWindow):
                     shutil.rmtree("collected_lights", ignore_errors=True)
                     self.siril.log(
                         "Cleaned up old collected_lights directory", LogColor.BLUE
-                    )
-                if os.path.exists("mono_stacks"):
-                    shutil.rmtree("mono_stacks", ignore_errors=True)
-                    self.siril.log(
-                        "Cleaned up old mono_stacks directory", LogColor.BLUE
                     )
                 if os.path.exists("individual_stacks"):
                     shutil.rmtree("individual_stacks", ignore_errors=True)
@@ -3271,7 +3786,6 @@ class PreprocessingInterface(QMainWindow):
             self.single_target_radio.isChecked()
             and self.create_final_stack_check.isChecked()
             and not save_calibrated_lights
-            and not self.mono_check.isChecked()
         )
 
         for idx, session in enumerate(
@@ -3349,20 +3863,14 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
 
-            # Process separately if requested or mono is selected
+            # Process separately if requested (multi target / paneled mosaic) or a
+            # single-target final stack is built from per-session stacks.
             # IF paneled mosaic, create the individual stacks dir and images in there for later processing
-            if (
-                process_separately
-                or self.mono_check.isChecked()
-                or needs_per_session_stack
-            ):
+            if process_separately or needs_per_session_stack:
                 # Create individual_stacks directory
-                dirname = (
-                    "mono_stacks"
-                    if self.mono_check.isChecked()
-                    else "individual_stacks"
+                individual_stacks_dir = os.path.join(
+                    self.home_directory, "individual_stacks"
                 )
-                individual_stacks_dir = os.path.join(self.home_directory, dirname)
                 os.makedirs(individual_stacks_dir, exist_ok=True)
 
                 # Process this session individually
@@ -3447,11 +3955,7 @@ class PreprocessingInterface(QMainWindow):
                     "process",
                     f"{individual_file_name}{self.fits_extension}",
                 )
-                new_dst_filename = (
-                    "mono_" + individual_file_name
-                    if self.mono_check.isChecked()
-                    else individual_file_name
-                )
+                new_dst_filename = individual_file_name
                 dst_individual = os.path.join(
                     individual_stacks_dir, f"{new_dst_filename}{self.fits_extension}"
                 )
@@ -3484,111 +3988,7 @@ class PreprocessingInterface(QMainWindow):
             self.siril.cmd("close")
             time.sleep(3)  # Small delay to ensure Siril processes the command
 
-        if self.mono_check.isChecked():
-            # TODO: If mono, go into the mono_stacks directory and combine all session stacks into one sequence and register them but not stack
-            self.siril.log(
-                "Mono checked: " + str(self.mono_check.isChecked()), LogColor.BLUE
-            )
-            mono_dir = "mono_stacks"
-            fits_files = [
-                fname
-                for fname in os.listdir(mono_dir)
-                if fname.startswith("mono_")
-                and fname.endswith(self.fits_extension)
-                and not fname.startswith(".")
-            ]
-            self.siril.log(
-                f"Found {len(fits_files)} mono_*.fits files in {mono_dir}",
-                LogColor.BLUE,
-            )
-            if len(fits_files) > 1:
-                self.siril.cmd("cd", f'"{mono_dir}"')
-                cwd = self.siril.get_siril_wd()
-                # Move all mono_*.fits files into a "lights" folder
-                mono_lights_dir = os.path.join(mono_dir, "lights")
-                os.makedirs(mono_lights_dir, exist_ok=True)
-                for fname in fits_files:
-                    src = os.path.join(mono_dir, fname)
-                    dst = os.path.join(mono_lights_dir, fname)
-                    shutil.copy2(src, dst)
-
-                # Call the convert command on the lights folder
-                args = ["convert", "lights", "-out=../mono_process"]
-                self.siril.log(" ".join(str(arg) for arg in args), LogColor.GREEN)
-                self.siril.cmd(*args)
-
-                # Go into the process directory
-                self.siril.cmd("cd", "../mono_process")
-
-                # Register and apply registration to the lights_ sequence
-                seq_name = "lights_"
-                cmd_args = ["register", seq_name, "-2pass"]
-                try:
-                    self.siril.cmd(*cmd_args)
-                except (s.DataError, s.CommandError, s.SirilError) as e:
-                    self.siril.log(f"Data error occurred: {e}", LogColor.RED)
-
-                cmd_args = ["seqapplyreg", seq_name]
-
-                self.siril.log(
-                    "Command arguments: " + " ".join(cmd_args), LogColor.BLUE
-                )
-
-                try:
-                    self.siril.cmd(*cmd_args)
-                except (s.DataError, s.CommandError, s.SirilError) as e:
-                    self.siril.log(f"Data error occurred: {e}", LogColor.RED)
-
-                self.siril.log(
-                    f"Applied existing registration to seq {seq_name}", LogColor.GREEN
-                )
-
-                # Read the lights_conversion.txt file
-                conversion_file = os.path.join(
-                    os.getcwd(), "mono_process", "lights_conversion.txt"
-                )
-                self.siril.log(
-                    f"Looking for lights_conversion.txt in: {os.getcwd()}, {conversion_file}",
-                    LogColor.BLUE,
-                )
-                if os.path.exists(conversion_file):
-                    with open(conversion_file, "r") as f:
-                        print(f"Opened conversion file: {conversion_file}")
-                        for line in f:
-                            if "->" in line:
-                                src_path, dest_path = line.strip().split(" -> ")
-                                src_path = src_path.strip("'")
-                                dest_path = dest_path.strip("'")
-
-                                # Get the original filename from the source path
-                                original_name = os.path.basename(src_path)
-
-                                # Create new filename with 'r_' prefix
-                                new_name = "r_" + original_name
-                                # Get the destination file (lights_xxxxx.fits)
-                                dest_file = os.path.basename(dest_path)
-                                # Full path to the registered file (r_lights_xxxxx.fits)
-                                registered_file = os.path.join(
-                                    os.getcwd(), "mono_process", "r_" + dest_file
-                                )
-                                # New destination in mono_stacks
-                                final_dest = os.path.join(mono_dir, new_name)
-                                # Move the file if it exists
-                                if os.path.exists(registered_file):
-                                    shutil.move(registered_file, final_dest)
-                                    self.siril.log(
-                                        f"Moved {registered_file} to {final_dest}",
-                                        LogColor.BLUE,
-                                    )
-                else:
-                    self.siril.log("lights_conversion.txt not found", LogColor.SALMON)
-                self.siril.cmd("cd", "../")
-
-        if (
-            not self.mono_check.isChecked()
-            and self.create_final_stack_check.isChecked()
-            and save_calibrated_lights
-        ):
+        if self.create_final_stack_check.isChecked() and save_calibrated_lights:
             self.siril.cmd("cd", f'"{self.collected_lights_dir}"')
             self.current_working_directory = self.siril.get_siril_wd()
             # Create a new sequence for each session
@@ -3703,8 +4103,7 @@ class PreprocessingInterface(QMainWindow):
             file_name = self.save_image("_og")
             self.load_image(image_name=file_name)
         elif (
-            not self.mono_check.isChecked()
-            and self.create_final_stack_check.isChecked()
+            self.create_final_stack_check.isChecked()
             and self.multi_target_radio.isChecked()
         ):
             self.siril.log(
@@ -3804,6 +4203,9 @@ class PreprocessingInterface(QMainWindow):
                     output_name="final_stacked",
                     overlap_norm=False,
                     output_norm=output_norm,
+                    # Combining per-session masters: always weight by how many
+                    # subs went into each master (STACKCNT) so longer sessions
+                    # contribute proportionally more. Overrides the UI setting.
                     stack_weighted=stack_weighted,
                     weighting_method=weighting_method,
                 )
@@ -3833,14 +4235,10 @@ class PreprocessingInterface(QMainWindow):
                     f"Looking for individual stacks in: {individual_stacks_dir}",
                     LogColor.BLUE,
                 )
-                # Look for individual stack files (not prefixed with "mono_" unless mono is checked)
-                search_prefix = "mono_" if self.mono_check.isChecked() else ""
                 fits_files = [
                     fname
                     for fname in os.listdir(individual_stacks_dir)
-                    if fname.endswith(self.fits_extension)
-                    and fname.startswith(search_prefix)
-                    and not fname.startswith(".")
+                    if fname.endswith(self.fits_extension) and not fname.startswith(".")
                 ]
 
                 self.siril.log(
@@ -4032,7 +4430,7 @@ class PreprocessingInterface(QMainWindow):
                     )
             else:
                 self.siril.log(
-                    f"Individual stacks directory not found, skipping paneled mosaic",
+                    "Individual stacks directory not found, skipping paneled mosaic",
                     LogColor.SALMON,
                 )
 
@@ -4072,19 +4470,6 @@ class PreprocessingInterface(QMainWindow):
                 self.siril.log(
                     f"Collected Lights Dir not found, skipping: {e}", LogColor.SALMON
                 )
-
-            if self.mono_check.isChecked():
-                shutil.rmtree(
-                    os.path.join(self.current_working_directory, "mono_process"),
-                    ignore_errors=True,
-                )
-                shutil.rmtree(
-                    os.path.join(
-                        self.current_working_directory, "mono_stacks", "lights"
-                    ),
-                    ignore_errors=True,
-                )
-                self.siril.log("Cleaned up mono_process directory", LogColor.BLUE)
 
             # Clean up paneled_mosaic_process but preserve individual_stacks
             paneled_mosaic_process_dir = os.path.join(
@@ -4140,7 +4525,7 @@ def main():
             # User canceled during initialization - exit gracefully
             sys.exit(0)
     except Exception as e:
-        print(f"Error initializing application: {str(e)}")
+        print(f"Error initializing application: {e!s}")
         sys.exit(1)
 
 
