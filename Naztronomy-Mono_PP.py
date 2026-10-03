@@ -202,6 +202,8 @@ def _is_xisf_file(path) -> bool:
 
 def _is_supported_input(path) -> bool:
     """Return True if `path` is an accepted input frame (FITS or XISF)."""
+    if Path(path).name.startswith("."):
+        return False
     return _is_fits_file(path) or _is_xisf_file(path)
 
 
