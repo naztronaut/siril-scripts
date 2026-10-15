@@ -1234,41 +1234,70 @@ class PreprocessingInterface(QMainWindow):
         self.refresh_file_list()
         self.update_process_separately_checkbox()  # Update checkbox state
 
+    def _is_mosaic_mode(self) -> bool:
+        """True when the Mosaic radio is present and selected."""
+        mosaic = getattr(self, "mosaic_radio", None)
+        return bool(mosaic is not None and mosaic.isChecked())
+
+    def _combine_group_key(self, sess):
+        """Grouping key for Combine Like Filters. In mosaic mode sessions are keyed
+        by (panel, filter) so like filters combine within a panel; in single-target
+        mode by filter alone. Returns None when the session has no filter tag."""
+        filt = getattr(sess, "filter", None)
+        if not filt:
+            return None
+        if self._is_mosaic_mode():
+            return (getattr(sess, "panel", None), filt)
+        return filt
+
+    @staticmethod
+    def _combine_group_label(key) -> str:
+        """Human-readable label for a combine group key."""
+        if isinstance(key, tuple):
+            panel, filt = key
+            return f"{panel} - {filt}" if panel else filt
+        return key
+
+    @staticmethod
+    def _combine_group_sort_key(key):
+        """Order groups by panel (numerically) then filter in mosaic mode, or by
+        filter alone in single-target mode."""
+        if isinstance(key, tuple):
+            panel, filt = key
+            panel_key = _panel_sort_key(panel) if panel else (0, 0)
+            return (0, panel_key, _filter_sort_key(filt))
+        return (0, (0, 0), _filter_sort_key(key))
+
     def _filter_groups_for_combine(self) -> dict:
-        """Return {filter: [session indices]} for real-filter groups containing two
-        or more sessions. Sessions with no filter tag are excluded."""
-        groups: dict[str, list[int]] = {}
+        """Return {group_key: [session indices]} for groups containing two or more
+        sessions. The group key is (panel, filter) in mosaic mode or filter in
+        single-target mode. Sessions with no filter tag are excluded."""
+        groups: dict = {}
         for i, sess in enumerate(self.sessions):
-            filt = getattr(sess, "filter", None)
-            if filt:
-                groups.setdefault(filt, []).append(i)
-        return {f: idxs for f, idxs in groups.items() if len(idxs) > 1}
+            key = self._combine_group_key(sess)
+            if key is not None:
+                groups.setdefault(key, []).append(i)
+        return {k: idxs for k, idxs in groups.items() if len(idxs) > 1}
 
     def _update_combine_button_state(self):
-        """Enable Combine Like Filters only in single-target mode when at least one
-        filter is shared by two or more sessions."""
+        """Enable Combine Like Filters whenever a group (filter in single-target, or
+        panel+filter in mosaic mode) is shared by two or more sessions."""
         btn = getattr(self, "combine_filters_btn", None)
         if btn is None:
             return
-        mosaic = getattr(self, "mosaic_radio", None)
-        is_single = (mosaic is None) or (not mosaic.isChecked())
-        btn.setEnabled(bool(is_single and self._filter_groups_for_combine()))
+        btn.setEnabled(bool(self._filter_groups_for_combine()))
 
     def combine_like_filters(self):
-        """Single-target mode: merge all sessions that share the same filter into one
-        session per filter.
+        """Merge sessions that share a filter into one session per group.
 
-        Lights are pooled (de-duplicated, order preserved). Calibration frames are
-        taken from the first session in each filter group that has them; any extra
-        calibration sets are discarded. Sessions with no filter tag are left as-is.
+        In single-target mode sessions are grouped by filter; in mosaic mode by
+        (panel, filter) so like filters combine within each panel without mixing
+        panels together. Lights are pooled (de-duplicated, order preserved).
+        Calibration frames are taken from the first session in each group that has
+        them; any extra calibration sets are discarded. Sessions with no filter tag
+        are left as-is.
         """
-        mosaic = getattr(self, "mosaic_radio", None)
-        if mosaic is not None and mosaic.isChecked():
-            self.siril.log(
-                "Combine Like Filters is only available in single-target mode.",
-                LogColor.SALMON,
-            )
-            return
+        mosaic = self._is_mosaic_mode()
 
         groups = self._filter_groups_for_combine()
         if not groups:
@@ -1277,23 +1306,29 @@ class PreprocessingInterface(QMainWindow):
             )
             return
 
-        ordered = sorted(groups.items(), key=lambda kv: _filter_sort_key(kv[0]))
+        ordered = sorted(groups.items(), key=lambda kv: self._combine_group_sort_key(kv[0]))
         total_before = len(self.sessions)
         merged_away = sum(len(idxs) - 1 for idxs in groups.values())
         total_after = total_before - merged_away
         plan_lines = "\n".join(
-            f"\u2022 {filt}: {len(idxs)} sessions \u2192 1" for filt, idxs in ordered
+            f"\u2022 {self._combine_group_label(key)}: {len(idxs)} sessions \u2192 1"
+            for key, idxs in ordered
+        )
+        scope = (
+            "share a filter within each panel"
+            if mosaic
+            else "share a filter"
         )
 
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Combine Like Filters")
         msg.setText(
-            "Combine sessions that share a filter?\n\n"
+            f"Combine sessions that {scope}?\n\n"
             f"{plan_lines}\n\n"
             f"Sessions: {total_before} \u2192 {total_after}\n\n"
             "Lights are pooled. Calibration frames are kept from the first session\n"
-            "in each filter group that has them; extra calibration sets are discarded."
+            "in each group that has them; extra calibration sets are discarded."
         )
         btn_ok = msg.addButton("Combine", QMessageBox.ButtonRole.AcceptRole)
         msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
@@ -1301,18 +1336,18 @@ class PreprocessingInterface(QMainWindow):
         if msg.clickedButton() is not btn_ok:
             return
 
-        # Merge, preserving overall order by each filter's first appearance.
+        # Merge, preserving overall order by each group's first appearance.
         new_sessions: list[Session] = []
-        target_by_filter: dict[str, Session] = {}
+        target_by_key: dict = {}
         dropped_cals = 0
         for sess in self.sessions:
-            filt = getattr(sess, "filter", None)
-            if not filt:
+            key = self._combine_group_key(sess)
+            if key is None:
                 new_sessions.append(sess)
                 continue
-            target = target_by_filter.get(filt)
+            target = target_by_key.get(key)
             if target is None:
-                target_by_filter[filt] = sess
+                target_by_key[key] = sess
                 new_sessions.append(sess)
                 continue
             # Pool lights (skip duplicates already present in the target).
@@ -1344,7 +1379,8 @@ class PreprocessingInterface(QMainWindow):
         self.update_process_separately_checkbox()
 
         summary = ", ".join(
-            f"{filt} \u00d7{len(idxs)}\u21921" for filt, idxs in ordered
+            f"{self._combine_group_label(key)} \u00d7{len(idxs)}\u21921"
+            for key, idxs in ordered
         )
         self.siril.log(f"> Combined like filters: {summary}.", LogColor.GREEN)
         if dropped_cals:
@@ -4483,10 +4519,11 @@ class PreprocessingInterface(QMainWindow):
 
         self.combine_filters_btn = QPushButton("Combine Like Filters")
         self.combine_filters_btn.setToolTip(
-            "Single-target mode: merge every session that shares the same filter into\n"
-            "one session each (lights pooled). Calibration frames are taken from the\n"
-            "first session in each filter group that has them. Enabled only when two or\n"
-            "more sessions share a filter."
+            "Merge sessions that share a filter into one session each (lights pooled).\n"
+            "Single-target mode groups by filter; mosaic mode groups by filter within\n"
+            "each panel so panels stay separate. Calibration frames are taken from the\n"
+            "first session in each group that has them. Enabled only when two or more\n"
+            "sessions share a group."
         )
         self.combine_filters_btn.clicked.connect(self.combine_like_filters)
         self.combine_filters_btn.setEnabled(False)
