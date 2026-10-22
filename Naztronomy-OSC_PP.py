@@ -1799,37 +1799,144 @@ class PreprocessingInterface(QMainWindow):
         return False
 
     # Plate solve on sequence runs when file count < 2048
+    def restore_plate_solve_selection(self, seq_name, selection):
+        """Restore pre-solve inclusion using persistent Siril select commands."""
+        # Siril 1.4.4 select/unselect use one-based sequence positions, not FITS file numbers.
+        # Group adjacent indices to avoid one command per exposure.
+        runs = []
+        for number, included in selection:
+            if runs and runs[-1][2] == included and number == runs[-1][1] + 1:
+                runs[-1][1] = number
+            else:
+                runs.append([number, number, included])
+        for first, last, included in runs:
+            self.siril.cmd("select" if included else "unselect", seq_name, first, last)
+
     def seq_plate_solve(self, seq_name, use_astrometry_net=False):
-        """Runs the siril command 'seqplatesolve' to plate solve the converted files."""
-        # self.siril.cmd("cd", "process")
-        args = ["seqplatesolve", seq_name]
-
-        args.extend(["-nocache", "-force", "-disto=ps_distortion"])
-
+        """Solve the selected frames, restoring failed frames before each retry."""
+        args = ["seqplatesolve", seq_name, "-nocache", "-force", "-disto=ps_distortion"]
         try:
-            self.siril.cmd(*args)
-            self.siril.log(f"Platesolved {seq_name}", LogColor.GREEN)
-            return True
-        except (s.DataError, s.CommandError, s.SirilError) as e:
+            root = seq_name.removesuffix(".seq")
+            directory = Path(self.siril.get_siril_wd())
+            sequence_file = directory / f"{root}.seq"
+            if not sequence_file.exists():
+                alternate = directory / f"{root}_.seq"
+                if alternate.exists():
+                    sequence_file = alternate
+                elif not self.siril.create_new_seq(root):
+                    raise s.SirilError(f"Could not create sequence {seq_name}")
+
+            def included_frames():
+                # Siril persists inclusion flags in I records. Read the file so
+                # this also works in CLI mode, where load_seq is not scriptable.
+                rows = [line.split() for line in sequence_file.read_text().splitlines()
+                        if line.startswith("I ")]
+                if not rows:
+                    raise s.SirilError(f"No image records in {sequence_file}")
+                return {i for i, row in enumerate(rows, 1) if int(row[2]) != 0}
+
+            selected = sorted(included_frames())
+
+            def restore_selection():
+                # select uses 1-based sequence positions, not FITS suffixes.
+                start = end = selected[0]
+                for index in selected[1:]:
+                    if index == end + 1:
+                        end = index
+                    else:
+                        self.siril.cmd("select", seq_name, start, end)
+                        start = end = index
+                self.siril.cmd("select", seq_name, start, end)
+
+            if not selected:
+                self.siril.log(f"No selected frames in {seq_name}", LogColor.SALMON)
+                return False
+
+            attempts = [("Siril", args)]
             if use_astrometry_net and self.astrometry_net_available:
-                self.siril.log(
-                    f"Siril seqplatesolve reported a failure; retrying unsolved "
-                    f"frames with local astrometry.net (slower): {e}",
-                    LogColor.SALMON,
-                )
                 fallback_args = [arg for arg in args if arg != "-force"]
-                fallback_args.extend(["-localasnet", "-blindpos", "-blindres"])
+                fallback_args.append("-localasnet")
+                # Keep existing solutions during retries. A usable partial
+                # result returns below before any fallback can overwrite it.
+                attempts.extend([
+                    ("Astrometry.net using image position and scale", fallback_args),
+                    ("Astrometry.net blind position and scale",
+                     [arg for arg in fallback_args if arg != "-force"] +
+                     ["-blindpos", "-blindres"]),
+                ])
+
+            last_error = None
+            for attempt, (solve_mode, command) in enumerate(attempts):
+                if attempt:
+                    # seqplatesolve excludes failures. Restore only the original
+                    # selection, preserving black-frame and user exclusions.
+                    restore_selection()
+                self.siril.log(f"Plate solving {seq_name}: {solve_mode}", LogColor.SALMON)
+                command_error = None
                 try:
-                    self.siril.cmd(*fallback_args)
+                    self.siril.cmd(*command)
+                except (s.DataError, s.CommandError, s.SirilError, OSError, ValueError, IndexError) as error:
+                    command_error = error
+
+                # Siril can report command success after a partial sequence solve.
+                # Check the resulting selection instead of relying on that status.
+                included = included_frames()
+                solved = len(set(selected) & included)
+                # A partial astrometric solution is usable. Do not replace it
+                # with global registration merely because other frames failed.
+                # Inclusion alone is not proof: failed commands can leave all
+                # frames selected, so require complete, non-singular matrices.
+                valid = set()
+                registration = {}
+                for line in sequence_file.read_text().splitlines():
+                    row = line.split()
+                    if row and row[0].startswith("R") and row[0][1:].isdigit():
+                        registration.setdefault(row[0], []).append(row)
+                frame_count = sum(line.startswith("I ") for line in
+                                  sequence_file.read_text().splitlines())
+                for rows in registration.values():
+                    if len(rows) != frame_count:
+                        continue
+                    layer_valid = set()
+                    for index, row in enumerate(rows, 1):
+                        if index not in selected or index not in included:
+                            continue
+                        try:
+                            matrix = np.asarray(row[row.index("H") + 1:], dtype=float)
+                            if (matrix.size == 9 and np.isfinite(matrix).all()
+                                    and abs(np.linalg.det(matrix.reshape(3, 3))) > 1e-12):
+                                layer_valid.add(index)
+                        except (ValueError, IndexError):
+                            continue
+                    if len(layer_valid) > len(valid):
+                        valid = layer_valid
+                if command_error is None and len(valid) >= 2:
+                    self.restore_plate_solve_selection(
+                        seq_name, [(index, index in valid)
+                                   for index in range(1, frame_count + 1)],
+                    )
                     self.siril.log(
-                        f"Astrometry.net fallback completed for {seq_name}",
-                        LogColor.GREEN,
+                        f"Keeping astrometric registration for {len(valid)}/{len(selected)} "
+                        f"selected frames ({solve_mode}); "
+                        f"{len(selected) - len(valid)} unsolved frames remain excluded. "
+                        "Skipping whole-sequence registration fallback.", LogColor.GREEN,
                     )
                     return True
-                except (s.DataError, s.CommandError, s.SirilError) as fallback_error:
-                    e = fallback_error
+                last_error = command_error or f"only {solved}/{len(selected)} frames solved"
+                self.siril.log(
+                    f"{solve_mode}: {solved}/{len(selected)} frames solved; {last_error}",
+                    LogColor.SALMON,
+                )
+
+            restore_selection()
             self.siril.log(
-                f"seqplatesolve failed, going to try regular registration: {e}",
+                f"seqplatesolve incomplete, going to try regular registration: {last_error}",
+                LogColor.SALMON,
+            )
+            return False
+        except (s.DataError, s.CommandError, s.SirilError, OSError, ValueError, IndexError) as error:
+            self.siril.log(
+                f"seqplatesolve failed, going to try regular registration: {error}",
                 LogColor.SALMON,
             )
             return False
@@ -2643,9 +2750,10 @@ class PreprocessingInterface(QMainWindow):
             "Fall back to local astrometry.net for unsolved frames (slower)"
         )
         self.astrometry_net_check.setToolTip(
-            "After Siril's built-in sequence solve reports a failure, retry only "
-            "frames without an existing astrometric solution using local "
-            "astrometry.net. Requires suitable astrometry.net index files."
+            "Keep successful plate solves when at least two selected frames have "
+            "valid registration. If no usable subset remains, retry with local "
+            "astrometry.net without forcing existing solutions to be replaced. "
+            "Requires suitable astrometry.net index files."
         )
         if self.astrometry_net_available:
             preprocessing_layout.addWidget(self.astrometry_net_check)
