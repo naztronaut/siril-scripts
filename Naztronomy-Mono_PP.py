@@ -4064,6 +4064,18 @@ class PreprocessingInterface(QMainWindow):
                     and not name.startswith(".")
                 )
                 src = os.path.join(directory, first_file)
+                # Copy from the symlink's real target; reading through the link
+                # fails on Windows when it points to an untrusted mount (WinError 448).
+                if os.path.islink(src):
+                    target = os.readlink(src)
+                    if not os.path.isabs(target):
+                        target = os.path.join(directory, target)
+                    self.siril.log(
+                        f"Master {image_type} is a symlink to: {target} "
+                        f"(exists: {os.path.exists(target)})",
+                        LogColor.BLUE,
+                    )
+                    src = target
 
                 process_dir = os.path.join(self.current_working_directory, "process")
                 os.makedirs(process_dir, exist_ok=True)
@@ -4084,7 +4096,7 @@ class PreprocessingInterface(QMainWindow):
                     # inside a .fit file, so let Siril load it and re-save it as a
                     # genuine FITS master.
                     try:
-                        self.siril.cmd("load", f'"{first_file}"')
+                        self.siril.cmd("load", f'"{src}"')
                         self.siril.cmd("save", f'"../process/{image_type}_stacked"')
                         self.siril.cmd("close")
                         self.siril.log(
