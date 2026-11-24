@@ -3,7 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Naztronomy - Mono Image Preprocessing script
-Version: 1.0.0
+Version: 1.0.1
 =====================================
 
 The author of this script is Nazmus Nasir (Naztronomy) and can be reached at:
@@ -22,7 +22,8 @@ stacked image. Darks and biases carry no filter and are shared across all filter
 
 This script can be run from any directory but recommended to create a blank directory.
 
-Symlinks will only work if your home directory is in the same drive as your images, Symlinks also need to be enabled (on windows, enable developer mode).
+Symlinks will only work if they are enabled (on windows, enable developer mode). Otherwise the script will make copies of files.
+Recommended to make master calibration frames and include them in the master config profiles.
 
 Target modes:
   - Single target: all sessions are of the same target and are combined into a single final stack for EACH filter. Final recomposition is done by the user.
@@ -46,6 +47,15 @@ Folder conventions (drag & drop an object folder to auto-detect the mode):
 """
 CHANGELOG:
 
+1.0.1 - Telescope profiles for different masters - including flats
+      - Masters Only Workflow
+      - More flexible panel folder names
+      - Add .fts extension
+      - Various Bug fixes
+      - Drizzle 4x enabled
+      - PR#114 from astr0bits - improved subdir recursion and file clean up process
+      - Bug fix: Finds and replaces spaces in filter names with underscores
+      - Enhancement: Combine like filters for paneled mosaics as well 
 1.0.0 - initial release (Mono preprocessing)
       - Derived from the Naztronomy OSC preprocessing script
       - Monochrome-only pipeline (no debayering / CFA handling)
@@ -111,6 +121,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser,
     QSizePolicy,
     QScrollArea,
+    QInputDialog,
 )
 from PyQt6.QtGui import (
     QFont,
@@ -139,8 +150,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 
 APP_NAME = "Naztronomy - Mono Image Preprocessor"
-VERSION = "1.0.0"
-BUILD = "20260709"
+VERSION = "1.0.1"
+BUILD = "20260913"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -165,12 +176,12 @@ UI_DEFAULTS = {
 #   fail with I/O errors (WinError 448), so they are always copied.
 # True: always symlink regardless of drive. Use only if your OS / mount allows it
 #   and you want to avoid the disk copy (e.g. large raw files on a trusted NAS).
-ALWAYS_SYMLINK: bool = False
+ALWAYS_SYMLINK: bool = True
 FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
 # This script only accepts monochrome FITS data. Any other file types
 # (raw camera files, TIFF, PNG, etc.) are ignored on selection / drop.
-FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz")
+FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz", ".fts", ".fts.fz")
 
 
 def _is_fits_file(path) -> bool:
@@ -312,7 +323,11 @@ def _canonical_filter(raw) -> str | None:
     text = str(raw).strip()
     if not text:
         return None
-    return _FILTER_ALIAS_LOOKUP.get(text.upper(), text.upper())
+    # Unknown filters keep their name but with whitespace collapsed to
+    # underscores: names like "HYDROGEN-ALPHA 5NM" flow into Siril -out= and
+    # stack names, and a space there breaks Siril's command argument parsing.
+    fallback = re.sub(r"\s+", "_", text.upper())
+    return _FILTER_ALIAS_LOOKUP.get(text.upper(), fallback)
 
 
 def _read_fits_filter(path) -> str | None:
@@ -1035,13 +1050,14 @@ class PreprocessingInterface(QMainWindow):
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
 
-        # Reusable master calibration config (set via the Master Config dialog).
-        # master_darks_dir: folder of master darks matched to sessions by
-        # exposure + temperature. master_bias_path: single master bias applied
-        # to every session. Persisted to a small JSON file in the Siril config
-        # dir so the locations are pre-filled on the next run.
-        self.master_darks_dir: str | None = None
-        self.master_bias_path: str | None = None
+        # Reusable master calibration profiles (set via the Master Config dialog).
+        # Each profile (e.g. a telescope + camera combo) holds a master darks
+        # folder (matched to sessions by exposure + temperature), a single master
+        # bias applied to every session, and a master flats folder (routed to
+        # sessions by filter). Persisted to a small JSON file in the Siril config
+        # dir so the profiles are available on the next run.
+        self.master_profiles: list[dict] = []
+        self.active_profile_name: str | None = None
         # Persisted Processing-tab defaults and the last Bortle selection. Both
         # are filled by _load_master_config when a saved config exists; the
         # processing defaults are applied once the widgets are built below.
@@ -1223,41 +1239,70 @@ class PreprocessingInterface(QMainWindow):
         self.refresh_file_list()
         self.update_process_separately_checkbox()  # Update checkbox state
 
+    def _is_mosaic_mode(self) -> bool:
+        """True when the Mosaic radio is present and selected."""
+        mosaic = getattr(self, "mosaic_radio", None)
+        return bool(mosaic is not None and mosaic.isChecked())
+
+    def _combine_group_key(self, sess):
+        """Grouping key for Combine Like Filters. In mosaic mode sessions are keyed
+        by (panel, filter) so like filters combine within a panel; in single-target
+        mode by filter alone. Returns None when the session has no filter tag."""
+        filt = getattr(sess, "filter", None)
+        if not filt:
+            return None
+        if self._is_mosaic_mode():
+            return (getattr(sess, "panel", None), filt)
+        return filt
+
+    @staticmethod
+    def _combine_group_label(key) -> str:
+        """Human-readable label for a combine group key."""
+        if isinstance(key, tuple):
+            panel, filt = key
+            return f"{panel} - {filt}" if panel else filt
+        return key
+
+    @staticmethod
+    def _combine_group_sort_key(key):
+        """Order groups by panel (numerically) then filter in mosaic mode, or by
+        filter alone in single-target mode."""
+        if isinstance(key, tuple):
+            panel, filt = key
+            panel_key = _panel_sort_key(panel) if panel else (0, 0)
+            return (0, panel_key, _filter_sort_key(filt))
+        return (0, (0, 0), _filter_sort_key(key))
+
     def _filter_groups_for_combine(self) -> dict:
-        """Return {filter: [session indices]} for real-filter groups containing two
-        or more sessions. Sessions with no filter tag are excluded."""
-        groups: dict[str, list[int]] = {}
+        """Return {group_key: [session indices]} for groups containing two or more
+        sessions. The group key is (panel, filter) in mosaic mode or filter in
+        single-target mode. Sessions with no filter tag are excluded."""
+        groups: dict = {}
         for i, sess in enumerate(self.sessions):
-            filt = getattr(sess, "filter", None)
-            if filt:
-                groups.setdefault(filt, []).append(i)
-        return {f: idxs for f, idxs in groups.items() if len(idxs) > 1}
+            key = self._combine_group_key(sess)
+            if key is not None:
+                groups.setdefault(key, []).append(i)
+        return {k: idxs for k, idxs in groups.items() if len(idxs) > 1}
 
     def _update_combine_button_state(self):
-        """Enable Combine Like Filters only in single-target mode when at least one
-        filter is shared by two or more sessions."""
+        """Enable Combine Like Filters whenever a group (filter in single-target, or
+        panel+filter in mosaic mode) is shared by two or more sessions."""
         btn = getattr(self, "combine_filters_btn", None)
         if btn is None:
             return
-        mosaic = getattr(self, "mosaic_radio", None)
-        is_single = (mosaic is None) or (not mosaic.isChecked())
-        btn.setEnabled(bool(is_single and self._filter_groups_for_combine()))
+        btn.setEnabled(bool(self._filter_groups_for_combine()))
 
     def combine_like_filters(self):
-        """Single-target mode: merge all sessions that share the same filter into one
-        session per filter.
+        """Merge sessions that share a filter into one session per group.
 
-        Lights are pooled (de-duplicated, order preserved). Calibration frames are
-        taken from the first session in each filter group that has them; any extra
-        calibration sets are discarded. Sessions with no filter tag are left as-is.
+        In single-target mode sessions are grouped by filter; in mosaic mode by
+        (panel, filter) so like filters combine within each panel without mixing
+        panels together. Lights are pooled (de-duplicated, order preserved).
+        Calibration frames are taken from the first session in each group that has
+        them; any extra calibration sets are discarded. Sessions with no filter tag
+        are left as-is.
         """
-        mosaic = getattr(self, "mosaic_radio", None)
-        if mosaic is not None and mosaic.isChecked():
-            self.siril.log(
-                "Combine Like Filters is only available in single-target mode.",
-                LogColor.SALMON,
-            )
-            return
+        mosaic = self._is_mosaic_mode()
 
         groups = self._filter_groups_for_combine()
         if not groups:
@@ -1266,23 +1311,27 @@ class PreprocessingInterface(QMainWindow):
             )
             return
 
-        ordered = sorted(groups.items(), key=lambda kv: _filter_sort_key(kv[0]))
+        ordered = sorted(
+            groups.items(), key=lambda kv: self._combine_group_sort_key(kv[0])
+        )
         total_before = len(self.sessions)
         merged_away = sum(len(idxs) - 1 for idxs in groups.values())
         total_after = total_before - merged_away
         plan_lines = "\n".join(
-            f"\u2022 {filt}: {len(idxs)} sessions \u2192 1" for filt, idxs in ordered
+            f"\u2022 {self._combine_group_label(key)}: {len(idxs)} sessions \u2192 1"
+            for key, idxs in ordered
         )
+        scope = "share a filter within each panel" if mosaic else "share a filter"
 
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Combine Like Filters")
         msg.setText(
-            "Combine sessions that share a filter?\n\n"
+            f"Combine sessions that {scope}?\n\n"
             f"{plan_lines}\n\n"
             f"Sessions: {total_before} \u2192 {total_after}\n\n"
             "Lights are pooled. Calibration frames are kept from the first session\n"
-            "in each filter group that has them; extra calibration sets are discarded."
+            "in each group that has them; extra calibration sets are discarded."
         )
         btn_ok = msg.addButton("Combine", QMessageBox.ButtonRole.AcceptRole)
         msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
@@ -1290,18 +1339,18 @@ class PreprocessingInterface(QMainWindow):
         if msg.clickedButton() is not btn_ok:
             return
 
-        # Merge, preserving overall order by each filter's first appearance.
+        # Merge, preserving overall order by each group's first appearance.
         new_sessions: list[Session] = []
-        target_by_filter: dict[str, Session] = {}
+        target_by_key: dict = {}
         dropped_cals = 0
         for sess in self.sessions:
-            filt = getattr(sess, "filter", None)
-            if not filt:
+            key = self._combine_group_key(sess)
+            if key is None:
                 new_sessions.append(sess)
                 continue
-            target = target_by_filter.get(filt)
+            target = target_by_key.get(key)
             if target is None:
-                target_by_filter[filt] = sess
+                target_by_key[key] = sess
                 new_sessions.append(sess)
                 continue
             # Pool lights (skip duplicates already present in the target).
@@ -1333,7 +1382,8 @@ class PreprocessingInterface(QMainWindow):
         self.update_process_separately_checkbox()
 
         summary = ", ".join(
-            f"{filt} \u00d7{len(idxs)}\u21921" for filt, idxs in ordered
+            f"{self._combine_group_label(key)} \u00d7{len(idxs)}\u21921"
+            for key, idxs in ordered
         )
         self.siril.log(f"> Combined like filters: {summary}.", LogColor.GREEN)
         if dropped_cals:
@@ -1496,13 +1546,25 @@ class PreprocessingInterface(QMainWindow):
                                     ft, []
                                 ).extend(flist)
                 else:
-                    # Unrecognised dir — potential session boundary
-                    new_group = child if group_key is None else group_key
-                    for k, v in recurse(child, new_group).items():
-                        for ft, flist in v.items():
-                            sub_sessions.setdefault(k, {}).setdefault(ft, []).extend(
-                                flist
-                            )
+                    # Unrecognised dir — check for FITS files directly inside
+                    # (e.g. filter named folders like Ha/, Oiii/, Sii/, H/, O/, S/
+                    # Filter identity is resolved later per file by _detect_filter()
+                    # from the FITS header or this folder's name
+                    direct_fits = sorted(
+                        f
+                        for f in child.iterdir()
+                        if f.is_file() and _is_supported_input(f)
+                    )
+                    if direct_fits:
+                        collected.setdefault("lights", []).extend(direct_fits)
+                    else:
+                        # Potential session boundary, recurse deeper
+                        new_group = child if group_key is None else group_key
+                        for k, v in recurse(child, new_group).items():
+                            for ft, flist in v.items():
+                                sub_sessions.setdefault(k, {}).setdefault(
+                                    ft, []
+                                ).extend(flist)
 
             if collected:
                 gkey = group_key if group_key is not None else d
@@ -2069,55 +2131,208 @@ class PreprocessingInterface(QMainWindow):
         self.current_session = f"Session {last_idx + 1}"
         self.update_process_separately_checkbox()
 
-    def _route_stacked_by_filter(self, stacked_map: dict, source_label: str) -> dict:
-        """Auto-assign dropped stacked/master calibration files to sessions by filter.
+    def _prompt_master_session_scope(self, frame_label: str):
+        """Prompt for which sessions a master/stacked calibration frame applies to.
 
-        Only flats are routed by filter. Each flat's filter is detected from its
-        FITS FILTER header, falling back to a filter token in its file name
-        (e.g. ``..._RED_..._flats_stacked``). Flats whose filter matches one or
-        more existing sessions are added to every matching session automatically.
-
-        Darks and biases are filter-agnostic — even though a master dark may carry
-        a FILTER header, it can be shared across any filter — so they are never
-        auto-routed and always fall through to the manual current/all/selected
-        scope prompt. Returns a ``{frame_type: [files]}`` map of the files that
-        could NOT be matched (no filter detected, or no session carries that
-        filter) so the caller can fall back to the manual scope prompt.
+        Shows a dialog offering Current / Selected (checkboxes) / All. Returns a
+        ``(sessions, label)`` tuple with the chosen Session objects and a
+        human-readable description, or ``(None, None)`` when the user cancels.
+        With a single session the current session is returned without prompting.
         """
-        leftover: dict[str, list[Path]] = {}
-        for frame_type, file_list in stacked_map.items():
-            for f in file_list:
-                # Only flats route by filter. Darks/biases always go to the
-                # manual scope prompt so the user chooses their sessions.
-                if frame_type != "flats":
-                    leftover.setdefault(frame_type, []).append(f)
-                    continue
-                filt = _detect_filter(f)
-                if filt == NO_FILTER:
-                    filt = _detect_filter_from_name(Path(f).name) or NO_FILTER
-                matches = (
-                    [
-                        (i, sess)
-                        for i, sess in enumerate(self.sessions)
-                        if (sess.filter or NO_FILTER) == filt
-                    ]
-                    if filt != NO_FILTER
-                    else []
-                )
-                if not matches:
-                    leftover.setdefault(frame_type, []).append(f)
-                    continue
-                for i, sess in matches:
-                    getattr(sess, frame_type).append(f)
-                labels = ", ".join(self._session_label(i, s) for i, s in matches)
+        if len(self.sessions) <= 1:
+            return [self.chosen_session], self.session_dropdown.currentText()
+
+        sub = QDialog(self)
+        sub.setWindowTitle("Apply to which sessions?")
+        sub.setModal(True)
+        sub.setMinimumWidth(420)
+        sub_layout = QVBoxLayout(sub)
+        sub_layout.addWidget(QLabel(f"Add <b>{frame_label}</b> master to:"))
+
+        scroll = QScrollArea(sub)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(4)
+
+        current_index = self.session_dropdown.currentIndex()
+        checkboxes: list[QCheckBox] = []
+        for i, session in enumerate(self.sessions):
+            cb = QCheckBox(self._session_label(i, session))
+            cb.setChecked(i == current_index)
+            checkboxes.append(cb)
+            scroll_layout.addWidget(cb)
+        scroll_layout.addStretch(1)
+        scroll.setWidget(scroll_content)
+        sub_layout.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        current_btn = QPushButton(
+            f"Current Session ({self.session_dropdown.currentText()})"
+        )
+        selected_btn = QPushButton("Selected Sessions")
+        all_btn = QPushButton("All Sessions")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(current_btn)
+        btn_row.addWidget(selected_btn)
+        btn_row.addWidget(all_btn)
+        btn_row.addWidget(cancel_btn)
+        sub_layout.addLayout(btn_row)
+
+        result = {"action": None}
+
+        def on_current():
+            result["action"] = "current"
+            sub.accept()
+
+        def on_selected():
+            if not any(cb.isChecked() for cb in checkboxes):
+                return  # nothing checked — stay in dialog
+            result["action"] = "selected"
+            sub.accept()
+
+        def on_all():
+            result["action"] = "all"
+            sub.accept()
+
+        current_btn.clicked.connect(on_current)
+        selected_btn.clicked.connect(on_selected)
+        all_btn.clicked.connect(on_all)
+        cancel_btn.clicked.connect(sub.reject)
+
+        if sub.exec() != QDialog.DialogCode.Accepted or result["action"] is None:
+            return None, None
+
+        if result["action"] == "all":
+            return list(self.sessions), "all sessions"
+        if result["action"] == "current":
+            return [self.chosen_session], self.session_dropdown.currentText()
+        indices = [i for i, cb in enumerate(checkboxes) if cb.isChecked()]
+        if not indices:
+            return None, None
+        sessions = [self.sessions[i] for i in indices]
+        label = ", ".join(f"Session {i + 1}" for i in indices)
+        return sessions, label
+
+    def _auto_assign_flats_by_filter(self, filt_map: dict, source_label: str) -> None:
+        """Assign each flat to the session(s) whose filter matches. Flats whose
+        filter matches no session are reported and skipped."""
+        assigned_any = False
+        for filt, file_list in filt_map.items():
+            matches = (
+                [
+                    (i, sess)
+                    for i, sess in enumerate(self.sessions)
+                    if (sess.filter or NO_FILTER) == filt
+                ]
+                if filt != NO_FILTER
+                else []
+            )
+            if not matches:
                 self.siril.log(
-                    f"> Added {frame_type} master '{Path(f).name}' to {labels} "
-                    f"by filter '{filt}' ({source_label})",
-                    LogColor.BLUE,
+                    f"> {len(file_list)} flat master(s) with filter '{filt}' "
+                    f"matched no session; skipped ({source_label}).",
+                    LogColor.SALMON,
                 )
-        if any(stacked_map.values()) and leftover != stacked_map:
+                continue
+            for _i, sess in matches:
+                sess.flats.extend(file_list)
+            labels = ", ".join(self._session_label(i, s) for i, s in matches)
+            self.siril.log(
+                f"> Added {len(file_list)} flat master(s) to {labels} "
+                f"by filter '{filt}' ({source_label})",
+                LogColor.BLUE,
+            )
+            assigned_any = True
+        if assigned_any:
             self.update_dropdown()
-        return leftover
+
+    def _apply_stacked_flats(self, flats: list, source_label: str) -> None:
+        """Apply dropped master/stacked flats.
+
+        Flats spanning more than one filter are auto-assigned to their matching
+        filter session(s) after confirming. Single-filter flats let the user pick
+        the target sessions (current / selected / all).
+        """
+        filt_map: dict[str, list[Path]] = {}
+        for f in flats:
+            filt = _detect_filter(f)
+            if filt == NO_FILTER:
+                filt = _detect_filter_from_name(Path(f).name) or NO_FILTER
+            filt_map.setdefault(filt, []).append(Path(f))
+
+        known_filters = [k for k in filt_map if k != NO_FILTER]
+
+        if len(known_filters) > 1:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Master Flats — Multiple Filters")
+            msg.setTextFormat(Qt.TextFormat.RichText)
+            msg.setText(
+                "Flats for multiple filters were found "
+                f"(<b>{', '.join(sorted(known_filters))}</b>).<br><br>"
+                "This will automatically assign each flat to the session(s) with "
+                "the matching filter.<br><br>"
+                "If you want to pick specific sessions for your flats instead, "
+                "cancel and drop a single filter's flats at a time."
+            )
+            assign_btn = msg.addButton(
+                "Auto-assign by filter", QMessageBox.ButtonRole.AcceptRole
+            )
+            msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            if msg.clickedButton() is assign_btn:
+                self._auto_assign_flats_by_filter(filt_map, source_label)
+            return
+
+        label_filt = known_filters[0] if known_filters else None
+        frame_label = f"{label_filt} flats" if label_filt else "flats"
+        sessions, label = self._prompt_master_session_scope(frame_label)
+        if not sessions:
+            return
+        for sess in sessions:
+            sess.flats.extend(Path(f) for f in flats)
+        self.update_dropdown()
+        self.siril.log(
+            f"> Added {len(flats)} flat (stacked) file(s) to {label} ({source_label})",
+            LogColor.BLUE,
+        )
+
+    def _apply_stacked_darks_biases(
+        self, frame_type: str, files: list, source_label: str
+    ) -> None:
+        """Apply dropped master/stacked darks or biases. The user always chooses
+        which sessions they apply to (never auto-routed by filter)."""
+        sessions, label = self._prompt_master_session_scope(frame_type)
+        if not sessions:
+            return
+        for sess in sessions:
+            getattr(sess, frame_type).extend(Path(f) for f in files)
+        self.update_dropdown()
+        self.siril.log(
+            f"> Added {len(files)} {frame_type} (stacked) file(s) to {label} "
+            f"({source_label})",
+            LogColor.BLUE,
+        )
+
+    def _apply_stacked_calibration(self, stacked_map: dict, source_label: str) -> None:
+        """Route dropped stacked/master calibration files to sessions.
+
+        The frame type is trusted from the detected file name. Darks and biases
+        always prompt for the target sessions (current / selected / all). Flats
+        spanning multiple filters are auto-assigned by filter; single-filter flats
+        prompt for the target sessions.
+        """
+        for frame_type in ("darks", "biases", "flats"):
+            files = stacked_map.get(frame_type)
+            if not files:
+                continue
+            if frame_type == "flats":
+                self._apply_stacked_flats(files, source_label)
+            else:
+                self._apply_stacked_darks_biases(frame_type, files, source_label)
 
     def _handle_dropped_files(self, paths: list):
         """Called by DragDropTreeWidget when files or folders are dropped onto the list.
@@ -2133,8 +2348,10 @@ class PreprocessingInterface(QMainWindow):
 
         Individual files whose names contain _darks_stacked, _flats_stacked, or
         _biases_stacked are auto-categorised into their respective frame types.
-        When more than one session exists the user is asked whether to apply them
-        to the current session only or to all sessions.
+        Stacked/master darks and biases always prompt for which sessions to apply
+        to (current / selected / all) when more than one session exists. Stacked
+        flats spanning multiple filters are auto-assigned to their matching-filter
+        session(s); single-filter flats prompt for the target sessions.
 
         All other plain files still trigger the frame-type dialog.
         """
@@ -2336,61 +2553,11 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.BLUE,
             )
 
-        # Apply stacked calibration folders → ask session scope if >1 session
+        # Apply stacked calibration folders → prompt for type/sessions per the
+        # master-frame flow (darks/biases always prompt for sessions; flats are
+        # auto-assigned by filter when multiple filters are dropped).
         if stacked_additions:
-            # First, auto-route any masters whose filter matches an existing
-            # session (so a RED master flat lands on the RED session, etc.).
-            stacked_additions = self._route_stacked_by_filter(
-                stacked_additions, "folder drop"
-            )
-        if stacked_additions:
-            if len(self.sessions) > 1:
-                stacked_names = ", ".join(f"{ft}_stacked" for ft in stacked_additions)
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Apply Stacked Calibration Frames")
-                msg.setText(
-                    f"You dropped stacked calibration folder(s):\n<b>{stacked_names}</b>\n\n"
-                    f"Apply to which sessions?"
-                )
-                msg.setTextFormat(Qt.TextFormat.RichText)
-                btn_current = msg.addButton(
-                    f"Current Session ({self.session_dropdown.currentText()})",
-                    QMessageBox.ButtonRole.AcceptRole,
-                )
-                btn_all = msg.addButton(
-                    "All Sessions", QMessageBox.ButtonRole.ActionRole
-                )
-                msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                msg.exec()
-                clicked = msg.clickedButton()
-                if clicked is btn_all:
-                    stacked_target_sessions = self.sessions
-                    stacked_session_label = "all sessions"
-                elif clicked is btn_current:
-                    stacked_target_sessions = [self.chosen_session]
-                    stacked_session_label = self.session_dropdown.currentText()
-                else:
-                    stacked_target_sessions = []
-                    stacked_session_label = ""
-            else:
-                stacked_target_sessions = [self.chosen_session]
-                stacked_session_label = self.session_dropdown.currentText()
-
-            for frame_type, stacked_flist in stacked_additions.items():
-                for session in stacked_target_sessions:
-                    match frame_type:
-                        case "darks":
-                            session.darks.extend(stacked_flist)
-                        case "flats":
-                            session.flats.extend(stacked_flist)
-                        case "biases":
-                            session.biases.extend(stacked_flist)
-                if stacked_target_sessions:
-                    self.siril.log(
-                        f"> Added {len(stacked_flist)} {frame_type} (stacked) files to "
-                        f"{stacked_session_label} (folder drop)",
-                        LogColor.BLUE,
-                    )
+            self._apply_stacked_calibration(stacked_additions, "folder drop")
 
         # ── Process plain files ──────────────────────────────────────────────
         # First, pull out any stacked/master calibration files identified by
@@ -2405,59 +2572,11 @@ class PreprocessingInterface(QMainWindow):
             else:
                 regular_files.append(Path(f))
 
-        # Apply stacked calibration files → ask session scope if >1 session
+        # Apply stacked calibration files → prompt for type/sessions per the
+        # master-frame flow (darks/biases always prompt for sessions; flats are
+        # auto-assigned by filter when multiple filters are dropped).
         if stacked_files:
-            # First, auto-route any masters whose filter matches an existing
-            # session by FITS header or a filter token in the file name.
-            stacked_files = self._route_stacked_by_filter(stacked_files, "drag & drop")
-        if stacked_files:
-            if len(self.sessions) > 1:
-                stacked_names = ", ".join(f"{ft}_stacked" for ft in stacked_files)
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Apply Stacked Calibration Frames")
-                msg.setText(
-                    f"You dropped stacked/master calibration file(s):\n<b>{stacked_names}</b>\n\n"
-                    f"Apply to which sessions?"
-                )
-                msg.setTextFormat(Qt.TextFormat.RichText)
-                btn_current = msg.addButton(
-                    f"Current Session ({self.session_dropdown.currentText()})",
-                    QMessageBox.ButtonRole.AcceptRole,
-                )
-                btn_all = msg.addButton(
-                    "All Sessions", QMessageBox.ButtonRole.ActionRole
-                )
-                msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                msg.exec()
-                clicked = msg.clickedButton()
-                if clicked is btn_all:
-                    stacked_file_sessions = self.sessions
-                    stacked_file_label = "all sessions"
-                elif clicked is btn_current:
-                    stacked_file_sessions = [self.chosen_session]
-                    stacked_file_label = self.session_dropdown.currentText()
-                else:
-                    stacked_file_sessions = []
-                    stacked_file_label = ""
-            else:
-                stacked_file_sessions = [self.chosen_session]
-                stacked_file_label = self.session_dropdown.currentText()
-
-            for frame_type, sf_list in stacked_files.items():
-                for session in stacked_file_sessions:
-                    match frame_type:
-                        case "darks":
-                            session.darks.extend(sf_list)
-                        case "flats":
-                            session.flats.extend(sf_list)
-                        case "biases":
-                            session.biases.extend(sf_list)
-                if stacked_file_sessions:
-                    self.siril.log(
-                        f"> Added {len(sf_list)} {frame_type} (stacked) file(s) to "
-                        f"{stacked_file_label} (drag & drop)",
-                        LogColor.BLUE,
-                    )
+            self._apply_stacked_calibration(stacked_files, "drag & drop")
 
         # Remaining non-stacked files → show frame-type dialog as before
         if regular_files:
@@ -2695,10 +2814,68 @@ class PreprocessingInterface(QMainWindow):
 
     # Top-level key for this script's settings within the shared config file.
     _CONFIG_SECTION = "mono"
+    # Name used when migrating a legacy single master darks/bias config into the
+    # new per-telescope profile structure.
+    _DEFAULT_PROFILE_NAME = "Default"
+
+    @staticmethod
+    def _blank_profile(name: str) -> dict:
+        """Return a new, empty calibration profile with the given name."""
+        return {
+            "name": name,
+            "master_darks_dir": "",
+            "master_bias_path": "",
+            "master_flats_dir": "",
+        }
+
+    def _parse_profiles(self, section: dict) -> list[dict]:
+        """Return the calibration profiles stored in a config section.
+
+        New-format configs store a ``profiles`` list of
+        {name, master_darks_dir, master_bias_path, master_flats_dir}. Older
+        configs stored a single ``master_darks_dir`` / ``master_bias_path`` at
+        the section level; those are migrated into one profile named
+        ``_DEFAULT_PROFILE_NAME`` so existing setups keep working.
+        """
+        raw = section.get("profiles")
+        profiles: list[dict] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                profile = self._blank_profile(name)
+                profile["master_darks_dir"] = item.get("master_darks_dir") or ""
+                profile["master_bias_path"] = item.get("master_bias_path") or ""
+                profile["master_flats_dir"] = item.get("master_flats_dir") or ""
+                profiles.append(profile)
+        if profiles:
+            return profiles
+        # Migrate the legacy single-profile keys, if present.
+        darks = section.get("master_darks_dir") or ""
+        bias = section.get("master_bias_path") or ""
+        if darks or bias:
+            legacy = self._blank_profile(self._DEFAULT_PROFILE_NAME)
+            legacy["master_darks_dir"] = darks
+            legacy["master_bias_path"] = bias
+            return [legacy]
+        return []
+
+    def _active_profile(self) -> dict | None:
+        """Return the currently selected profile dict, or None when none exist."""
+        if not self.master_profiles:
+            return None
+        for profile in self.master_profiles:
+            if profile.get("name") == self.active_profile_name:
+                return profile
+        return self.master_profiles[0]
 
     def _load_master_config(self):
-        """Load the persisted mono settings: master darks folder, master bias
-        file, the saved Processing-tab defaults, and the last Bortle choice."""
+        """Load the persisted mono settings: master calibration profiles, the
+        active profile, the saved Processing-tab defaults, and the last Bortle
+        choice."""
         path = self._master_config_path()
         if not path or not path.is_file():
             return
@@ -2710,10 +2887,12 @@ class PreprocessingInterface(QMainWindow):
         section = data.get(self._CONFIG_SECTION)
         if not isinstance(section, dict):
             return
-        darks = section.get("master_darks_dir")
-        bias = section.get("master_bias_path")
-        self.master_darks_dir = darks or None
-        self.master_bias_path = bias or None
+        self.master_profiles = self._parse_profiles(section)
+        active = section.get("active_profile")
+        if active and any(p.get("name") == active for p in self.master_profiles):
+            self.active_profile_name = active
+        elif self.master_profiles:
+            self.active_profile_name = self.master_profiles[0].get("name")
         processing = section.get("processing")
         if isinstance(processing, dict):
             self._saved_processing_settings = processing
@@ -2750,12 +2929,12 @@ class PreprocessingInterface(QMainWindow):
             return False
 
     def _save_master_config(self):
-        """Persist the current master darks folder and master bias file,
+        """Persist the master calibration profiles and the active profile,
         preserving the rest of this script's config section."""
         if self._write_config_section(
             {
-                "master_darks_dir": self.master_darks_dir or "",
-                "master_bias_path": self.master_bias_path or "",
+                "profiles": self.master_profiles,
+                "active_profile": self.active_profile_name or "",
             }
         ):
             self.siril.log(
@@ -2852,25 +3031,51 @@ class PreprocessingInterface(QMainWindow):
             )
 
     def open_master_config(self):
-        """Popup to configure the master darks folder and the master bias file."""
+        """Popup to manage master calibration profiles.
+
+        Each profile (e.g. a telescope + camera combo) stores a master darks
+        folder, a master bias file, and a master flats folder. 'Import Masters'
+        later lets the user pick which profile to apply.
+        """
         dialog = QDialog(self)
-        dialog.setWindowTitle("Master Calibration Config")
+        dialog.setWindowTitle("Master Calibration Profiles")
         dialog.setModal(True)
-        dialog.setMinimumWidth(520)
+        dialog.setMinimumWidth(560)
         layout = QVBoxLayout(dialog)
 
         intro = QLabel(
-            "Master darks are matched to each session by exposure time and\n"
-            "temperature. The master bias is applied to every session. Click\n"
-            "'Import Masters' afterwards to apply them. These locations are\n"
-            "remembered between runs."
+            "Create a profile for each telescope / camera combo. Master darks are\n"
+            "matched to each session by exposure time and temperature, the master\n"
+            "bias is applied to every session, and master flats are routed to\n"
+            "sessions by filter. Click 'Import Masters' afterwards to apply a\n"
+            "profile. Profiles are remembered between runs."
         )
         intro.setStyleSheet("color: #555; font-size: 11px;")
         layout.addWidget(intro)
 
+        # Work on a copy so Cancel discards all edits. state["index"] tracks the
+        # profile currently shown in the fields.
+        working = [dict(p) for p in self.master_profiles]
+        state = {"index": -1}
+
+        # ── Profile selector row ─────────────────────────────────────────────
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("<b>Profile:</b>"))
+        profile_combo = QComboBox()
+        profile_combo.setMinimumWidth(220)
+        profile_row.addWidget(profile_combo, 1)
+        new_btn = QPushButton("New\u2026")
+        rename_btn = QPushButton("Rename\u2026")
+        delete_btn = QPushButton("Delete")
+        profile_row.addWidget(new_btn)
+        profile_row.addWidget(rename_btn)
+        profile_row.addWidget(delete_btn)
+        layout.addLayout(profile_row)
+
+        # ── Field editors ────────────────────────────────────────────────────
         layout.addWidget(QLabel("<b>Master darks folder</b>"))
         darks_row = QHBoxLayout()
-        darks_edit = QLineEdit(self.master_darks_dir or "")
+        darks_edit = QLineEdit()
         darks_edit.setPlaceholderText(
             "Folder containing master dark frames (FITS/XISF)"
         )
@@ -2881,12 +3086,136 @@ class PreprocessingInterface(QMainWindow):
 
         layout.addWidget(QLabel("<b>Master bias file</b>"))
         bias_row = QHBoxLayout()
-        bias_edit = QLineEdit(self.master_bias_path or "")
+        bias_edit = QLineEdit()
         bias_edit.setPlaceholderText("Single master bias frame (FITS/XISF)")
         bias_browse = QPushButton("Browse\u2026")
         bias_row.addWidget(bias_edit)
         bias_row.addWidget(bias_browse)
         layout.addLayout(bias_row)
+
+        layout.addWidget(QLabel("<b>Master flats folder</b>"))
+        flats_row = QHBoxLayout()
+        flats_edit = QLineEdit()
+        flats_edit.setPlaceholderText(
+            "Folder containing master flats (routed to sessions by filter)"
+        )
+        flats_browse = QPushButton("Browse\u2026")
+        flats_row.addWidget(flats_edit)
+        flats_row.addWidget(flats_browse)
+        layout.addLayout(flats_row)
+
+        def set_fields_enabled(enabled: bool):
+            for w in (
+                darks_edit,
+                bias_edit,
+                flats_edit,
+                darks_browse,
+                bias_browse,
+                flats_browse,
+            ):
+                w.setEnabled(enabled)
+
+        def flush():
+            """Save the field values into the currently shown profile."""
+            i = state["index"]
+            if 0 <= i < len(working):
+                working[i]["master_darks_dir"] = darks_edit.text().strip()
+                working[i]["master_bias_path"] = bias_edit.text().strip()
+                working[i]["master_flats_dir"] = flats_edit.text().strip()
+
+        def load(index: int):
+            """Show the profile at `index` in the fields (or clear when none)."""
+            state["index"] = index
+            if 0 <= index < len(working):
+                profile = working[index]
+                darks_edit.setText(profile.get("master_darks_dir", ""))
+                bias_edit.setText(profile.get("master_bias_path", ""))
+                flats_edit.setText(profile.get("master_flats_dir", ""))
+                set_fields_enabled(True)
+                rename_btn.setEnabled(True)
+                delete_btn.setEnabled(True)
+            else:
+                darks_edit.clear()
+                bias_edit.clear()
+                flats_edit.clear()
+                set_fields_enabled(False)
+                rename_btn.setEnabled(False)
+                delete_btn.setEnabled(False)
+
+        def refresh_combo(select_index: int):
+            profile_combo.blockSignals(True)
+            profile_combo.clear()
+            for profile in working:
+                profile_combo.addItem(profile.get("name", ""))
+            if 0 <= select_index < len(working):
+                profile_combo.setCurrentIndex(select_index)
+            profile_combo.blockSignals(False)
+
+        def on_profile_changed(index: int):
+            flush()  # persist the profile we're leaving
+            load(index)
+
+        def on_new():
+            flush()
+            name, ok = QInputDialog.getText(dialog, "New Profile", "Profile name:")
+            if not ok:
+                return
+            name = name.strip()
+            if not name:
+                return
+            if any(p.get("name") == name for p in working):
+                QMessageBox.warning(
+                    dialog,
+                    "New Profile",
+                    f"A profile named '{name}' already exists.",
+                )
+                return
+            working.append(self._blank_profile(name))
+            refresh_combo(len(working) - 1)
+            load(len(working) - 1)
+
+        def on_rename():
+            i = state["index"]
+            if not (0 <= i < len(working)):
+                return
+            current = working[i].get("name", "")
+            name, ok = QInputDialog.getText(
+                dialog, "Rename Profile", "Profile name:", text=current
+            )
+            if not ok:
+                return
+            name = name.strip()
+            if not name:
+                return
+            if any(j != i and p.get("name") == name for j, p in enumerate(working)):
+                QMessageBox.warning(
+                    dialog,
+                    "Rename Profile",
+                    f"A profile named '{name}' already exists.",
+                )
+                return
+            working[i]["name"] = name
+            refresh_combo(i)
+
+        def on_delete():
+            i = state["index"]
+            if not (0 <= i < len(working)):
+                return
+            name = working[i].get("name", "")
+            reply = QMessageBox.question(
+                dialog,
+                "Delete Profile",
+                f"Delete profile '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            working.pop(i)
+            state["index"] = -1  # avoid flushing into the removed slot
+            new_index = min(i, len(working) - 1)
+            refresh_combo(new_index)
+            load(new_index)
 
         def browse_darks():
             start = darks_edit.text().strip() or self.siril.get_siril_wd()
@@ -2907,16 +3236,35 @@ class PreprocessingInterface(QMainWindow):
             if chosen:
                 bias_edit.setText(chosen)
 
+        def browse_flats():
+            start = flats_edit.text().strip() or self.siril.get_siril_wd()
+            chosen = QFileDialog.getExistingDirectory(
+                dialog, "Select Master Flats Folder", start
+            )
+            if chosen:
+                flats_edit.setText(chosen)
+
+        profile_combo.currentIndexChanged.connect(on_profile_changed)
+        new_btn.clicked.connect(on_new)
+        rename_btn.clicked.connect(on_rename)
+        delete_btn.clicked.connect(on_delete)
         darks_browse.clicked.connect(browse_darks)
         bias_browse.clicked.connect(browse_bias)
+        flats_browse.clicked.connect(browse_flats)
+
+        # Pre-select the active profile when one exists.
+        initial = next(
+            (
+                i
+                for i, p in enumerate(working)
+                if p.get("name") == self.active_profile_name
+            ),
+            0 if working else -1,
+        )
+        refresh_combo(initial)
+        load(initial)
 
         btn_row = QHBoxLayout()
-        clear_btn = QPushButton("Clear")
-        clear_btn.setToolTip(
-            "Clear the saved master darks folder and master bias file."
-        )
-        clear_btn.clicked.connect(lambda: (darks_edit.clear(), bias_edit.clear()))
-        btn_row.addWidget(clear_btn)
         btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
         save_btn = QPushButton("Save")
@@ -2928,13 +3276,18 @@ class PreprocessingInterface(QMainWindow):
         save_btn.clicked.connect(dialog.accept)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.master_darks_dir = darks_edit.text().strip() or None
-            self.master_bias_path = bias_edit.text().strip() or None
+            flush()
+            self.master_profiles = [dict(p) for p in working]
+            sel = profile_combo.currentIndex()
+            if 0 <= sel < len(self.master_profiles):
+                self.active_profile_name = self.master_profiles[sel].get("name")
+            elif self.master_profiles:
+                self.active_profile_name = self.master_profiles[0].get("name")
+            else:
+                self.active_profile_name = None
             self._save_master_config()
             self.siril.log(
-                "Master config saved: darks="
-                f"{self.master_darks_dir or 'none'}, "
-                f"bias={self.master_bias_path or 'none'}",
+                f"Master config saved: {len(self.master_profiles)} profile(s).",
                 LogColor.BLUE,
             )
 
@@ -2971,22 +3324,159 @@ class PreprocessingInterface(QMainWindow):
                 best_path = path
         return best_path
 
+    def _prompt_import_profile(self) -> dict | None:
+        """Return the master profile to import.
+
+        Prompts the user to choose when more than one profile exists; otherwise
+        returns the only profile. Remembers the choice as the active profile.
+        Returns None when the user cancels.
+        """
+        if len(self.master_profiles) == 1:
+            chosen = self.master_profiles[0]
+        else:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Import Masters")
+            dialog.setModal(True)
+            dialog.setMinimumWidth(380)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(
+                QLabel("Which telescope / profile would you like to import?")
+            )
+            combo = QComboBox()
+            for profile in self.master_profiles:
+                combo.addItem(profile.get("name", ""))
+            active_idx = next(
+                (
+                    i
+                    for i, p in enumerate(self.master_profiles)
+                    if p.get("name") == self.active_profile_name
+                ),
+                0,
+            )
+            combo.setCurrentIndex(active_idx)
+            layout.addWidget(combo)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            cancel_btn = QPushButton("Cancel")
+            ok_btn = QPushButton("Import")
+            ok_btn.setDefault(True)
+            btn_row.addWidget(cancel_btn)
+            btn_row.addWidget(ok_btn)
+            layout.addLayout(btn_row)
+            cancel_btn.clicked.connect(dialog.reject)
+            ok_btn.clicked.connect(dialog.accept)
+
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            chosen = self.master_profiles[combo.currentIndex()]
+
+        self.active_profile_name = chosen.get("name")
+        self._write_config_section({"active_profile": self.active_profile_name or ""})
+        return chosen
+
+    def _apply_profile_flats(self, flats_dir: str, profile_name: str) -> int:
+        """Route a profile's master flats to sessions by filter.
+
+        Each flat's filter is read from its FITS header, falling back to the
+        file name, and added to every session tagged with that filter. Flats
+        whose filter matches no session are reported and skipped. Returns the
+        number of (flat, session) assignments made.
+        """
+        folder = Path(flats_dir)
+        if not folder.is_dir():
+            self.siril.log(
+                f"> Master flats folder not found: {flats_dir}", LogColor.SALMON
+            )
+            return 0
+
+        filt_map: dict[str, list[Path]] = {}
+        for f in sorted(folder.rglob("*")):
+            if not f.is_file() or not _is_supported_input(f):
+                continue
+            filt = _detect_filter(f)
+            if filt == NO_FILTER:
+                filt = _detect_filter_from_name(f.name) or NO_FILTER
+            filt_map.setdefault(filt, []).append(f)
+
+        if not filt_map:
+            self.siril.log(f"> No master flats found in {flats_dir}", LogColor.SALMON)
+            return 0
+
+        assigned = 0
+        for filt, file_list in filt_map.items():
+            matches = (
+                [
+                    (i, sess)
+                    for i, sess in enumerate(self.sessions)
+                    if (sess.filter or NO_FILTER) == filt
+                ]
+                if filt != NO_FILTER
+                else []
+            )
+            if not matches:
+                self.siril.log(
+                    f"> {len(file_list)} master flat(s) with filter '{filt}' "
+                    f"matched no session; skipped (profile '{profile_name}').",
+                    LogColor.SALMON,
+                )
+                continue
+            for _i, sess in matches:
+                for p in file_list:
+                    if p not in sess.flats:
+                        sess.flats.append(p)
+                        assigned += 1
+            labels = ", ".join(self._session_label(i, s) for i, s in matches)
+            self.siril.log(
+                f"> Added {len(file_list)} master flat(s) to {labels} by filter "
+                f"'{filt}' (profile '{profile_name}')",
+                LogColor.BLUE,
+            )
+        return assigned
+
     def import_masters(self):
-        """Match configured master darks to each session by exposure+temperature
-        and apply the configured master bias to every session."""
-        if not self.master_darks_dir and not self.master_bias_path:
+        """Apply a master calibration profile to the sessions.
+
+        When more than one profile exists the user is prompted to pick which
+        telescope/profile to apply. Master darks are matched to each session by
+        exposure + temperature, the master bias is applied to every session, and
+        master flats are routed to sessions by filter.
+        """
+        if not self.master_profiles:
             QMessageBox.information(
                 self,
                 "Import Masters",
-                "No master darks folder or master bias file configured.\n\n"
-                "Click 'Master Config…' first to set them.",
+                "No master calibration profiles configured.\n\n"
+                "Click 'Master Config…' first to create one.",
             )
             return
 
+        profile = self._prompt_import_profile()
+        if profile is None:
+            return
+
+        profile_name = profile.get("name", "")
+        darks_dir = profile.get("master_darks_dir") or ""
+        bias_path = profile.get("master_bias_path") or ""
+        flats_dir = profile.get("master_flats_dir") or ""
+
+        if not darks_dir and not bias_path and not flats_dir:
+            QMessageBox.information(
+                self,
+                "Import Masters",
+                f"Profile '{profile_name}' has no master darks folder, master "
+                "bias file, or master flats folder configured.",
+            )
+            return
+
+        self.siril.log(
+            f"Importing masters from profile '{profile_name}'...", LogColor.BLUE
+        )
+
         # Build the master-dark library: (path, exptime, temp) per dark file.
         dark_library: list[tuple[Path, float, float | None]] = []
-        if self.master_darks_dir:
-            folder = Path(self.master_darks_dir)
+        if darks_dir:
+            folder = Path(darks_dir)
             if folder.is_dir():
                 for f in sorted(folder.rglob("*")):
                     if not f.is_file() or not _is_supported_input(f):
@@ -3002,18 +3492,18 @@ class PreprocessingInterface(QMainWindow):
                     dark_library.append((f, exptime, temp))
             else:
                 self.siril.log(
-                    f"> Master darks folder not found: {self.master_darks_dir}",
+                    f"> Master darks folder not found: {darks_dir}",
                     LogColor.SALMON,
                 )
 
         bias_file: Path | None = None
-        if self.master_bias_path:
-            candidate = Path(self.master_bias_path)
+        if bias_path:
+            candidate = Path(bias_path)
             if candidate.is_file():
                 bias_file = candidate
             else:
                 self.siril.log(
-                    f"> Master bias file not found: {self.master_bias_path}",
+                    f"> Master bias file not found: {bias_path}",
                     LogColor.SALMON,
                 )
 
@@ -3064,9 +3554,14 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
 
+        flats_applied = 0
+        if flats_dir:
+            flats_applied = self._apply_profile_flats(flats_dir, profile_name)
+
         self.siril.log(
-            f"Import Masters complete: {darks_applied} master dark(s) and "
-            f"{bias_applied} master bias assignment(s) added.",
+            f"Import Masters complete (profile '{profile_name}'): "
+            f"{darks_applied} master dark(s), {bias_applied} master bias "
+            f"assignment(s), and {flats_applied} master flat assignment(s) added.",
             LogColor.BLUE,
         )
         self.update_dropdown()
@@ -3569,6 +4064,18 @@ class PreprocessingInterface(QMainWindow):
                     and not name.startswith(".")
                 )
                 src = os.path.join(directory, first_file)
+                # Copy from the symlink's real target; reading through the link
+                # fails on Windows when it points to an untrusted mount (WinError 448).
+                if os.path.islink(src):
+                    target = os.readlink(src)
+                    if not os.path.isabs(target):
+                        target = os.path.join(directory, target)
+                    self.siril.log(
+                        f"Master {image_type} is a symlink to: {target} "
+                        f"(exists: {os.path.exists(target)})",
+                        LogColor.BLUE,
+                    )
+                    src = target
 
                 process_dir = os.path.join(self.current_working_directory, "process")
                 os.makedirs(process_dir, exist_ok=True)
@@ -3589,7 +4096,7 @@ class PreprocessingInterface(QMainWindow):
                     # inside a .fit file, so let Siril load it and re-save it as a
                     # genuine FITS master.
                     try:
-                        self.siril.cmd("load", f'"{first_file}"')
+                        self.siril.cmd("load", f'"{src}"')
                         self.siril.cmd("save", f'"../process/{image_type}_stacked"')
                         self.siril.cmd("close")
                         self.siril.log(
@@ -4078,6 +4585,11 @@ class PreprocessingInterface(QMainWindow):
         if filter_name and filter_name.lower() not in file_name.lower():
             file_name += f"_{filter_name}"
 
+        # Header values (e.g. OBJECT) may carry stray quotes; Siril writes the
+        # file without them, so remove them here to keep the returned name
+        # matching the actual file on disk (needed by final-frame registration).
+        file_name = file_name.replace("'", "").replace('"', "")
+
         try:
             self.siril.cmd(
                 "save",
@@ -4398,26 +4910,30 @@ class PreprocessingInterface(QMainWindow):
 
         self.combine_filters_btn = QPushButton("Combine Like Filters")
         self.combine_filters_btn.setToolTip(
-            "Single-target mode: merge every session that shares the same filter into\n"
-            "one session each (lights pooled). Calibration frames are taken from the\n"
-            "first session in each filter group that has them. Enabled only when two or\n"
-            "more sessions share a filter."
+            "Merge sessions that share a filter into one session each (lights pooled).\n"
+            "Single-target mode groups by filter; mosaic mode groups by filter within\n"
+            "each panel so panels stay separate. Calibration frames are taken from the\n"
+            "first session in each group that has them. Enabled only when two or more\n"
+            "sessions share a group."
         )
         self.combine_filters_btn.clicked.connect(self.combine_like_filters)
         self.combine_filters_btn.setEnabled(False)
 
         self.master_config_btn = QPushButton("Master Config\u2026")
         self.master_config_btn.setToolTip(
-            "Configure a reusable master darks folder and a single master bias\n"
-            "file. Master darks are matched to each session by exposure time and\n"
-            "temperature; the master bias is applied to every session."
+            "Create and manage reusable calibration profiles (e.g. one per\n"
+            "telescope + camera). Each profile holds a master darks folder, a\n"
+            "master bias file, and a master flats folder. Master darks are matched\n"
+            "to each session by exposure time and temperature; the master bias is\n"
+            "applied to every session; master flats are routed to sessions by filter."
         )
         self.master_config_btn.clicked.connect(self.open_master_config)
 
         self.import_masters_btn = QPushButton("Import Masters")
         self.import_masters_btn.setToolTip(
-            "Apply the configured master darks and master bias to all open\n"
-            "sessions. Darks are matched by exposure time and temperature."
+            "Apply a calibration profile to all open sessions. With more than one\n"
+            "profile you'll be asked which telescope/profile to import. Darks are\n"
+            "matched by exposure time and temperature; flats are routed by filter."
         )
         self.import_masters_btn.clicked.connect(self.import_masters)
 
@@ -4604,7 +5120,7 @@ class PreprocessingInterface(QMainWindow):
         drizzle_amount_label.setToolTip(drizzle_amount_tooltip)
 
         self.drizzle_amount_spinbox = QDoubleSpinBox()
-        self.drizzle_amount_spinbox.setRange(0.1, 3.0)
+        self.drizzle_amount_spinbox.setRange(0.1, 4.0)
         self.drizzle_amount_spinbox.setSingleStep(0.1)
         self.drizzle_amount_spinbox.setValue(UI_DEFAULTS["drizzle_amount"])
         self.drizzle_amount_spinbox.setDecimals(1)
@@ -5860,7 +6376,7 @@ class PreprocessingInterface(QMainWindow):
                             self.collected_lights_dir, new_file_name
                         )
 
-                        shutil.copy2(src_path, dest_path)
+                        shutil.move(src_path, dest_path)
                         self.siril.log(
                             f"Moved {file_name} to {self.collected_lights_dir} as {new_file_name}",
                             LogColor.BLUE,
@@ -5890,6 +6406,10 @@ class PreprocessingInterface(QMainWindow):
                 if bg_extract:
                     self.seq_bg_extract(seq_name=individual_seq_name)
                     individual_seq_name = "bkg_" + individual_seq_name
+                    for f in Path(self.current_working_directory).glob(
+                        f"pp_lights_*{self.fits_extension}"
+                    ):
+                        f.unlink(missing_ok=True)
 
                 individual_plate_solve_status = self.seq_plate_solve(
                     seq_name=individual_seq_name
@@ -6060,7 +6580,7 @@ class PreprocessingInterface(QMainWindow):
                             group_dir,
                             f"pp_lights_{counter:05d}{self.fits_extension}",
                         )
-                        shutil.copy2(
+                        shutil.move(
                             os.path.join(self.collected_lights_dir, src_name),
                             dst,
                         )
@@ -6089,6 +6609,8 @@ class PreprocessingInterface(QMainWindow):
                 if bg_extract:
                     self.seq_bg_extract(seq_name=seq_name)
                     seq_name = "bkg_" + seq_name
+                    for f in Path(group_dir).glob(f"pp_lights_*{self.fits_extension}"):
+                        f.unlink(missing_ok=True)
 
                 plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
 
@@ -6127,7 +6649,10 @@ class PreprocessingInterface(QMainWindow):
                         use_filter_bkg=use_filter_bkg,
                     )
 
+                pre_reg_seq = seq_name
                 seq_name = f"r_{seq_name}"
+                for f in Path(group_dir).glob(f"{pre_reg_seq}*{self.fits_extension}"):
+                    f.unlink(missing_ok=True)
 
                 # Scans for black frames due to existing Siril bug.
                 try:
@@ -6155,6 +6680,8 @@ class PreprocessingInterface(QMainWindow):
                     stack_weighted=stack_weighted,
                     weighting_method=weighting_method,
                 )
+                for f in Path(group_dir).glob(f"{seq_name}*{self.fits_extension}"):
+                    f.unlink(missing_ok=True)
 
                 self.load_image(image_name=stack_name)
                 self.siril.cmd("cd", f'"{self.home_directory}"')
@@ -6242,7 +6769,7 @@ class PreprocessingInterface(QMainWindow):
                                 group_dir,
                                 f"pp_lights_{counter:05d}{self.fits_extension}",
                             )
-                            shutil.copy2(
+                            shutil.move(
                                 os.path.join(self.collected_lights_dir, src_name),
                                 dst,
                             )
@@ -6271,6 +6798,10 @@ class PreprocessingInterface(QMainWindow):
                         if bg_extract:
                             self.seq_bg_extract(seq_name=seq_name)
                             seq_name = "bkg_" + seq_name
+                            for f in Path(group_dir).glob(
+                                f"pp_lights_*{self.fits_extension}"
+                            ):
+                                f.unlink(missing_ok=True)
 
                         plate_solve_status = self.seq_plate_solve(seq_name=seq_name)
 
@@ -6309,7 +6840,12 @@ class PreprocessingInterface(QMainWindow):
                                 use_filter_bkg=use_filter_bkg,
                             )
 
+                        pre_reg_seq = seq_name
                         seq_name = f"r_{seq_name}"
+                        for f in Path(group_dir).glob(
+                            f"{pre_reg_seq}*{self.fits_extension}"
+                        ):
+                            f.unlink(missing_ok=True)
 
                         # Scans for black frames due to existing Siril bug.
                         try:
@@ -6337,6 +6873,10 @@ class PreprocessingInterface(QMainWindow):
                             stack_weighted=stack_weighted,
                             weighting_method=weighting_method,
                         )
+                        for f in Path(group_dir).glob(
+                            f"{seq_name}*{self.fits_extension}"
+                        ):
+                            f.unlink(missing_ok=True)
 
                         self.load_image(image_name=stack_basename)
                         panel_suffix = f"_{panel_safe}" + (
@@ -6383,8 +6923,13 @@ class PreprocessingInterface(QMainWindow):
 
         # When calibrated lights were pooled only as a temporary step to build the
         # final stack or per-panel stacks (user didn't opt to keep them), remove the
-        # pooled directory now that the stacks are saved.
-        if (needs_per_session_stack or panel_mosaic) and not save_calibrated_lights:
+        # pooled directory now that the stacks are saved. Only do this when the user
+        # opted into cleanup; unchecking "clean up files" preserves all intermediates.
+        if (
+            (needs_per_session_stack or panel_mosaic)
+            and not save_calibrated_lights
+            and clean_up_files
+        ):
             self.siril.cmd("cd", f'"{self.home_directory}"')
             self.current_working_directory = self.siril.get_siril_wd()
             shutil.rmtree(self.collected_lights_dir, ignore_errors=True)
