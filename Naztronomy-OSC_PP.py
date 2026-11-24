@@ -48,6 +48,9 @@ CHANGELOG:
       - Persist Processing-tab settings between runs (shared naztronomy_scripts_config.json)
       - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
       - Export sessions to an AstroBin acquisition CSV (with Bortle prompt)
+      - Filter settings: add "abs" mode to pass an absolute threshold (no k/% suffix)
+      - Folder scan: collect loose FITS files found directly inside an unrecognised
+        folder as lights instead of silently dropping them
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -1282,13 +1285,23 @@ class PreprocessingInterface(QMainWindow):
                                     ft, []
                                 ).extend(flist)
                 else:
-                    # Unrecognised dir — potential session boundary
-                    new_group = child if group_key is None else group_key
-                    for k, v in recurse(child, new_group).items():
-                        for ft, flist in v.items():
-                            sub_sessions.setdefault(k, {}).setdefault(ft, []).extend(
-                                flist
-                            )
+                    # Unrecognised dir — check for FITS files directly inside
+                    # (e.g. a target folder holding loose light frames). If found,
+                    # collect them as lights for the current group instead of
+                    # silently dropping them; otherwise treat the folder as a
+                    # potential session boundary and recurse deeper.
+                    direct_fits = sorted(
+                        f for f in child.iterdir() if f.is_file() and _is_fits_file(f)
+                    )
+                    if direct_fits:
+                        collected.setdefault("lights", []).extend(direct_fits)
+                    else:
+                        new_group = child if group_key is None else group_key
+                        for k, v in recurse(child, new_group).items():
+                            for ft, flist in v.items():
+                                sub_sessions.setdefault(k, {}).setdefault(
+                                    ft, []
+                                ).extend(flist)
 
             if collected:
                 gkey = group_key if group_key is not None else d
@@ -2837,31 +2850,39 @@ class PreprocessingInterface(QMainWindow):
             "-kernel=square",
         ]
 
-        # Sigma, Percentage, or absolute value for each filter type (if enabled).
-        # "abs" appends the raw value with no suffix (Siril absolute threshold).
-        def _filter_value(mode: str, value: float) -> str:
-            if mode == "σ":
-                return f"{value}k"
-            if mode == "%":
-                return f"{int(value)}%"
-            return f"{value}"  # abs
-
+        # Sigma (k), percentage (%), or absolute threshold (no suffix) per filter.
         if use_filter_round:
-            cmd_args.append(
-                f"-filter-round={_filter_value(self.roundness_mode_combo.currentText(), filter_round)}"
-            )
+            mode = self.roundness_mode_combo.currentText()
+            if mode == "σ":
+                cmd_args.append(f"-filter-round={filter_round}k")
+            elif mode == "%":
+                cmd_args.append(f"-filter-round={int(filter_round)}%")
+            else:
+                cmd_args.append(f"-filter-round={self.roundness_spinbox.value():g}")
         if use_filter_wfwhm:
-            cmd_args.append(
-                f"-filter-wfwhm={_filter_value(self.fwhm_mode_combo.currentText(), filter_wfwhm)}"
-            )
+            mode = self.fwhm_mode_combo.currentText()
+            if mode == "σ":
+                cmd_args.append(f"-filter-wfwhm={filter_wfwhm}k")
+            elif mode == "%":
+                cmd_args.append(f"-filter-wfwhm={int(filter_wfwhm)}%")
+            else:
+                cmd_args.append(f"-filter-wfwhm={self.fwhm_spinbox.value():g}")
         if use_filter_stars:
-            cmd_args.append(
-                f"-filter-nbstars={_filter_value(self.stars_mode_combo.currentText(), filter_stars)}"
-            )
+            mode = self.stars_mode_combo.currentText()
+            if mode == "σ":
+                cmd_args.append(f"-filter-nbstars={filter_stars}k")
+            elif mode == "%":
+                cmd_args.append(f"-filter-nbstars={int(filter_stars)}%")
+            else:
+                cmd_args.append(f"-filter-nbstars={int(self.stars_spinbox.value())}")
         if use_filter_bkg:
-            cmd_args.append(
-                f"-filter-bkg={_filter_value(self.bkg_mode_combo.currentText(), filter_bkg)}"
-            )
+            mode = self.bkg_mode_combo.currentText()
+            if mode == "σ":
+                cmd_args.append(f"-filter-bkg={filter_bkg}k")
+            elif mode == "%":
+                cmd_args.append(f"-filter-bkg={int(filter_bkg)}%")
+            else:
+                cmd_args.append(f"-filter-bkg={self.bkg_spinbox.value():g}")
 
         # If not doing a paneled mosaic, use max framing, otherwise crop down to reference frame so edges don't have ugly noise
         if not self.paneled_mosaic_radio.isChecked():
@@ -3679,6 +3700,17 @@ class PreprocessingInterface(QMainWindow):
         self.bg_extract_check.setToolTip(bg_extract_tooltip)
         preprocessing_layout.addWidget(self.bg_extract_check)
 
+        self.astrometry_net_check = QCheckBox(
+            "Fall back to local astrometry.net for unsolved frames (slower)"
+        )
+        self.astrometry_net_check.setToolTip(
+            "After Siril's built-in sequence solve reports a failure, retry only "
+            "frames without an existing astrometric solution using local "
+            "astrometry.net. Requires suitable astrometry.net index files."
+        )
+        if self.astrometry_net_available:
+            preprocessing_layout.addWidget(self.astrometry_net_check)
+
         drizzle_tooltip = "Drizzle integration can improve resolution but increases processing time and file size. Use values above 1.0 with caution."
         self.drizzle_checkbox = QCheckBox("Enable Drizzle")
         self.drizzle_checkbox.setToolTip(drizzle_tooltip)
@@ -3756,7 +3788,7 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
         self.roundness_mode_combo = QComboBox()
         self.roundness_mode_combo.addItems(["σ", "%", "abs"])
-        self.roundness_mode_combo.setFixedWidth(65)
+        self.roundness_mode_combo.setFixedWidth(72)
         self.roundness_mode_combo.setEnabled(False)
         self.roundness_check.toggled.connect(self.roundness_spinbox.setEnabled)
         self.roundness_check.toggled.connect(self.roundness_mode_combo.setEnabled)
@@ -3786,7 +3818,7 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
         self.fwhm_mode_combo = QComboBox()
         self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
-        self.fwhm_mode_combo.setFixedWidth(65)
+        self.fwhm_mode_combo.setFixedWidth(72)
         self.fwhm_mode_combo.setEnabled(False)
         self.fwhm_check.toggled.connect(self.fwhm_spinbox.setEnabled)
         self.fwhm_check.toggled.connect(self.fwhm_mode_combo.setEnabled)
@@ -3816,7 +3848,7 @@ class PreprocessingInterface(QMainWindow):
         self.stars_spinbox.setToolTip(stars_label_tooltip)
         self.stars_mode_combo = QComboBox()
         self.stars_mode_combo.addItems(["σ", "%", "abs"])
-        self.stars_mode_combo.setFixedWidth(65)
+        self.stars_mode_combo.setFixedWidth(72)
         self.stars_mode_combo.setEnabled(False)
         self.stars_check.toggled.connect(self.stars_spinbox.setEnabled)
         self.stars_check.toggled.connect(self.stars_mode_combo.setEnabled)
@@ -3846,7 +3878,7 @@ class PreprocessingInterface(QMainWindow):
         self.bkg_spinbox.setToolTip(bkg_label_tooltip)
         self.bkg_mode_combo = QComboBox()
         self.bkg_mode_combo.addItems(["σ", "%", "abs"])
-        self.bkg_mode_combo.setFixedWidth(65)
+        self.bkg_mode_combo.setFixedWidth(72)
         self.bkg_mode_combo.setEnabled(False)
         self.bkg_check.toggled.connect(self.bkg_spinbox.setEnabled)
         self.bkg_check.toggled.connect(self.bkg_mode_combo.setEnabled)
@@ -4159,11 +4191,29 @@ class PreprocessingInterface(QMainWindow):
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
-        else:  # abs
-            spinbox.setRange(0, 1000)
-            spinbox.setSingleStep(0.1)
-            spinbox.setDecimals(2)
-            spinbox.setValue(0)
+        else:  # abs — a raw threshold passed to Siril with no suffix
+            # Per-metric ranges: absolute thresholds differ wildly (roundness and
+            # background are 0–1, FWHM is in pixels, star count is in the 100s).
+            if spinbox is self.stars_spinbox:
+                spinbox.setRange(0, 100000)
+                spinbox.setSingleStep(10)
+                spinbox.setDecimals(0)
+                spinbox.setValue(100)
+            elif spinbox is self.fwhm_spinbox:
+                spinbox.setRange(0.0, 30.0)
+                spinbox.setSingleStep(0.1)
+                spinbox.setDecimals(2)
+                spinbox.setValue(3.0)
+            elif spinbox is self.bkg_spinbox:
+                spinbox.setRange(0.0, 1.0)
+                spinbox.setSingleStep(0.001)
+                spinbox.setDecimals(4)
+                spinbox.setValue(0.1)
+            else:  # roundness
+                spinbox.setRange(0.0, 1.0)
+                spinbox.setSingleStep(0.05)
+                spinbox.setDecimals(2)
+                spinbox.setValue(0.9)
             spinbox.setSuffix("")
 
     def _config_path(self) -> Path | None:
