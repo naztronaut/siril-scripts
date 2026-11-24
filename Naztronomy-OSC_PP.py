@@ -39,10 +39,11 @@ CHANGELOG:
       - Discard rejected and bad files coming from NINA
       - Files tab: file list is now a sortable, grouped tree (#, Filter, Object,
         File name) with per-type counts in the group title. Ported from Mono PP.
-      - Master Config: configure a reusable master darks folder and a single
-        master bias file, remembered between runs in the shared scripts config.
-      - Import Masters: apply configured master darks (matched by exposure time
-        and temperature) and the master bias to all open sessions.
+      - Master Config: per-telescope profiles, each with a master darks folder,
+        a master bias file and a master flats folder, remembered between runs.
+      - Import Masters: pick a profile and apply master darks (matched by exposure
+        time and temperature), master flats (matched by FILTER header) and the
+        master bias to all open sessions.
       - Reset Calibration: remove darks/flats/biases from chosen sessions
         (per-session selection when multiple sessions exist); lights untouched.
       - Allow astrometry.net fallback (PR#107 @tophrchris)
@@ -127,6 +128,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -807,12 +809,10 @@ class PreprocessingInterface(QMainWindow):
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
 
-        # Reusable master calibration config (set via the Master Config dialog).
-        # master_darks_dir: folder of master darks matched to sessions by
-        # exposure + temperature. master_bias_path: single master bias applied
-        # to every session. Persisted to a shared JSON in the Siril config dir.
-        self.master_darks_dir: str | None = None
-        self.master_bias_path: str | None = None
+        # Per-telescope master calibration profiles (darks folder, bias file,
+        # flats folder), persisted to the shared JSON in the Siril config dir.
+        self.master_profiles: list[dict] = []
+        self.active_profile_name: str | None = None
         self._last_bortle: str = ""
         self._load_master_config()
         # Persisted Processing-tab defaults, filled by _load_persistent_config
@@ -1852,9 +1852,51 @@ class PreprocessingInterface(QMainWindow):
             label += f" ({', '.join(parts)})"
         return label
 
-    # ── Master calibration config / import / reset ────────────────────────
+    # ── Master calibration profiles / import / reset ──────────────────────
+    # Name used when migrating a legacy single darks/bias config into a profile.
+    _DEFAULT_PROFILE_NAME = "Default"
+
+    @staticmethod
+    def _blank_profile(name: str) -> dict:
+        """Return a new, empty calibration profile with the given name."""
+        return {
+            "name": name,
+            "master_darks_dir": "",
+            "master_bias_path": "",
+            "master_flats_dir": "",
+        }
+
+    def _parse_profiles(self, section: dict) -> list[dict]:
+        """Return the calibration profiles stored in a config section, migrating
+        a legacy section-level master_darks_dir / master_bias_path into a single
+        ``_DEFAULT_PROFILE_NAME`` profile."""
+        raw = section.get("profiles")
+        profiles: list[dict] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                profile = self._blank_profile(name)
+                profile["master_darks_dir"] = item.get("master_darks_dir") or ""
+                profile["master_bias_path"] = item.get("master_bias_path") or ""
+                profile["master_flats_dir"] = item.get("master_flats_dir") or ""
+                profiles.append(profile)
+        if profiles:
+            return profiles
+        darks = section.get("master_darks_dir") or ""
+        bias = section.get("master_bias_path") or ""
+        if darks or bias:
+            legacy = self._blank_profile(self._DEFAULT_PROFILE_NAME)
+            legacy["master_darks_dir"] = darks
+            legacy["master_bias_path"] = bias
+            return [legacy]
+        return []
+
     def _load_master_config(self):
-        """Load the persisted master darks folder, master bias file and the last
+        """Load the master calibration profiles, the active profile and the last
         Bortle choice from the shared config file."""
         path = self._config_path()
         if not path or not path.is_file():
@@ -1867,40 +1909,64 @@ class PreprocessingInterface(QMainWindow):
         section = data.get(self._CONFIG_SECTION)
         if not isinstance(section, dict):
             return
-        self.master_darks_dir = section.get("master_darks_dir") or None
-        self.master_bias_path = section.get("master_bias_path") or None
+        self.master_profiles = self._parse_profiles(section)
+        active = section.get("active_profile")
+        if active and any(p.get("name") == active for p in self.master_profiles):
+            self.active_profile_name = active
+        elif self.master_profiles:
+            self.active_profile_name = self.master_profiles[0].get("name")
         self._last_bortle = section.get("bortle", "") or ""
 
     def _save_master_config(self):
-        """Persist the current master darks folder and master bias file."""
+        """Persist the master calibration profiles and the active profile."""
         if self._write_config_section(
             {
-                "master_darks_dir": self.master_darks_dir or "",
-                "master_bias_path": self.master_bias_path or "",
+                "profiles": self.master_profiles,
+                "active_profile": self.active_profile_name or "",
             }
         ):
             self.siril.log(f"> Saved config to {self._config_path()}", LogColor.BLUE)
 
     def open_master_config(self):
-        """Popup to configure the master darks folder and the master bias file."""
+        """Popup to manage master calibration profiles (one per telescope /
+        camera combo), each with a master darks folder, a master bias file and a
+        master flats folder."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Master Calibration Config")
+        dialog.setWindowTitle("Master Calibration Profiles")
         dialog.setModal(True)
-        dialog.setMinimumWidth(520)
+        dialog.setMinimumWidth(560)
         layout = QVBoxLayout(dialog)
 
         intro = QLabel(
-            "Master darks are matched to each session by exposure time and\n"
-            "temperature. The master bias is applied to every session. Click\n"
-            "'Import Masters' afterwards to apply them. These locations are\n"
-            "remembered between runs."
+            "Create a profile for each telescope / camera combo. Master darks are\n"
+            "matched to each session by exposure time and temperature, the master\n"
+            "bias is applied to every session, and master flats are matched to\n"
+            "sessions by the FILTER header. Click 'Import Masters' afterwards to\n"
+            "apply a profile. Profiles are remembered between runs."
         )
         intro.setStyleSheet("color: #555; font-size: 11px;")
         layout.addWidget(intro)
 
+        # Work on a copy so Cancel discards all edits.
+        working = [dict(p) for p in self.master_profiles]
+        state = {"index": -1}
+
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("<b>Profile:</b>"))
+        profile_combo = QComboBox()
+        profile_combo.setMinimumWidth(220)
+        profile_row.addWidget(profile_combo, 1)
+        new_btn = QPushButton("New\u2026")
+        rename_btn = QPushButton("Rename\u2026")
+        delete_btn = QPushButton("Delete")
+        profile_row.addWidget(new_btn)
+        profile_row.addWidget(rename_btn)
+        profile_row.addWidget(delete_btn)
+        layout.addLayout(profile_row)
+
         layout.addWidget(QLabel("<b>Master darks folder</b>"))
         darks_row = QHBoxLayout()
-        darks_edit = QLineEdit(self.master_darks_dir or "")
+        darks_edit = QLineEdit()
         darks_edit.setPlaceholderText(
             "Folder containing master dark frames (FITS/XISF)"
         )
@@ -1911,12 +1977,136 @@ class PreprocessingInterface(QMainWindow):
 
         layout.addWidget(QLabel("<b>Master bias file</b>"))
         bias_row = QHBoxLayout()
-        bias_edit = QLineEdit(self.master_bias_path or "")
+        bias_edit = QLineEdit()
         bias_edit.setPlaceholderText("Single master bias frame (FITS/XISF)")
         bias_browse = QPushButton("Browse\u2026")
         bias_row.addWidget(bias_edit)
         bias_row.addWidget(bias_browse)
         layout.addLayout(bias_row)
+
+        layout.addWidget(QLabel("<b>Master flats folder</b>"))
+        flats_row = QHBoxLayout()
+        flats_edit = QLineEdit()
+        flats_edit.setPlaceholderText(
+            "Folder containing master flats (matched to sessions by filter)"
+        )
+        flats_browse = QPushButton("Browse\u2026")
+        flats_row.addWidget(flats_edit)
+        flats_row.addWidget(flats_browse)
+        layout.addLayout(flats_row)
+
+        def set_fields_enabled(enabled: bool):
+            for w in (
+                darks_edit,
+                bias_edit,
+                flats_edit,
+                darks_browse,
+                bias_browse,
+                flats_browse,
+            ):
+                w.setEnabled(enabled)
+
+        def flush():
+            """Save the field values into the currently shown profile."""
+            i = state["index"]
+            if 0 <= i < len(working):
+                working[i]["master_darks_dir"] = darks_edit.text().strip()
+                working[i]["master_bias_path"] = bias_edit.text().strip()
+                working[i]["master_flats_dir"] = flats_edit.text().strip()
+
+        def load(index: int):
+            """Show the profile at `index` in the fields (or clear when none)."""
+            state["index"] = index
+            if 0 <= index < len(working):
+                profile = working[index]
+                darks_edit.setText(profile.get("master_darks_dir", ""))
+                bias_edit.setText(profile.get("master_bias_path", ""))
+                flats_edit.setText(profile.get("master_flats_dir", ""))
+                set_fields_enabled(True)
+                rename_btn.setEnabled(True)
+                delete_btn.setEnabled(True)
+            else:
+                darks_edit.clear()
+                bias_edit.clear()
+                flats_edit.clear()
+                set_fields_enabled(False)
+                rename_btn.setEnabled(False)
+                delete_btn.setEnabled(False)
+
+        def refresh_combo(select_index: int):
+            profile_combo.blockSignals(True)
+            profile_combo.clear()
+            for profile in working:
+                profile_combo.addItem(profile.get("name", ""))
+            if 0 <= select_index < len(working):
+                profile_combo.setCurrentIndex(select_index)
+            profile_combo.blockSignals(False)
+
+        def on_profile_changed(index: int):
+            flush()
+            load(index)
+
+        def on_new():
+            flush()
+            name, ok = QInputDialog.getText(dialog, "New Profile", "Profile name:")
+            if not ok:
+                return
+            name = name.strip()
+            if not name:
+                return
+            if any(p.get("name") == name for p in working):
+                QMessageBox.warning(
+                    dialog,
+                    "New Profile",
+                    f"A profile named '{name}' already exists.",
+                )
+                return
+            working.append(self._blank_profile(name))
+            refresh_combo(len(working) - 1)
+            load(len(working) - 1)
+
+        def on_rename():
+            i = state["index"]
+            if not (0 <= i < len(working)):
+                return
+            current = working[i].get("name", "")
+            name, ok = QInputDialog.getText(
+                dialog, "Rename Profile", "Profile name:", text=current
+            )
+            if not ok:
+                return
+            name = name.strip()
+            if not name:
+                return
+            if any(j != i and p.get("name") == name for j, p in enumerate(working)):
+                QMessageBox.warning(
+                    dialog,
+                    "Rename Profile",
+                    f"A profile named '{name}' already exists.",
+                )
+                return
+            working[i]["name"] = name
+            refresh_combo(i)
+
+        def on_delete():
+            i = state["index"]
+            if not (0 <= i < len(working)):
+                return
+            name = working[i].get("name", "")
+            reply = QMessageBox.question(
+                dialog,
+                "Delete Profile",
+                f"Delete profile '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            working.pop(i)
+            state["index"] = -1  # avoid flushing into the removed slot
+            new_index = min(i, len(working) - 1)
+            refresh_combo(new_index)
+            load(new_index)
 
         def browse_darks():
             start = darks_edit.text().strip() or self.siril.get_siril_wd()
@@ -1937,16 +2127,34 @@ class PreprocessingInterface(QMainWindow):
             if chosen:
                 bias_edit.setText(chosen)
 
+        def browse_flats():
+            start = flats_edit.text().strip() or self.siril.get_siril_wd()
+            chosen = QFileDialog.getExistingDirectory(
+                dialog, "Select Master Flats Folder", start
+            )
+            if chosen:
+                flats_edit.setText(chosen)
+
+        profile_combo.currentIndexChanged.connect(on_profile_changed)
+        new_btn.clicked.connect(on_new)
+        rename_btn.clicked.connect(on_rename)
+        delete_btn.clicked.connect(on_delete)
         darks_browse.clicked.connect(browse_darks)
         bias_browse.clicked.connect(browse_bias)
+        flats_browse.clicked.connect(browse_flats)
+
+        initial = next(
+            (
+                i
+                for i, p in enumerate(working)
+                if p.get("name") == self.active_profile_name
+            ),
+            0 if working else -1,
+        )
+        refresh_combo(initial)
+        load(initial)
 
         btn_row = QHBoxLayout()
-        clear_btn = QPushButton("Clear")
-        clear_btn.setToolTip(
-            "Clear the saved master darks folder and master bias file."
-        )
-        clear_btn.clicked.connect(lambda: (darks_edit.clear(), bias_edit.clear()))
-        btn_row.addWidget(clear_btn)
         btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
         save_btn = QPushButton("Save")
@@ -1958,13 +2166,18 @@ class PreprocessingInterface(QMainWindow):
         save_btn.clicked.connect(dialog.accept)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.master_darks_dir = darks_edit.text().strip() or None
-            self.master_bias_path = bias_edit.text().strip() or None
+            flush()
+            self.master_profiles = [dict(p) for p in working]
+            sel = profile_combo.currentIndex()
+            if 0 <= sel < len(self.master_profiles):
+                self.active_profile_name = self.master_profiles[sel].get("name")
+            elif self.master_profiles:
+                self.active_profile_name = self.master_profiles[0].get("name")
+            else:
+                self.active_profile_name = None
             self._save_master_config()
             self.siril.log(
-                "Master config saved: darks="
-                f"{self.master_darks_dir or 'none'}, "
-                f"bias={self.master_bias_path or 'none'}",
+                f"Master config saved: {len(self.master_profiles)} profile(s).",
                 LogColor.BLUE,
             )
 
@@ -2001,22 +2214,144 @@ class PreprocessingInterface(QMainWindow):
                 best_path = path
         return best_path
 
+    def _prompt_import_profile(self) -> dict | None:
+        """Return the profile to import, asking when more than one exists.
+        Remembers the choice as the active profile; None when cancelled."""
+        if len(self.master_profiles) == 1:
+            chosen = self.master_profiles[0]
+        else:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Import Masters")
+            dialog.setModal(True)
+            dialog.setMinimumWidth(380)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(
+                QLabel("Which telescope / profile would you like to import?")
+            )
+            combo = QComboBox()
+            for profile in self.master_profiles:
+                combo.addItem(profile.get("name", ""))
+            active_idx = next(
+                (
+                    i
+                    for i, p in enumerate(self.master_profiles)
+                    if p.get("name") == self.active_profile_name
+                ),
+                0,
+            )
+            combo.setCurrentIndex(active_idx)
+            layout.addWidget(combo)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            cancel_btn = QPushButton("Cancel")
+            ok_btn = QPushButton("Import")
+            ok_btn.setDefault(True)
+            btn_row.addWidget(cancel_btn)
+            btn_row.addWidget(ok_btn)
+            layout.addLayout(btn_row)
+            cancel_btn.clicked.connect(dialog.reject)
+            ok_btn.clicked.connect(dialog.accept)
+
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            chosen = self.master_profiles[combo.currentIndex()]
+
+        self.active_profile_name = chosen.get("name")
+        self._write_config_section({"active_profile": self.active_profile_name or ""})
+        return chosen
+
+    def _apply_profile_flats(self, flats_dir: str, profile_name: str) -> int:
+        """Add a profile's master flats to sessions whose first light has the same
+        FILTER header (case-insensitive). Flats without a FILTER header go to
+        sessions whose lights have none. Returns the number of assignments."""
+        folder = Path(flats_dir)
+        if not folder.is_dir():
+            self.siril.log(
+                f"> Master flats folder not found: {flats_dir}", LogColor.SALMON
+            )
+            return 0
+
+        filt_map: dict[str, list[Path]] = {}
+        for f in sorted(folder.rglob("*")):
+            if not f.is_file() or not _is_supported_input(f):
+                continue
+            filt_map.setdefault((_read_fits_filter(f) or "").lower(), []).append(f)
+
+        if not filt_map:
+            self.siril.log(f"> No master flats found in {flats_dir}", LogColor.SALMON)
+            return 0
+
+        session_filters = [
+            (_read_fits_filter(sess.lights[0]) or "").lower() if sess.lights else None
+            for sess in self.sessions
+        ]
+
+        assigned = 0
+        for filt, file_list in filt_map.items():
+            filt_label = filt or "no filter"
+            matches = [i for i, sf in enumerate(session_filters) if sf == filt]
+            if not matches:
+                self.siril.log(
+                    f"> {len(file_list)} master flat(s) with filter '{filt_label}' "
+                    f"matched no session; skipped (profile '{profile_name}').",
+                    LogColor.SALMON,
+                )
+                continue
+            for i in matches:
+                sess = self.sessions[i]
+                for p in file_list:
+                    if p not in sess.flats:
+                        sess.flats.append(p)
+                        assigned += 1
+            labels = ", ".join(
+                self._session_label(i, self.sessions[i]) for i in matches
+            )
+            self.siril.log(
+                f"> Added {len(file_list)} master flat(s) to {labels} by filter "
+                f"'{filt_label}' (profile '{profile_name}')",
+                LogColor.BLUE,
+            )
+        return assigned
+
     def import_masters(self):
-        """Match configured master darks to each session by exposure+temperature
-        and apply the configured master bias to every session."""
-        if not self.master_darks_dir and not self.master_bias_path:
+        """Apply a master calibration profile to the sessions: darks matched by
+        exposure + temperature, bias to every session, flats by filter."""
+        if not self.master_profiles:
             QMessageBox.information(
                 self,
                 "Import Masters",
-                "No master darks folder or master bias file configured.\n\n"
-                "Click 'Master Config…' first to set them.",
+                "No master calibration profiles configured.\n\n"
+                "Click 'Master Config…' first to create one.",
             )
             return
 
+        profile = self._prompt_import_profile()
+        if profile is None:
+            return
+
+        profile_name = profile.get("name", "")
+        darks_dir = profile.get("master_darks_dir") or ""
+        bias_path = profile.get("master_bias_path") or ""
+        flats_dir = profile.get("master_flats_dir") or ""
+
+        if not darks_dir and not bias_path and not flats_dir:
+            QMessageBox.information(
+                self,
+                "Import Masters",
+                f"Profile '{profile_name}' has no master darks folder, master "
+                "bias file, or master flats folder configured.",
+            )
+            return
+
+        self.siril.log(
+            f"Importing masters from profile '{profile_name}'...", LogColor.BLUE
+        )
+
         # Build the master-dark library: (path, exptime, temp) per dark file.
         dark_library: list[tuple[Path, float, float | None]] = []
-        if self.master_darks_dir:
-            folder = Path(self.master_darks_dir)
+        if darks_dir:
+            folder = Path(darks_dir)
             if folder.is_dir():
                 for f in sorted(folder.rglob("*")):
                     if not f.is_file() or not _is_supported_input(f):
@@ -2032,18 +2367,18 @@ class PreprocessingInterface(QMainWindow):
                     dark_library.append((f, exptime, temp))
             else:
                 self.siril.log(
-                    f"> Master darks folder not found: {self.master_darks_dir}",
+                    f"> Master darks folder not found: {darks_dir}",
                     LogColor.SALMON,
                 )
 
         bias_file: Path | None = None
-        if self.master_bias_path:
-            candidate = Path(self.master_bias_path)
+        if bias_path:
+            candidate = Path(bias_path)
             if candidate.is_file():
                 bias_file = candidate
             else:
                 self.siril.log(
-                    f"> Master bias file not found: {self.master_bias_path}",
+                    f"> Master bias file not found: {bias_path}",
                     LogColor.SALMON,
                 )
 
@@ -2094,9 +2429,14 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
 
+        flats_applied = 0
+        if flats_dir:
+            flats_applied = self._apply_profile_flats(flats_dir, profile_name)
+
         self.siril.log(
-            f"Import Masters complete: {darks_applied} master dark(s) and "
-            f"{bias_applied} master bias assignment(s) added.",
+            f"Import Masters complete (profile '{profile_name}'): "
+            f"{darks_applied} master dark(s), {bias_applied} master bias "
+            f"assignment(s), and {flats_applied} master flat assignment(s) added.",
             LogColor.BLUE,
         )
         self.update_dropdown()
@@ -2944,11 +3284,13 @@ class PreprocessingInterface(QMainWindow):
 
             <h3>Master Calibration &amp; Export</h3>
             <ul>
-            <li><b>Master Config…</b>: set a reusable <i>master darks folder</i> and a single
-                <i>master bias file</i>. These locations are remembered between runs.</li>
-            <li><b>Import Masters</b>: applies the configured masters to every session. Master
-                darks are matched to each session by <b>exposure time and temperature</b>; the
-                master bias is applied to all sessions.</li>
+            <li><b>Master Config…</b>: create a <b>profile per telescope / camera</b>, each with a
+                <i>master darks folder</i>, a <i>master bias file</i> and a <i>master flats
+                folder</i>. Profiles are remembered between runs.</li>
+            <li><b>Import Masters</b>: pick a profile and apply it to every session. Master
+                darks are matched by <b>exposure time and temperature</b>, master flats by the
+                <b>FILTER header</b> of the session's lights, and the master bias is applied to
+                all sessions.</li>
             <li><b>Reset Calibration</b>: removes darks, flats, and biases from chosen sessions
                 (pick which sessions when more than one exists). Light frames are left untouched.</li>
             <li><b>Export Sessions to CSV</b>: writes an <b>AstroBin acquisition CSV</b> with the
@@ -3111,16 +3453,16 @@ class PreprocessingInterface(QMainWindow):
 
         self.master_config_btn = QPushButton("Master Config\u2026")
         self.master_config_btn.setToolTip(
-            "Configure a reusable master darks folder and a single master bias\n"
-            "file. Master darks are matched to each session by exposure time and\n"
-            "temperature; the master bias is applied to every session."
+            "Manage per-telescope master calibration profiles: a master darks\n"
+            "folder, a master bias file and a master flats folder for each."
         )
         self.master_config_btn.clicked.connect(self.open_master_config)
 
         self.import_masters_btn = QPushButton("Import Masters")
         self.import_masters_btn.setToolTip(
-            "Apply the configured master darks and master bias to all open\n"
-            "sessions. Darks are matched by exposure time and temperature."
+            "Apply a master calibration profile to all open sessions. Darks are\n"
+            "matched by exposure time and temperature, flats by filter, and the\n"
+            "master bias is applied to every session."
         )
         self.import_masters_btn.clicked.connect(self.import_masters)
 
