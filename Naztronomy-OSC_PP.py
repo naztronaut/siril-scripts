@@ -1879,9 +1879,7 @@ class PreprocessingInterface(QMainWindow):
                 "master_bias_path": self.master_bias_path or "",
             }
         ):
-            self.siril.log(
-                f"> Saved config to {self._config_path()}", LogColor.BLUE
-            )
+            self.siril.log(f"> Saved config to {self._config_path()}", LogColor.BLUE)
 
     def open_master_config(self):
         """Popup to configure the master darks folder and the master bias file."""
@@ -2809,7 +2807,9 @@ class PreprocessingInterface(QMainWindow):
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
 
-        object_name = current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
+        object_name = (
+            current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
+        )
         exptime = int(current_fits_headers.get("EXPTIME", 0))
         livetime = int(current_fits_headers.get("LIVETIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
