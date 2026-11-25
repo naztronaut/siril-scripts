@@ -127,8 +127,12 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
     QLabel,
     QComboBox,
     QFrame,
@@ -743,6 +747,35 @@ class SortableTreeItem(QTreeWidgetItem):
             return int(text)
         except (TypeError, ValueError):
             return 0
+class SortableTreeItem(QTreeWidgetItem):
+    """Tree item with type-aware sorting.
+
+    The "#" column (column 0) sorts numerically rather than as text. Group-header
+    rows (those with ``group_order`` set) always keep their fixed insertion order
+    so the Lights/Darks/Flats/Biases sections never shuffle, no matter which
+    column the user sorts by.
+    """
+
+    group_order = None  # set on group-header rows to pin their position
+
+    def __lt__(self, other):
+        if (
+            self.group_order is not None
+            and getattr(other, "group_order", None) is not None
+        ):
+            return self.group_order < other.group_order
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree is not None else 0
+        if column == 0:
+            return self._as_int(self.text(0)) < self._as_int(other.text(0))
+        return self.text(column).lower() < other.text(column).lower()
+
+    @staticmethod
+    def _as_int(text):
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return 0
 
 
 class FileTypeDialog(QDialog):
@@ -882,9 +915,12 @@ class FileTypeDialog(QDialog):
 
 class DragDropTreeWidget(QTreeWidget):
     """A QTreeWidget (multi-column) that accepts file drag-and-drop and emits the dropped paths."""
+class DragDropTreeWidget(QTreeWidget):
+    """A QTreeWidget (multi-column) that accepts file drag-and-drop and emits the dropped paths."""
 
     _NORMAL_STYLE = ""
     _HOVER_STYLE = (
+        "QTreeWidget { border: 2px dashed #2563eb;"
         "QTreeWidget { border: 2px dashed #2563eb;"
         " background-color: rgba(37, 99, 235, 0.07); }"
     )
@@ -908,6 +944,7 @@ class DragDropTreeWidget(QTreeWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        if self.topLevelItemCount() == 0:
         if self.topLevelItemCount() == 0:
             painter = QPainter(self.viewport())
             painter.save()
@@ -1261,9 +1298,16 @@ class PreprocessingInterface(QMainWindow):
                     continue
                 if child.name.lower() == "rejected":
                     continue
+                if child.name.lower() == "rejected":
+                    continue
                 child_key = child.name.lower()
 
                 if child_key in _FT_MAP or child_key in _ST_MAP:
+                    files = sorted(
+                        f
+                        for f in child.iterdir()
+                        if f.is_file() and not _is_rejected_file(f)
+                    )
                     files = sorted(
                         f
                         for f in child.iterdir()
@@ -1285,6 +1329,23 @@ class PreprocessingInterface(QMainWindow):
                                     ft, []
                                 ).extend(flist)
                 else:
+                    # Unrecognised dir — check for FITS files directly inside
+                    # (e.g. a target folder holding loose light frames). If found,
+                    # collect them as lights for the current group instead of
+                    # silently dropping them; otherwise treat the folder as a
+                    # potential session boundary and recurse deeper.
+                    direct_fits = sorted(
+                        f for f in child.iterdir() if f.is_file() and _is_fits_file(f)
+                    )
+                    if direct_fits:
+                        collected.setdefault("lights", []).extend(direct_fits)
+                    else:
+                        new_group = child if group_key is None else group_key
+                        for k, v in recurse(child, new_group).items():
+                            for ft, flist in v.items():
+                                sub_sessions.setdefault(k, {}).setdefault(
+                                    ft, []
+                                ).extend(flist)
                     # Unrecognised dir — check for FITS files directly inside
                     # (e.g. a target folder holding loose light frames). If found,
                     # collect them as lights for the current group instead of
@@ -1455,6 +1516,7 @@ class PreprocessingInterface(QMainWindow):
 
     def _handle_dropped_files(self, paths: list):
         """Called by DragDropTreeWidget when files or folders are dropped onto the list.
+        """Called by DragDropTreeWidget when files or folders are dropped onto the list.
 
         Folders named lights/darks/flats/biases (or dark flats → biases) are
         recognised and their contents are added to the *current session* directly,
@@ -1495,6 +1557,8 @@ class PreprocessingInterface(QMainWindow):
 
         # Drop 'bad_' files and anything under a 'rejected' folder before staging.
         paths = [p for p in paths if not _is_rejected_file(p)]
+        # Drop 'bad_' files and anything under a 'rejected' folder before staging.
+        paths = [p for p in paths if not _is_rejected_file(p)]
         folders = [p for p in paths if Path(p).is_dir()]
         files = [p for p in paths if Path(p).is_file()]
 
@@ -1518,6 +1582,11 @@ class PreprocessingInterface(QMainWindow):
                     for f in folder.iterdir()
                     if f.is_file() and not _is_rejected_file(f)
                 )
+                folder_files = sorted(
+                    f
+                    for f in folder.iterdir()
+                    if f.is_file() and not _is_rejected_file(f)
+                )
                 if folder_files:
                     folder_additions.setdefault(frame_type, []).extend(folder_files)
                 else:
@@ -1534,6 +1603,11 @@ class PreprocessingInterface(QMainWindow):
                         )
             elif folder_key in _STACKED_FOLDER_MAP:
                 frame_type = _STACKED_FOLDER_MAP[folder_key]
+                folder_files = sorted(
+                    f
+                    for f in folder.iterdir()
+                    if f.is_file() and not _is_rejected_file(f)
+                )
                 folder_files = sorted(
                     f
                     for f in folder.iterdir()
@@ -1895,7 +1969,36 @@ class PreprocessingInterface(QMainWindow):
             cache[key] = obj if obj else "\u2014"
         return cache[key]
 
+    def _file_filter_label(self, file_type, path):
+        """Filter label shown in the file list's Filter column.
+
+        Darks and biases carry no filter. Lights/flats use a cached per-file
+        FILTER-header read so repeated refreshes don't re-read over the network.
+        """
+        if file_type in ("darks", "biases"):
+            return "\u2014"  # em dash
+        cache = getattr(self, "_file_filter_cache", None)
+        if cache is None:
+            cache = self._file_filter_cache = {}
+        key = str(path)
+        if key not in cache:
+            detected = _read_fits_filter(path)
+            cache[key] = detected if detected else "\u2014"
+        return cache[key]
+
+    def _file_object_label(self, path):
+        """Target name shown in the file list's Object column (cached header read)."""
+        cache = getattr(self, "_file_object_cache", None)
+        if cache is None:
+            cache = self._file_object_cache = {}
+        key = str(path)
+        if key not in cache:
+            obj = _read_fits_object(path)
+            cache[key] = obj if obj else "\u2014"
+        return cache[key]
+
     def refresh_file_list(self):
+        self.file_listbox.setSortingEnabled(False)
         self.file_listbox.setSortingEnabled(False)
         self.file_listbox.clear()
         self.siril.log(
@@ -1903,7 +2006,9 @@ class PreprocessingInterface(QMainWindow):
         )
 
         counts = {ft: 0 for ft in FRAME_TYPES}
+        counts = {ft: 0 for ft in FRAME_TYPES}
         if self.chosen_session:
+            for order, file_type in enumerate(FRAME_TYPES):
             for order, file_type in enumerate(FRAME_TYPES):
                 files = self.chosen_session.get_files_by_type(file_type)
                 counts[file_type] = len(files)
@@ -1959,8 +2064,62 @@ class PreprocessingInterface(QMainWindow):
             if parts:
                 title += f" \u2014 {' \u00b7 '.join(parts)}  (total {total})"
             self.session_content_group.setTitle(title)
+                counts[file_type] = len(files)
+                if not files:
+                    continue
+                bg_hex, fg_hex = self._FRAME_COLORS.get(
+                    file_type, ("#ffffff", "#000000")
+                )
+                row_bg = QBrush(QColor(bg_hex))
+                row_fg = QBrush(QColor(fg_hex))
+
+                # Group header — a strong colored bar spanning the whole row.
+                header_item = SortableTreeItem(
+                    [f"{file_type.capitalize()}  ({len(files)})"]
+                )
+                header_item.group_order = order
+                header_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                hfont = header_item.font(0)
+                hfont.setBold(True)
+                header_item.setFont(0, hfont)
+                header_item.setBackground(0, QBrush(QColor(fg_hex)))
+                header_item.setForeground(0, QBrush(QColor(bg_hex)))
+                self.file_listbox.addTopLevelItem(header_item)
+                header_item.setFirstColumnSpanned(True)
+
+                for n, file in enumerate(files, start=1):
+                    filt = self._file_filter_label(file_type, file)
+                    obj = self._file_object_label(file)
+                    child = SortableTreeItem([str(n), filt, obj, file.name])
+                    for col in range(4):
+                        child.setBackground(col, row_bg)
+                        child.setForeground(col, row_fg)
+                    child.setTextAlignment(
+                        0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    child.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+                    child.setToolTip(3, str(file.resolve()))
+                    child.setData(0, Qt.ItemDataRole.UserRole, (file_type, file))
+                    header_item.addChild(child)
+
+        self.file_listbox.expandAll()
+        self.file_listbox.setSortingEnabled(True)
+        self.file_listbox.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
+        # Group-box title with per-type counts, e.g.
+        # "Files in Session 1 — 28 L · 10 D · 10 F · 10 B  (total 58)"
+        if hasattr(self, "session_content_group"):
+            idx = self.session_dropdown.currentIndex() + 1
+            abbr = {"lights": "L", "darks": "D", "flats": "F", "biases": "B"}
+            parts = [f"{counts[ft]} {abbr[ft]}" for ft in FRAME_TYPES if counts[ft]]
+            total = sum(counts.values())
+            title = f"Files in Session {idx}"
+            if parts:
+                title += f" \u2014 {' \u00b7 '.join(parts)}  (total {total})"
+            self.session_content_group.setTitle(title)
 
         self.update_frame_buttons()
+        self.update_process_separately_checkbox()
 
     def update_frame_buttons(self):
         """Show a green circle on each Add button when that frame type has files loaded."""
@@ -1997,8 +2156,16 @@ class PreprocessingInterface(QMainWindow):
             if data is not None:
                 selected_entries.append(data)
         if not selected_entries:
+        # Only file rows carry (frame_type, path) data; group headers are ignored.
+        selected_entries = []
+        for item in self.file_listbox.selectedItems():
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data is not None:
+                selected_entries.append(data)
+        if not selected_entries:
             return
 
+        msg = f"Are you sure you want to delete {len(selected_entries)} files? (Note: This will only remove them from the session, not delete them from disk.)"
         msg = f"Are you sure you want to delete {len(selected_entries)} files? (Note: This will only remove them from the session, not delete them from disk.)"
         reply = QMessageBox.question(
             self,
@@ -2008,6 +2175,10 @@ class PreprocessingInterface(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
+            for filetype, path in selected_entries:
+                file_list = getattr(self.chosen_session, filetype)
+                if path in file_list:
+                    file_list.remove(path)
             for filetype, path in selected_entries:
                 file_list = getattr(self.chosen_session, filetype)
                 if path in file_list:
@@ -2751,36 +2922,16 @@ class PreprocessingInterface(QMainWindow):
             )
 
     def local_astrometry_net_available(self):
-        """Return True when Siril can find a local solve-field installation."""
-        configured_dir = ""
+        """Return True only when Siril's core.asnet_dir is set to an existing folder."""
         try:
             configured_dir = self.siril.get_siril_config("core", "asnet_dir")
         except (s.DataError, s.CommandError, s.SirilError):
-            pass
+            return False
 
-        if configured_dir and configured_dir != "(not set)":
-            candidates = [
-                os.path.join(configured_dir, "solve-field"),
-                os.path.join(configured_dir, "solve-field.exe"),
-                os.path.join(configured_dir, "bin", "solve-field"),
-                os.path.join(configured_dir, "bin", "solve-field.exe"),
-            ]
-            if any(os.path.isfile(candidate) for candidate in candidates):
-                return True
-
-        if shutil.which("solve-field"):
-            return True
-
-        if sys.platform.startswith("win"):
-            ansvr_root = os.path.join(
-                os.environ.get("LOCALAPPDATA", ""), "cygwin_ansvr"
-            )
-            return any(
-                os.path.isfile(os.path.join(ansvr_root, "bin", executable))
-                for executable in ("solve-field", "solve-field.exe")
-            )
-
-        return False
+        configured_dir = str(configured_dir or "").strip()
+        if not configured_dir or configured_dir == "(not set)":
+            return False
+        return os.path.isdir(configured_dir)
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name, use_astrometry_net=False):
@@ -2851,36 +3002,57 @@ class PreprocessingInterface(QMainWindow):
         ]
 
         # Sigma (k), percentage (%), or absolute threshold (no suffix) per filter.
+        # Sigma (k), percentage (%), or absolute threshold (no suffix) per filter.
         if use_filter_round:
+            mode = self.roundness_mode_combo.currentText()
+            if mode == "σ":
             mode = self.roundness_mode_combo.currentText()
             if mode == "σ":
                 cmd_args.append(f"-filter-round={filter_round}k")
             elif mode == "%":
+            elif mode == "%":
                 cmd_args.append(f"-filter-round={int(filter_round)}%")
+            else:
+                cmd_args.append(f"-filter-round={self.roundness_spinbox.value():g}")
             else:
                 cmd_args.append(f"-filter-round={self.roundness_spinbox.value():g}")
         if use_filter_wfwhm:
             mode = self.fwhm_mode_combo.currentText()
             if mode == "σ":
+            mode = self.fwhm_mode_combo.currentText()
+            if mode == "σ":
                 cmd_args.append(f"-filter-wfwhm={filter_wfwhm}k")
             elif mode == "%":
+            elif mode == "%":
                 cmd_args.append(f"-filter-wfwhm={int(filter_wfwhm)}%")
+            else:
+                cmd_args.append(f"-filter-wfwhm={self.fwhm_spinbox.value():g}")
             else:
                 cmd_args.append(f"-filter-wfwhm={self.fwhm_spinbox.value():g}")
         if use_filter_stars:
             mode = self.stars_mode_combo.currentText()
             if mode == "σ":
+            mode = self.stars_mode_combo.currentText()
+            if mode == "σ":
                 cmd_args.append(f"-filter-nbstars={filter_stars}k")
             elif mode == "%":
+            elif mode == "%":
                 cmd_args.append(f"-filter-nbstars={int(filter_stars)}%")
+            else:
+                cmd_args.append(f"-filter-nbstars={int(self.stars_spinbox.value())}")
             else:
                 cmd_args.append(f"-filter-nbstars={int(self.stars_spinbox.value())}")
         if use_filter_bkg:
             mode = self.bkg_mode_combo.currentText()
             if mode == "σ":
+            mode = self.bkg_mode_combo.currentText()
+            if mode == "σ":
                 cmd_args.append(f"-filter-bkg={filter_bkg}k")
             elif mode == "%":
+            elif mode == "%":
                 cmd_args.append(f"-filter-bkg={int(filter_bkg)}%")
+            else:
+                cmd_args.append(f"-filter-bkg={self.bkg_spinbox.value():g}")
             else:
                 cmd_args.append(f"-filter-bkg={self.bkg_spinbox.value():g}")
 
@@ -3417,6 +3589,10 @@ class PreprocessingInterface(QMainWindow):
             <li><b>Create Paneled Mosaic</b>: Sessions are registered and stacked together
                 with overlap-normalisation to produce a seamless mosaic. Each session should
                 cover a different panel of the same field.</li>
+            <li><b>Stitch Mosaic Panels Only</b>: For panels that are <i>already calibrated and
+                stacked</i>. Add every panel as a light in a single session; they are plate
+                solved and stitched with no rejection and overlap normalization, feathered
+                when <i>Enable Feather</i> is on. All other processing options are ignored.</li>
             </ul>
 
             <h3>Create Final Stack</h3>
@@ -3515,6 +3691,9 @@ class PreprocessingInterface(QMainWindow):
         session_row = QGridLayout()
         session_row.setHorizontalSpacing(6)
         session_row.setVerticalSpacing(6)
+        session_row = QGridLayout()
+        session_row.setHorizontalSpacing(6)
+        session_row.setVerticalSpacing(6)
         session_label = QLabel("Session:")
         self.update_dropdown()
         self.session_dropdown.setCurrentIndex(0)
@@ -3595,9 +3774,17 @@ class PreprocessingInterface(QMainWindow):
 
         # Files list
         self.file_listbox = DragDropTreeWidget(
+        self.file_listbox = DragDropTreeWidget(
             on_drop_callback=self._handle_dropped_files,
             on_delete_callback=self.remove_selected_files,
         )
+        self.file_listbox.setColumnCount(4)
+        self.file_listbox.setHeaderLabels(["#", "Filter", "Object", "File name"])
+        self.file_listbox.setRootIsDecorated(True)
+        self.file_listbox.setIndentation(14)
+        self.file_listbox.setUniformRowHeights(True)
+        self.file_listbox.setAlternatingRowColors(False)
+        self.file_listbox.setSortingEnabled(True)
         self.file_listbox.setColumnCount(4)
         self.file_listbox.setHeaderLabels(["#", "Filter", "Object", "File name"])
         self.file_listbox.setRootIsDecorated(True)
@@ -3617,10 +3804,21 @@ class PreprocessingInterface(QMainWindow):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(True)
+        self.file_listbox.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        header = self.file_listbox.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
         self.file_listbox.setToolTip(
             "Drag and drop files or folders here to add them to the current session.\n"
             "Named folders (lights, darks, flats, biases) are auto-categorised.\n"
             "Drop a parent folder containing those subfolders to load an entire session,\n"
+            "or a folder with session sub-folders to auto-create multiple sessions.\n"
+            "Click a column header to sort; rows are grouped by frame type."
             "or a folder with session sub-folders to auto-create multiple sessions.\n"
             "Click a column header to sort; rows are grouped by frame type."
         )
@@ -3684,6 +3882,8 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_group = QGroupBox("Optional Preprocessing Steps")
         preprocessing_layout = QVBoxLayout()
 
+        dark_flats_tooltip = "If your flat frames are not being applied correctly, enable this option to apply dark flats or bias frames to your light frames before stacking."
+        self.dark_flats_check = QCheckBox("Apply Dark Flats/Biases to Lights")
         dark_flats_tooltip = "If your flat frames are not being applied correctly, enable this option to apply dark flats or bias frames to your light frames before stacking."
         self.dark_flats_check = QCheckBox("Apply Dark Flats/Biases to Lights")
         self.dark_flats_check.setToolTip(dark_flats_tooltip)
@@ -3789,6 +3989,8 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_mode_combo = QComboBox()
         self.roundness_mode_combo.addItems(["σ", "%", "abs"])
         self.roundness_mode_combo.setFixedWidth(72)
+        self.roundness_mode_combo.addItems(["σ", "%", "abs"])
+        self.roundness_mode_combo.setFixedWidth(72)
         self.roundness_mode_combo.setEnabled(False)
         self.roundness_check.toggled.connect(self.roundness_spinbox.setEnabled)
         self.roundness_check.toggled.connect(self.roundness_mode_combo.setEnabled)
@@ -3817,6 +4019,8 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_spinbox.setEnabled(False)
         self.fwhm_spinbox.setToolTip(fwhm_label_tooltip)
         self.fwhm_mode_combo = QComboBox()
+        self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
+        self.fwhm_mode_combo.setFixedWidth(72)
         self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
         self.fwhm_mode_combo.setFixedWidth(72)
         self.fwhm_mode_combo.setEnabled(False)
@@ -3849,6 +4053,8 @@ class PreprocessingInterface(QMainWindow):
         self.stars_mode_combo = QComboBox()
         self.stars_mode_combo.addItems(["σ", "%", "abs"])
         self.stars_mode_combo.setFixedWidth(72)
+        self.stars_mode_combo.addItems(["σ", "%", "abs"])
+        self.stars_mode_combo.setFixedWidth(72)
         self.stars_mode_combo.setEnabled(False)
         self.stars_check.toggled.connect(self.stars_spinbox.setEnabled)
         self.stars_check.toggled.connect(self.stars_mode_combo.setEnabled)
@@ -3877,6 +4083,8 @@ class PreprocessingInterface(QMainWindow):
         self.bkg_spinbox.setEnabled(False)
         self.bkg_spinbox.setToolTip(bkg_label_tooltip)
         self.bkg_mode_combo = QComboBox()
+        self.bkg_mode_combo.addItems(["σ", "%", "abs"])
+        self.bkg_mode_combo.setFixedWidth(72)
         self.bkg_mode_combo.addItems(["σ", "%", "abs"])
         self.bkg_mode_combo.setFixedWidth(72)
         self.bkg_mode_combo.setEnabled(False)
@@ -3968,14 +4176,25 @@ class PreprocessingInterface(QMainWindow):
         )
         self.paneled_mosaic_radio.setEnabled(len(self.sessions) > 1)
 
+        self.stitch_mosaic_radio = QRadioButton("Stitch mosaic panels only")
+        self.stitch_mosaic_radio.setToolTip(
+            "Lights in the single session are already calibrated and stacked mosaic panels.\n"
+            "They are plate solved and stitched with no rejection and overlap normalization.\n"
+            "Feathering is applied when Enable Feather is on. All other processing options are ignored.\n"
+            "Available only with one session containing at least 2 lights."
+        )
+        self.stitch_mosaic_radio.setEnabled(self._stitch_mosaic_available())
+
         self.target_mode_button_group = QButtonGroup()
         self.target_mode_button_group.addButton(self.single_target_radio)
         self.target_mode_button_group.addButton(self.multi_target_radio)
         self.target_mode_button_group.addButton(self.paneled_mosaic_radio)
+        self.target_mode_button_group.addButton(self.stitch_mosaic_radio)
 
         target_mode_layout.addWidget(self.single_target_radio)
         target_mode_layout.addWidget(self.multi_target_radio)
         target_mode_layout.addWidget(self.paneled_mosaic_radio)
+        target_mode_layout.addWidget(self.stitch_mosaic_radio)
         target_mode_box.setLayout(target_mode_layout)
         stacking_layout.addWidget(target_mode_box)
 
@@ -4154,19 +4373,46 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
 
+    def _stitch_mosaic_available(self) -> bool:
+        """Stitch-only mode needs exactly one session holding at least 2 panels."""
+        return len(self.sessions) == 1 and len(self.sessions[0].lights) >= 2
+
+    def _target_mode(self) -> str:
+        """Return the selected target mode key used in presets/config."""
+        if self.stitch_mosaic_radio.isChecked():
+            return "stitch"
+        if self.paneled_mosaic_radio.isChecked():
+            return "paneled"
+        if self.multi_target_radio.isChecked():
+            return "multi"
+        return "single"
+
     def update_process_separately_checkbox(self):
-        """Update the enabled state of target mode radios based on session count."""
+        """Update the enabled state of target mode radios based on the sessions."""
+        if not hasattr(self, "stitch_mosaic_radio"):
+            return
         multi_session = len(self.sessions) > 1
+        merge_ok = self._stitch_mosaic_available()
         self.multi_target_radio.setEnabled(multi_session)
         self.paneled_mosaic_radio.setEnabled(multi_session)
-        if not multi_session:
+        self.stitch_mosaic_radio.setEnabled(merge_ok)
+        if (
+            not multi_session
+            and (
+                self.multi_target_radio.isChecked()
+                or self.paneled_mosaic_radio.isChecked()
+            )
+        ) or (not merge_ok and self.stitch_mosaic_radio.isChecked()):
             self.single_target_radio.setChecked(True)
 
     def on_target_mode_changed(self, button, checked):
         """Update create_final_stack state when target mode radio selection changes."""
         if not checked:
             return
-        if self.paneled_mosaic_radio.isChecked():
+        if (
+            self.paneled_mosaic_radio.isChecked()
+            or self.stitch_mosaic_radio.isChecked()
+        ):
             self.create_final_stack_check.setChecked(True)
             self.create_final_stack_check.setEnabled(False)
         elif self.multi_target_radio.isChecked():
@@ -4180,17 +4426,45 @@ class PreprocessingInterface(QMainWindow):
         """Update spinbox properties when filter mode changes between σ, % and abs."""
         mode = combo.currentText()
         if mode == "σ":
+        """Update spinbox properties when filter mode changes between σ, % and abs."""
+        mode = combo.currentText()
+        if mode == "σ":
             spinbox.setRange(1, 4)
             spinbox.setSingleStep(0.1)
             spinbox.setDecimals(1)
             spinbox.setValue(3.0)
             spinbox.setSuffix(" σ")
         elif mode == "%":
+        elif mode == "%":
             spinbox.setRange(1, 100)
             spinbox.setSingleStep(1)
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
+        else:  # abs — a raw threshold passed to Siril with no suffix
+            # Per-metric ranges: absolute thresholds differ wildly (roundness and
+            # background are 0–1, FWHM is in pixels, star count is in the 100s).
+            if spinbox is self.stars_spinbox:
+                spinbox.setRange(0, 100000)
+                spinbox.setSingleStep(10)
+                spinbox.setDecimals(0)
+                spinbox.setValue(100)
+            elif spinbox is self.fwhm_spinbox:
+                spinbox.setRange(0.0, 30.0)
+                spinbox.setSingleStep(0.1)
+                spinbox.setDecimals(2)
+                spinbox.setValue(3.0)
+            elif spinbox is self.bkg_spinbox:
+                spinbox.setRange(0.0, 1.0)
+                spinbox.setSingleStep(0.001)
+                spinbox.setDecimals(4)
+                spinbox.setValue(0.1)
+            else:  # roundness
+                spinbox.setRange(0.0, 1.0)
+                spinbox.setSingleStep(0.05)
+                spinbox.setDecimals(2)
+                spinbox.setValue(0.9)
+            spinbox.setSuffix("")
         else:  # abs — a raw threshold passed to Siril with no suffix
             # Per-metric ranges: absolute thresholds differ wildly (roundness and
             # background are 0–1, FWHM is in pixels, star count is in the 100s).
@@ -4306,11 +4580,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_stars_mode": self.stars_mode_combo.currentText(),
             "filter_bkg_mode": self.bkg_mode_combo.currentText(),
             "cleanup": self.cleanup_check.isChecked(),
-            "target_mode": (
-                "paneled"
-                if self.paneled_mosaic_radio.isChecked()
-                else "multi" if self.multi_target_radio.isChecked() else "single"
-            ),
+            "target_mode": self._target_mode(),
             "create_final_stack": self.create_final_stack_check.isChecked(),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
             "output_norm": self.output_norm_check.isChecked(),
@@ -4353,6 +4623,8 @@ class PreprocessingInterface(QMainWindow):
             self.paneled_mosaic_radio.setChecked(True)
         elif target_mode == "multi" and len(self.sessions) > 1:
             self.multi_target_radio.setChecked(True)
+        elif target_mode == "stitch" and self._stitch_mosaic_available():
+            self.stitch_mosaic_radio.setChecked(True)
         else:
             self.single_target_radio.setChecked(True)
         self.create_final_stack_check.setChecked(
@@ -4563,6 +4835,7 @@ class PreprocessingInterface(QMainWindow):
             "bg_extract": self.bg_extract_check.isChecked(),
             "use_astrometry_net": (
                 self.astrometry_net_available and self.astrometry_net_check.isChecked()
+                self.astrometry_net_available and self.astrometry_net_check.isChecked()
             ),
             "drizzle": self.drizzle_checkbox.isChecked(),
             "drizzle_amount": round(self.drizzle_amount_spinbox.value(), 1),
@@ -4582,11 +4855,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_stars_mode": self.stars_mode_combo.currentText(),
             "filter_bkg_mode": self.bkg_mode_combo.currentText(),
             "cleanup": self.cleanup_check.isChecked(),
-            "target_mode": (
-                "paneled"
-                if self.paneled_mosaic_radio.isChecked()
-                else "multi" if self.multi_target_radio.isChecked() else "single"
-            ),
+            "target_mode": self._target_mode(),
             "create_final_stack": self.create_final_stack_check.isChecked(),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
             "output_norm": self.output_norm_check.isChecked(),
@@ -4683,9 +4952,6 @@ class PreprocessingInterface(QMainWindow):
             with open(filepath) as f:
                 presets = json.load(f)
 
-                # Load UI settings
-                self._apply_processing_settings(presets)
-
                 # Load session data
                 sessions_data = presets.get("sessions", [])
                 if sessions_data:
@@ -4716,6 +4982,9 @@ class PreprocessingInterface(QMainWindow):
                     self.refresh_file_list()
                     self.update_process_separately_checkbox()
 
+                # Applied after sessions load so session-dependent target modes restore.
+                self._apply_processing_settings(presets)
+
                 self.siril.log(
                     f"Loaded presets and {len(sessions_data)} sessions from {filepath}",
                     LogColor.GREEN,
@@ -4735,6 +5004,80 @@ class PreprocessingInterface(QMainWindow):
         )
         if filepath:
             self.load_presets(filepath=filepath)
+
+    def stitch_mosaic_panels_only(
+        self, feather, feather_amount, use_astrometry_net=False, clean_up_files=False
+    ):
+        """Plate solve the single session's already stacked panels and stitch them
+        with no rejection and overlap normalization, feathering when enabled."""
+        panels = list(self.sessions[0].lights)
+        self.siril.log(
+            f"Merging {len(panels)} pre-stacked mosaic panel(s)...", LogColor.BLUE
+        )
+        process_dir = os.path.join(self.home_directory, "paneled_mosaic_process")
+        lights_dir = os.path.join(process_dir, "lights")
+        os.makedirs(lights_dir, exist_ok=True)
+
+        # Prefix with the panel index so panels sharing a file name don't collide.
+        for n, src in enumerate(panels, start=1):
+            dst = os.path.join(lights_dir, f"panel{n:02d}_{Path(src).name}")
+            try:
+                shutil.copy2(src, dst)
+            except OSError as e:
+                self.siril.log(f"Failed to copy panel {src}: {e}", LogColor.RED)
+                return
+
+        self.siril.cmd("cd", f'"{lights_dir}"')
+        seq_cmd = "link" if all(_is_fits_file(p) for p in panels) else "convert"
+        try:
+            self.siril.cmd(seq_cmd, "lights")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Could not build panel sequence: {e}", LogColor.RED)
+            return
+        seq_name = "lights_"
+
+        if self.seq_plate_solve(
+            seq_name=seq_name, use_astrometry_net=use_astrometry_net
+        ):
+            reg_steps = [["seqapplyreg", seq_name, "-kernel=square", "-framing=max"]]
+        else:
+            self.siril.log(
+                "Plate solving failed; falling back to star registration, which "
+                "needs well-overlapping panels.",
+                LogColor.SALMON,
+            )
+            reg_steps = [
+                ["register", seq_name, "-2pass"],
+                ["seqapplyreg", seq_name, "-framing=max"],
+            ]
+        try:
+            for step in reg_steps:
+                self.siril.cmd(*step)
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Could not register panels: {e}", LogColor.RED)
+            return
+        seq_name = f"r_{seq_name}"
+
+        self.seq_stack(
+            seq_name=seq_name,
+            feather=feather,
+            feather_amount=feather_amount,
+            rejection=False,
+            output_name="merged_mosaic_stacked",
+            overlap_norm=True,
+            output_norm=True,
+            stack_weighted=False,
+        )
+
+        self.load_image(image_name="merged_mosaic_stacked")
+        self.siril.cmd("cd", f'"{self.home_directory}"')
+        self.current_working_directory = self.siril.get_siril_wd()
+        file_name = self.save_image("_merged_mosaic")
+        self.siril.log(f"Merged mosaic saved as {file_name}", LogColor.GREEN)
+
+        if clean_up_files:
+            shutil.rmtree(process_dir, ignore_errors=True)
+            self.siril.log("Cleaned up paneled_mosaic_process directory", LogColor.BLUE)
 
     # TODO: Replace paneled_mosaic boolean with target_mode enum for clarity and scalability
     def run_script(
@@ -4807,7 +5150,7 @@ class PreprocessingInterface(QMainWindow):
             f"paneled_mosaic={paneled_mosaic}\n"
             f"create_final_stack={self.create_final_stack_check.isChecked()}\n"
             f"save_calibrated_lights={self.save_calibrated_lights_check.isChecked()}\n"
-            f"target_mode={'paneled mosaic' if self.paneled_mosaic_radio.isChecked() else 'multi target' if self.multi_target_radio.isChecked() else 'single target'}\n"
+            f"target_mode={self._target_mode()}\n"
             f"stack_weighted={stack_weighted} method={weighting_method}\n"
             f"output_norm={output_norm}\n"
             f"build={VERSION}-{BUILD}",
@@ -4866,6 +5209,17 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
                 return
+        if self.stitch_mosaic_radio.isChecked():
+            self.drizzle_status = False
+            self.stitch_mosaic_panels_only(
+                feather=feather,
+                feather_amount=feather_amount,
+                use_astrometry_net=use_astrometry_net,
+                clean_up_files=clean_up_files,
+            )
+            self.print_footer()
+            return
+
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
