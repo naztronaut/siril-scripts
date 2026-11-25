@@ -1516,9 +1516,8 @@ class PreprocessingInterface(QMainWindow):
 
     def _handle_dropped_files(self, paths: list):
         """Called by DragDropTreeWidget when files or folders are dropped onto the list.
-        """Called by DragDropTreeWidget when files or folders are dropped onto the list.
 
-        Folders named lights/darks/flats/biases (or dark flats → biases) are
+        Folders named lights/darks/flats/biases (or dark flats -> biases) are
         recognised and their contents are added to the *current session* directly,
         bypassing the frame-type dialog.
 
