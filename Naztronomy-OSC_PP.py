@@ -47,6 +47,9 @@ CHANGELOG:
       - Reset Calibration: remove darks/flats/biases from chosen sessions
         (per-session selection when multiple sessions exist); lights untouched.
       - Allow astrometry.net fallback (PR#107 @tophrchris)
+      - New target mode "Stitch mosaic panels only": plate solves already stacked
+        panels in a single session and stitches them (no rejection, overlap
+        normalization, optional feathering)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -1762,6 +1765,7 @@ class PreprocessingInterface(QMainWindow):
             self.session_content_group.setTitle(title)
 
         self.update_frame_buttons()
+        self.update_process_separately_checkbox()
 
     def update_frame_buttons(self):
         """Show a green circle on each Add button when that frame type has files loaded."""
@@ -2674,36 +2678,16 @@ class PreprocessingInterface(QMainWindow):
             )
 
     def local_astrometry_net_available(self):
-        """Return True when Siril can find a local solve-field installation."""
-        configured_dir = ""
+        """Return True only when Siril's core.asnet_dir is set to an existing folder."""
         try:
             configured_dir = self.siril.get_siril_config("core", "asnet_dir")
         except (s.DataError, s.CommandError, s.SirilError):
-            pass
+            return False
 
-        if configured_dir and configured_dir != "(not set)":
-            candidates = [
-                os.path.join(configured_dir, "solve-field"),
-                os.path.join(configured_dir, "solve-field.exe"),
-                os.path.join(configured_dir, "bin", "solve-field"),
-                os.path.join(configured_dir, "bin", "solve-field.exe"),
-            ]
-            if any(os.path.isfile(candidate) for candidate in candidates):
-                return True
-
-        if shutil.which("solve-field"):
-            return True
-
-        if sys.platform.startswith("win"):
-            ansvr_root = os.path.join(
-                os.environ.get("LOCALAPPDATA", ""), "cygwin_ansvr"
-            )
-            return any(
-                os.path.isfile(os.path.join(ansvr_root, "bin", executable))
-                for executable in ("solve-field", "solve-field.exe")
-            )
-
-        return False
+        configured_dir = str(configured_dir or "").strip()
+        if not configured_dir or configured_dir == "(not set)":
+            return False
+        return os.path.isdir(configured_dir)
 
     # Plate solve on sequence runs when file count < 2048
     def seq_plate_solve(self, seq_name, use_astrometry_net=False):
@@ -3344,6 +3328,10 @@ class PreprocessingInterface(QMainWindow):
             <li><b>Create Paneled Mosaic</b>: Sessions are registered and stacked together
                 with overlap-normalisation to produce a seamless mosaic. Each session should
                 cover a different panel of the same field.</li>
+            <li><b>Stitch Mosaic Panels Only</b>: For panels that are <i>already calibrated and
+                stacked</i>. Add every panel as a light in a single session; they are plate
+                solved and stitched with no rejection and overlap normalization, feathered
+                when <i>Enable Feather</i> is on. All other processing options are ignored.</li>
             </ul>
 
             <h3>Create Final Stack</h3>
@@ -3884,14 +3872,25 @@ class PreprocessingInterface(QMainWindow):
         )
         self.paneled_mosaic_radio.setEnabled(len(self.sessions) > 1)
 
+        self.stitch_mosaic_radio = QRadioButton("Stitch mosaic panels only")
+        self.stitch_mosaic_radio.setToolTip(
+            "Lights in the single session are already calibrated and stacked mosaic panels.\n"
+            "They are plate solved and stitched with no rejection and overlap normalization.\n"
+            "Feathering is applied when Enable Feather is on. All other processing options are ignored.\n"
+            "Available only with one session containing at least 2 lights."
+        )
+        self.stitch_mosaic_radio.setEnabled(self._stitch_mosaic_available())
+
         self.target_mode_button_group = QButtonGroup()
         self.target_mode_button_group.addButton(self.single_target_radio)
         self.target_mode_button_group.addButton(self.multi_target_radio)
         self.target_mode_button_group.addButton(self.paneled_mosaic_radio)
+        self.target_mode_button_group.addButton(self.stitch_mosaic_radio)
 
         target_mode_layout.addWidget(self.single_target_radio)
         target_mode_layout.addWidget(self.multi_target_radio)
         target_mode_layout.addWidget(self.paneled_mosaic_radio)
+        target_mode_layout.addWidget(self.stitch_mosaic_radio)
         target_mode_box.setLayout(target_mode_layout)
         stacking_layout.addWidget(target_mode_box)
 
@@ -4070,19 +4069,46 @@ class PreprocessingInterface(QMainWindow):
             LogColor.BLUE,
         )
 
+    def _stitch_mosaic_available(self) -> bool:
+        """Stitch-only mode needs exactly one session holding at least 2 panels."""
+        return len(self.sessions) == 1 and len(self.sessions[0].lights) >= 2
+
+    def _target_mode(self) -> str:
+        """Return the selected target mode key used in presets/config."""
+        if self.stitch_mosaic_radio.isChecked():
+            return "stitch"
+        if self.paneled_mosaic_radio.isChecked():
+            return "paneled"
+        if self.multi_target_radio.isChecked():
+            return "multi"
+        return "single"
+
     def update_process_separately_checkbox(self):
-        """Update the enabled state of target mode radios based on session count."""
+        """Update the enabled state of target mode radios based on the sessions."""
+        if not hasattr(self, "stitch_mosaic_radio"):
+            return
         multi_session = len(self.sessions) > 1
+        merge_ok = self._stitch_mosaic_available()
         self.multi_target_radio.setEnabled(multi_session)
         self.paneled_mosaic_radio.setEnabled(multi_session)
-        if not multi_session:
+        self.stitch_mosaic_radio.setEnabled(merge_ok)
+        if (
+            not multi_session
+            and (
+                self.multi_target_radio.isChecked()
+                or self.paneled_mosaic_radio.isChecked()
+            )
+        ) or (not merge_ok and self.stitch_mosaic_radio.isChecked()):
             self.single_target_radio.setChecked(True)
 
     def on_target_mode_changed(self, button, checked):
         """Update create_final_stack state when target mode radio selection changes."""
         if not checked:
             return
-        if self.paneled_mosaic_radio.isChecked():
+        if (
+            self.paneled_mosaic_radio.isChecked()
+            or self.stitch_mosaic_radio.isChecked()
+        ):
             self.create_final_stack_check.setChecked(True)
             self.create_final_stack_check.setEnabled(False)
         elif self.multi_target_radio.isChecked():
@@ -4222,11 +4248,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_stars_mode": self.stars_mode_combo.currentText(),
             "filter_bkg_mode": self.bkg_mode_combo.currentText(),
             "cleanup": self.cleanup_check.isChecked(),
-            "target_mode": (
-                "paneled"
-                if self.paneled_mosaic_radio.isChecked()
-                else "multi" if self.multi_target_radio.isChecked() else "single"
-            ),
+            "target_mode": self._target_mode(),
             "create_final_stack": self.create_final_stack_check.isChecked(),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
             "output_norm": self.output_norm_check.isChecked(),
@@ -4269,6 +4291,8 @@ class PreprocessingInterface(QMainWindow):
             self.paneled_mosaic_radio.setChecked(True)
         elif target_mode == "multi" and len(self.sessions) > 1:
             self.multi_target_radio.setChecked(True)
+        elif target_mode == "stitch" and self._stitch_mosaic_available():
+            self.stitch_mosaic_radio.setChecked(True)
         else:
             self.single_target_radio.setChecked(True)
         self.create_final_stack_check.setChecked(
@@ -4498,11 +4522,7 @@ class PreprocessingInterface(QMainWindow):
             "filter_stars_mode": self.stars_mode_combo.currentText(),
             "filter_bkg_mode": self.bkg_mode_combo.currentText(),
             "cleanup": self.cleanup_check.isChecked(),
-            "target_mode": (
-                "paneled"
-                if self.paneled_mosaic_radio.isChecked()
-                else "multi" if self.multi_target_radio.isChecked() else "single"
-            ),
+            "target_mode": self._target_mode(),
             "create_final_stack": self.create_final_stack_check.isChecked(),
             "save_calibrated_lights": self.save_calibrated_lights_check.isChecked(),
             "output_norm": self.output_norm_check.isChecked(),
@@ -4599,9 +4619,6 @@ class PreprocessingInterface(QMainWindow):
             with open(filepath) as f:
                 presets = json.load(f)
 
-                # Load UI settings
-                self._apply_processing_settings(presets)
-
                 # Load session data
                 sessions_data = presets.get("sessions", [])
                 if sessions_data:
@@ -4632,6 +4649,9 @@ class PreprocessingInterface(QMainWindow):
                     self.refresh_file_list()
                     self.update_process_separately_checkbox()
 
+                # Applied after sessions load so session-dependent target modes restore.
+                self._apply_processing_settings(presets)
+
                 self.siril.log(
                     f"Loaded presets and {len(sessions_data)} sessions from {filepath}",
                     LogColor.GREEN,
@@ -4651,6 +4671,80 @@ class PreprocessingInterface(QMainWindow):
         )
         if filepath:
             self.load_presets(filepath=filepath)
+
+    def stitch_mosaic_panels_only(
+        self, feather, feather_amount, use_astrometry_net=False, clean_up_files=False
+    ):
+        """Plate solve the single session's already stacked panels and stitch them
+        with no rejection and overlap normalization, feathering when enabled."""
+        panels = list(self.sessions[0].lights)
+        self.siril.log(
+            f"Merging {len(panels)} pre-stacked mosaic panel(s)...", LogColor.BLUE
+        )
+        process_dir = os.path.join(self.home_directory, "paneled_mosaic_process")
+        lights_dir = os.path.join(process_dir, "lights")
+        os.makedirs(lights_dir, exist_ok=True)
+
+        # Prefix with the panel index so panels sharing a file name don't collide.
+        for n, src in enumerate(panels, start=1):
+            dst = os.path.join(lights_dir, f"panel{n:02d}_{Path(src).name}")
+            try:
+                shutil.copy2(src, dst)
+            except OSError as e:
+                self.siril.log(f"Failed to copy panel {src}: {e}", LogColor.RED)
+                return
+
+        self.siril.cmd("cd", f'"{lights_dir}"')
+        seq_cmd = "link" if all(_is_fits_file(p) for p in panels) else "convert"
+        try:
+            self.siril.cmd(seq_cmd, "lights")
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Could not build panel sequence: {e}", LogColor.RED)
+            return
+        seq_name = "lights_"
+
+        if self.seq_plate_solve(
+            seq_name=seq_name, use_astrometry_net=use_astrometry_net
+        ):
+            reg_steps = [["seqapplyreg", seq_name, "-kernel=square", "-framing=max"]]
+        else:
+            self.siril.log(
+                "Plate solving failed; falling back to star registration, which "
+                "needs well-overlapping panels.",
+                LogColor.SALMON,
+            )
+            reg_steps = [
+                ["register", seq_name, "-2pass"],
+                ["seqapplyreg", seq_name, "-framing=max"],
+            ]
+        try:
+            for step in reg_steps:
+                self.siril.cmd(*step)
+        except (s.DataError, s.CommandError, s.SirilError) as e:
+            self.siril.log(f"Could not register panels: {e}", LogColor.RED)
+            return
+        seq_name = f"r_{seq_name}"
+
+        self.seq_stack(
+            seq_name=seq_name,
+            feather=feather,
+            feather_amount=feather_amount,
+            rejection=False,
+            output_name="merged_mosaic_stacked",
+            overlap_norm=True,
+            output_norm=True,
+            stack_weighted=False,
+        )
+
+        self.load_image(image_name="merged_mosaic_stacked")
+        self.siril.cmd("cd", f'"{self.home_directory}"')
+        self.current_working_directory = self.siril.get_siril_wd()
+        file_name = self.save_image("_merged_mosaic")
+        self.siril.log(f"Merged mosaic saved as {file_name}", LogColor.GREEN)
+
+        if clean_up_files:
+            shutil.rmtree(process_dir, ignore_errors=True)
+            self.siril.log("Cleaned up paneled_mosaic_process directory", LogColor.BLUE)
 
     # TODO: Replace paneled_mosaic boolean with target_mode enum for clarity and scalability
     def run_script(
@@ -4723,7 +4817,7 @@ class PreprocessingInterface(QMainWindow):
             f"paneled_mosaic={paneled_mosaic}\n"
             f"create_final_stack={self.create_final_stack_check.isChecked()}\n"
             f"save_calibrated_lights={self.save_calibrated_lights_check.isChecked()}\n"
-            f"target_mode={'paneled mosaic' if self.paneled_mosaic_radio.isChecked() else 'multi target' if self.multi_target_radio.isChecked() else 'single target'}\n"
+            f"target_mode={self._target_mode()}\n"
             f"stack_weighted={stack_weighted} method={weighting_method}\n"
             f"output_norm={output_norm}\n"
             f"build={VERSION}-{BUILD}",
@@ -4782,6 +4876,17 @@ class PreprocessingInterface(QMainWindow):
                     LogColor.BLUE,
                 )
                 return
+        if self.stitch_mosaic_radio.isChecked():
+            self.drizzle_status = False
+            self.stitch_mosaic_panels_only(
+                feather=feather,
+                feather_amount=feather_amount,
+                use_astrometry_net=use_astrometry_net,
+                clean_up_files=clean_up_files,
+            )
+            self.print_footer()
+            return
+
         # Check files - if more than 2048, batch them:
         self.drizzle_status = drizzle
         self.drizzle_factor = drizzle_amount
