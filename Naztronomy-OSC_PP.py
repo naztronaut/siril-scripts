@@ -28,29 +28,28 @@ allows you to choose files from any folder and drive and they will all be consol
 """
 CHANGELOG:
 
-2.0.4 - Discard rejected and bad files coming from NINA
-      - Files tab: file list is now a sortable, grouped tree (#, Filter, Object,
-        File name) with per-type counts in the group title. Ported from Mono PP.
-      - Export Sessions to CSV: writes an AstroBin acquisition CSV (date, filter,
-        frame counts, exposure, gain, binning, cooling, f-number) with a Bortle
-        prompt applied to every row.
-      - Master Config: configure a reusable master darks folder and a single
-        master bias file, remembered between runs in the shared scripts config.
-      - Import Masters: apply configured master darks (matched by exposure time
-        and temperature) and the master bias to all open sessions.
-      - Reset Calibration: remove darks/flats/biases from chosen sessions
-        (per-session selection when multiple sessions exist); lights untouched.
-      - Filter settings: added "abs" (absolute value) mode alongside sigma and % for
-        Roundness, FWHM, Star Count and Background filters. When "abs" is chosen
-        the raw value is passed to Siril with no suffix (issue #99).
-      - allow astrometry.net fallback (PR#107 @tophrchris)
 2.0.4 - Add nbstacks to weighting
       - Persist Processing-tab settings between runs (shared naztronomy_scripts_config.json)
       - Remove the experimental Mono target mode (now handled by the Mono preprocessing script)
       - Export sessions to an AstroBin acquisition CSV (with Bortle prompt)
       - Filter settings: add "abs" mode to pass an absolute threshold (no k/% suffix)
+        for Roundness, FWHM, Star Count and Background filters (issue #99)
       - Folder scan: collect loose FITS files found directly inside an unrecognised
         folder as lights instead of silently dropping them
+      - Discard rejected and bad files coming from NINA
+      - Files tab: file list is now a sortable, grouped tree (#, Filter, Object,
+        File name) with per-type counts in the group title. Ported from Mono PP.
+      - Master Config: per-telescope profiles, each with a master darks folder,
+        a master bias file and a master flat file, remembered between runs.
+      - Import Masters: pick a profile and apply master darks (matched by exposure
+        time and temperature), the master bias and the master flat to all open
+        sessions.
+      - Reset Calibration: remove darks/flats/biases from chosen sessions
+        (per-session selection when multiple sessions exist); lights untouched.
+      - Allow astrometry.net fallback (PR#107 @tophrchris)
+      - New target mode "Stitch mosaic panels only": plate solves already stacked
+        panels in a single session and stitches them (no rejection, overlap
+        normalization, optional feathering)
 2.0.3 - Files tab UI overhaul
       - Drag and drop files or folders directly onto the file list
       - Folder drop: named folders (lights/darks/flats/biases/dark flats) auto-detected
@@ -134,55 +133,28 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
-    QComboBox,
-    QFrame,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QHeaderView,
     QLineEdit,
-    QGridLayout,
-    QSpinBox,
-    QDoubleSpinBox,
-    QCheckBox,
-    QRadioButton,
-    QButtonGroup,
-    QTabWidget,
-    QGroupBox,
-    QFileDialog,
-    QMessageBox,
-    QAbstractItemView,
-    QToolButton,
+    QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QTabWidget,
+    QTextBrowser,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtGui import (
-    QFont,
-    QShortcut,
-    QKeySequence,
-    QAction,
-    QDesktopServices,
-    QDragEnterEvent,
-    QDropEvent,
-    QPainter,
-    QColor,
-    QBrush,
-)
-from datetime import datetime, timedelta
-import csv
-import re
-import time
-import os
-import sys
-import json
-import qt_themes
 from sirilpy import LogColor, NoImageError
 
 APP_NAME = "Naztronomy - OSC Image Preprocessor"
 VERSION = "2.0.4"
-BUILD = "20260930"
+BUILD = "20261125"
 AUTHOR = "Nazmus Nasir"
 WEBSITE = "https://www.Naztronomy.com"
 YOUTUBE = "https://www.YouTube.com/Naztronomy"
@@ -210,15 +182,7 @@ UI_DEFAULTS = {
 ALWAYS_SYMLINK: bool = False
 FRAME_TYPES = ("lights", "darks", "flats", "biases")
 
-# Accepted input frame extensions for reading metadata / matching masters.
-FITS_INPUT_EXTENSIONS = (".fit", ".fits", ".fit.fz", ".fits.fz")
 XISF_INPUT_EXTENSIONS = (".xisf",)
-
-
-def _is_fits_file(path) -> bool:
-    """Return True if `path` looks like a FITS file by extension."""
-    name = str(path).lower()
-    return any(name.endswith(ext) for ext in FITS_INPUT_EXTENSIONS)
 
 
 def _is_xisf_file(path) -> bool:
@@ -250,23 +214,6 @@ def _is_rejected_file(path) -> bool:
 # masters (which astropy cannot open) are parsed from the file name instead.
 MASTER_DARK_TEMP_TOLERANCE: float = 3.0
 MASTER_DARK_EXP_TOLERANCE: float = 1.0
-
-_EXPTIME_NAME_RE = re.compile(
-    r"exp(?:osure|time)?[\s_\-]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)?",
-    re.IGNORECASE,
-)
-_EXPTIME_NAME_RE_GENERIC = re.compile(
-    r"([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds)\b",
-    re.IGNORECASE,
-)
-_TEMP_NAME_RE = re.compile(
-    r"(?:ccd[\s_\-]*temp|temp)[\s_=:\-]?(-?[0-9]+(?:\.[0-9]+)?)",
-    re.IGNORECASE,
-)
-_TEMP_NAME_RE_GENERIC = re.compile(
-    r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:deg)?\s*c(?![a-z])",
-    re.IGNORECASE,
-)
 
 
 def _read_fits_header_dict(path) -> dict:
@@ -310,151 +257,6 @@ def _read_fits_filter(path):
         return None
     val = _read_fits_value(path, "FILTER")
     return str(val).strip() if val not in (None, "") else None
-
-
-def _parse_exptime_from_name(name) -> float | None:
-    """Parse an exposure time (seconds) from a file name, or None."""
-    stem = Path(name).stem
-    match = _EXPTIME_NAME_RE.search(stem) or _EXPTIME_NAME_RE_GENERIC.search(stem)
-    if match:
-        try:
-            return float(match.group(1))
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _parse_temp_from_name(name) -> float | None:
-    """Parse a sensor temperature (°C) from a file name, or None."""
-    stem = Path(name).stem
-    match = _TEMP_NAME_RE.search(stem) or _TEMP_NAME_RE_GENERIC.search(stem)
-    if match:
-        try:
-            return float(match.group(1))
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _get_exptime_temp(path) -> tuple[float | None, float | None]:
-    """Return (exposure_seconds, temperature_C) for a frame.
-
-    FITS frames are read from their headers, falling back to the file name for
-    any missing value. XISF frames are parsed from the file name only.
-    """
-    if _is_fits_file(path):
-        exptime = _read_fits_value(path, "EXPTIME", "EXPOSURE")
-        temp = _read_fits_value(path, "CCD-TEMP", "CCD_TEMP", "CCDTEMP", "TEMP")
-        try:
-            exptime = float(exptime) if exptime not in (None, "") else None
-        except (TypeError, ValueError):
-            exptime = None
-        try:
-            temp = float(temp) if temp not in (None, "") else None
-        except (TypeError, ValueError):
-            temp = None
-        if exptime is None:
-            exptime = _parse_exptime_from_name(path)
-        if temp is None:
-            temp = _parse_temp_from_name(path)
-        return exptime, temp
-    return _parse_exptime_from_name(path), _parse_temp_from_name(path)
-
-
-def _parse_dateobs_night(value) -> str | None:
-    """Convert a FITS DATE-OBS value to the acquisition-night date (YYYY-MM-DD).
-
-    DATE-OBS is a UTC timestamp at the start of the exposure. Subtracting 12
-    hours before taking the date rolls after-midnight frames back into the night
-    the session started (the convention AstroBin expects). Returns None when the
-    value cannot be parsed.
-    """
-    if value in (None, ""):
-        return None
-    text = str(value).strip().rstrip("Z")
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        try:
-            return datetime.strptime(text[:10], "%Y-%m-%d").date().isoformat()
-        except ValueError:
-            return None
-    return (dt - timedelta(hours=12)).date().isoformat()
-
-
-def _read_light_metadata(path) -> dict:
-    """Read AstroBin-relevant metadata from a single light frame's FITS header.
-
-    Returns a dict with any of: date, filterName, binning, gain, sensorCooling,
-    fNumber, duration. Missing values are omitted.
-    """
-    meta: dict = {}
-    exptime, temp = _get_exptime_temp(path)
-    if exptime is not None:
-        meta["duration"] = exptime
-    if temp is not None:
-        meta["sensorCooling"] = temp
-
-    if not _is_fits_file(path):
-        return meta
-
-    header = _read_fits_header_dict(path)
-    if not header:
-        return meta
-
-    def _first(*keys):
-        for key in keys:
-            val = header.get(key)
-            if val not in (None, ""):
-                return val
-        return None
-
-    night = _parse_dateobs_night(_first("DATE-OBS", "DATE_OBS"))
-    if night:
-        meta["date"] = night
-
-    filter_name = _first("FILTER")
-    if filter_name not in (None, ""):
-        meta["filterName"] = str(filter_name).strip()
-
-    binning = _first("XBINNING", "BINNING", "BINX")
-    if binning not in (None, ""):
-        try:
-            meta["binning"] = int(float(binning))
-        except (TypeError, ValueError):
-            pass
-
-    gain = _first("GAIN", "EGAIN")
-    if gain not in (None, ""):
-        try:
-            meta["gain"] = float(gain)
-        except (TypeError, ValueError):
-            pass
-
-    if "sensorCooling" not in meta:
-        cooling = _first("CCD-TEMP", "CCD_TEMP", "CCDTEMP", "SET-TEMP", "TEMP")
-        if cooling not in (None, ""):
-            try:
-                meta["sensorCooling"] = float(cooling)
-            except (TypeError, ValueError):
-                pass
-
-    fnumber = _first("FOCRATIO", "FNUMBER", "F-RATIO")
-    if fnumber not in (None, ""):
-        try:
-            meta["fNumber"] = float(fnumber)
-        except (TypeError, ValueError):
-            pass
-
-    if "duration" not in meta:
-        dur = _first("EXPTIME", "EXPOSURE")
-        if dur not in (None, ""):
-            try:
-                meta["duration"] = float(dur)
-            except (TypeError, ValueError):
-                pass
-
-    return meta
 
 
 # ── Light-frame metadata (AstroBin acquisition CSV export) ───────────────────
@@ -747,35 +549,6 @@ class SortableTreeItem(QTreeWidgetItem):
             return int(text)
         except (TypeError, ValueError):
             return 0
-class SortableTreeItem(QTreeWidgetItem):
-    """Tree item with type-aware sorting.
-
-    The "#" column (column 0) sorts numerically rather than as text. Group-header
-    rows (those with ``group_order`` set) always keep their fixed insertion order
-    so the Lights/Darks/Flats/Biases sections never shuffle, no matter which
-    column the user sorts by.
-    """
-
-    group_order = None  # set on group-header rows to pin their position
-
-    def __lt__(self, other):
-        if (
-            self.group_order is not None
-            and getattr(other, "group_order", None) is not None
-        ):
-            return self.group_order < other.group_order
-        tree = self.treeWidget()
-        column = tree.sortColumn() if tree is not None else 0
-        if column == 0:
-            return self._as_int(self.text(0)) < self._as_int(other.text(0))
-        return self.text(column).lower() < other.text(column).lower()
-
-    @staticmethod
-    def _as_int(text):
-        try:
-            return int(text)
-        except (TypeError, ValueError):
-            return 0
 
 
 class FileTypeDialog(QDialog):
@@ -915,12 +688,9 @@ class FileTypeDialog(QDialog):
 
 class DragDropTreeWidget(QTreeWidget):
     """A QTreeWidget (multi-column) that accepts file drag-and-drop and emits the dropped paths."""
-class DragDropTreeWidget(QTreeWidget):
-    """A QTreeWidget (multi-column) that accepts file drag-and-drop and emits the dropped paths."""
 
     _NORMAL_STYLE = ""
     _HOVER_STYLE = (
-        "QTreeWidget { border: 2px dashed #2563eb;"
         "QTreeWidget { border: 2px dashed #2563eb;"
         " background-color: rgba(37, 99, 235, 0.07); }"
     )
@@ -944,7 +714,6 @@ class DragDropTreeWidget(QTreeWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.topLevelItemCount() == 0:
         if self.topLevelItemCount() == 0:
             painter = QPainter(self.viewport())
             painter.save()
@@ -1043,12 +812,10 @@ class PreprocessingInterface(QMainWindow):
         self.sessions = self.create_sessions(1)  # Start with one session
         self.chosen_session = self.sessions[0]
 
-        # Reusable master calibration config (set via the Master Config dialog).
-        # master_darks_dir: folder of master darks matched to sessions by
-        # exposure + temperature. master_bias_path: single master bias applied
-        # to every session. Persisted to a shared JSON in the Siril config dir.
-        self.master_darks_dir: str | None = None
-        self.master_bias_path: str | None = None
+        # Per-telescope master calibration profiles (darks folder, bias file,
+        # flats folder), persisted to the shared JSON in the Siril config dir.
+        self.master_profiles: list[dict] = []
+        self.active_profile_name: str | None = None
         self._last_bortle: str = ""
         self._load_master_config()
         # Persisted Processing-tab defaults, filled by _load_persistent_config
@@ -1298,16 +1065,9 @@ class PreprocessingInterface(QMainWindow):
                     continue
                 if child.name.lower() == "rejected":
                     continue
-                if child.name.lower() == "rejected":
-                    continue
                 child_key = child.name.lower()
 
                 if child_key in _FT_MAP or child_key in _ST_MAP:
-                    files = sorted(
-                        f
-                        for f in child.iterdir()
-                        if f.is_file() and not _is_rejected_file(f)
-                    )
                     files = sorted(
                         f
                         for f in child.iterdir()
@@ -1329,23 +1089,6 @@ class PreprocessingInterface(QMainWindow):
                                     ft, []
                                 ).extend(flist)
                 else:
-                    # Unrecognised dir — check for FITS files directly inside
-                    # (e.g. a target folder holding loose light frames). If found,
-                    # collect them as lights for the current group instead of
-                    # silently dropping them; otherwise treat the folder as a
-                    # potential session boundary and recurse deeper.
-                    direct_fits = sorted(
-                        f for f in child.iterdir() if f.is_file() and _is_fits_file(f)
-                    )
-                    if direct_fits:
-                        collected.setdefault("lights", []).extend(direct_fits)
-                    else:
-                        new_group = child if group_key is None else group_key
-                        for k, v in recurse(child, new_group).items():
-                            for ft, flist in v.items():
-                                sub_sessions.setdefault(k, {}).setdefault(
-                                    ft, []
-                                ).extend(flist)
                     # Unrecognised dir — check for FITS files directly inside
                     # (e.g. a target folder holding loose light frames). If found,
                     # collect them as lights for the current group instead of
@@ -1517,7 +1260,7 @@ class PreprocessingInterface(QMainWindow):
     def _handle_dropped_files(self, paths: list):
         """Called by DragDropTreeWidget when files or folders are dropped onto the list.
 
-        Folders named lights/darks/flats/biases (or dark flats -> biases) are
+        Folders named lights/darks/flats/biases (or dark flats → biases) are
         recognised and their contents are added to the *current session* directly,
         bypassing the frame-type dialog.
 
@@ -1556,8 +1299,6 @@ class PreprocessingInterface(QMainWindow):
 
         # Drop 'bad_' files and anything under a 'rejected' folder before staging.
         paths = [p for p in paths if not _is_rejected_file(p)]
-        # Drop 'bad_' files and anything under a 'rejected' folder before staging.
-        paths = [p for p in paths if not _is_rejected_file(p)]
         folders = [p for p in paths if Path(p).is_dir()]
         files = [p for p in paths if Path(p).is_file()]
 
@@ -1581,11 +1322,6 @@ class PreprocessingInterface(QMainWindow):
                     for f in folder.iterdir()
                     if f.is_file() and not _is_rejected_file(f)
                 )
-                folder_files = sorted(
-                    f
-                    for f in folder.iterdir()
-                    if f.is_file() and not _is_rejected_file(f)
-                )
                 if folder_files:
                     folder_additions.setdefault(frame_type, []).extend(folder_files)
                 else:
@@ -1602,11 +1338,6 @@ class PreprocessingInterface(QMainWindow):
                         )
             elif folder_key in _STACKED_FOLDER_MAP:
                 frame_type = _STACKED_FOLDER_MAP[folder_key]
-                folder_files = sorted(
-                    f
-                    for f in folder.iterdir()
-                    if f.is_file() and not _is_rejected_file(f)
-                )
                 folder_files = sorted(
                     f
                     for f in folder.iterdir()
@@ -1968,36 +1699,7 @@ class PreprocessingInterface(QMainWindow):
             cache[key] = obj if obj else "\u2014"
         return cache[key]
 
-    def _file_filter_label(self, file_type, path):
-        """Filter label shown in the file list's Filter column.
-
-        Darks and biases carry no filter. Lights/flats use a cached per-file
-        FILTER-header read so repeated refreshes don't re-read over the network.
-        """
-        if file_type in ("darks", "biases"):
-            return "\u2014"  # em dash
-        cache = getattr(self, "_file_filter_cache", None)
-        if cache is None:
-            cache = self._file_filter_cache = {}
-        key = str(path)
-        if key not in cache:
-            detected = _read_fits_filter(path)
-            cache[key] = detected if detected else "\u2014"
-        return cache[key]
-
-    def _file_object_label(self, path):
-        """Target name shown in the file list's Object column (cached header read)."""
-        cache = getattr(self, "_file_object_cache", None)
-        if cache is None:
-            cache = self._file_object_cache = {}
-        key = str(path)
-        if key not in cache:
-            obj = _read_fits_object(path)
-            cache[key] = obj if obj else "\u2014"
-        return cache[key]
-
     def refresh_file_list(self):
-        self.file_listbox.setSortingEnabled(False)
         self.file_listbox.setSortingEnabled(False)
         self.file_listbox.clear()
         self.siril.log(
@@ -2005,64 +1707,9 @@ class PreprocessingInterface(QMainWindow):
         )
 
         counts = {ft: 0 for ft in FRAME_TYPES}
-        counts = {ft: 0 for ft in FRAME_TYPES}
         if self.chosen_session:
             for order, file_type in enumerate(FRAME_TYPES):
-            for order, file_type in enumerate(FRAME_TYPES):
                 files = self.chosen_session.get_files_by_type(file_type)
-                counts[file_type] = len(files)
-                if not files:
-                    continue
-                bg_hex, fg_hex = self._FRAME_COLORS.get(
-                    file_type, ("#ffffff", "#000000")
-                )
-                row_bg = QBrush(QColor(bg_hex))
-                row_fg = QBrush(QColor(fg_hex))
-
-                # Group header — a strong colored bar spanning the whole row.
-                header_item = SortableTreeItem(
-                    [f"{file_type.capitalize()}  ({len(files)})"]
-                )
-                header_item.group_order = order
-                header_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                hfont = header_item.font(0)
-                hfont.setBold(True)
-                header_item.setFont(0, hfont)
-                header_item.setBackground(0, QBrush(QColor(fg_hex)))
-                header_item.setForeground(0, QBrush(QColor(bg_hex)))
-                self.file_listbox.addTopLevelItem(header_item)
-                header_item.setFirstColumnSpanned(True)
-
-                for n, file in enumerate(files, start=1):
-                    filt = self._file_filter_label(file_type, file)
-                    obj = self._file_object_label(file)
-                    child = SortableTreeItem([str(n), filt, obj, file.name])
-                    for col in range(4):
-                        child.setBackground(col, row_bg)
-                        child.setForeground(col, row_fg)
-                    child.setTextAlignment(
-                        0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
-                    child.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
-                    child.setToolTip(3, str(file.resolve()))
-                    child.setData(0, Qt.ItemDataRole.UserRole, (file_type, file))
-                    header_item.addChild(child)
-
-        self.file_listbox.expandAll()
-        self.file_listbox.setSortingEnabled(True)
-        self.file_listbox.sortByColumn(0, Qt.SortOrder.AscendingOrder)
-
-        # Group-box title with per-type counts, e.g.
-        # "Files in Session 1 — 28 L · 10 D · 10 F · 10 B  (total 58)"
-        if hasattr(self, "session_content_group"):
-            idx = self.session_dropdown.currentIndex() + 1
-            abbr = {"lights": "L", "darks": "D", "flats": "F", "biases": "B"}
-            parts = [f"{counts[ft]} {abbr[ft]}" for ft in FRAME_TYPES if counts[ft]]
-            total = sum(counts.values())
-            title = f"Files in Session {idx}"
-            if parts:
-                title += f" \u2014 {' \u00b7 '.join(parts)}  (total {total})"
-            self.session_content_group.setTitle(title)
                 counts[file_type] = len(files)
                 if not files:
                     continue
@@ -2155,16 +1802,8 @@ class PreprocessingInterface(QMainWindow):
             if data is not None:
                 selected_entries.append(data)
         if not selected_entries:
-        # Only file rows carry (frame_type, path) data; group headers are ignored.
-        selected_entries = []
-        for item in self.file_listbox.selectedItems():
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            if data is not None:
-                selected_entries.append(data)
-        if not selected_entries:
             return
 
-        msg = f"Are you sure you want to delete {len(selected_entries)} files? (Note: This will only remove them from the session, not delete them from disk.)"
         msg = f"Are you sure you want to delete {len(selected_entries)} files? (Note: This will only remove them from the session, not delete them from disk.)"
         reply = QMessageBox.question(
             self,
@@ -2174,10 +1813,6 @@ class PreprocessingInterface(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            for filetype, path in selected_entries:
-                file_list = getattr(self.chosen_session, filetype)
-                if path in file_list:
-                    file_list.remove(path)
             for filetype, path in selected_entries:
                 file_list = getattr(self.chosen_session, filetype)
                 if path in file_list:
@@ -2221,30 +1856,53 @@ class PreprocessingInterface(QMainWindow):
             label += f" ({', '.join(parts)})"
         return label
 
-    # ── Master calibration config / import / reset ────────────────────────
-    # Top-level key for this script's settings within the shared config file.
-    _CONFIG_SECTION = "osc"
+    # ── Master calibration profiles / import / reset ──────────────────────
+    # Name used when migrating a legacy single darks/bias config into a profile.
+    _DEFAULT_PROFILE_NAME = "Default"
 
-    def _master_config_path(self) -> Path | None:
-        """Return the path to the shared Naztronomy scripts config JSON, or None.
+    @staticmethod
+    def _blank_profile(name: str) -> dict:
+        """Return a new, empty calibration profile with the given name."""
+        return {
+            "name": name,
+            "master_darks_dir": "",
+            "master_bias_path": "",
+            "master_flat_path": "",
+        }
 
-        The file lives in the Siril user config directory and is shared across
-        the Naztronomy scripts; this script reads/writes its own ``osc`` section
-        so the master darks folder and master bias file are remembered between
-        runs.
-        """
-        try:
-            config_dir = self.siril.get_siril_configdir()
-        except Exception:
-            return None
-        if not config_dir:
-            return None
-        return Path(config_dir) / "naztronomy_scripts_config.json"
+    def _parse_profiles(self, section: dict) -> list[dict]:
+        """Return the calibration profiles stored in a config section, migrating
+        a legacy section-level master_darks_dir / master_bias_path into a single
+        ``_DEFAULT_PROFILE_NAME`` profile."""
+        raw = section.get("profiles")
+        profiles: list[dict] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                profile = self._blank_profile(name)
+                profile["master_darks_dir"] = item.get("master_darks_dir") or ""
+                profile["master_bias_path"] = item.get("master_bias_path") or ""
+                profile["master_flat_path"] = item.get("master_flat_path") or ""
+                profiles.append(profile)
+        if profiles:
+            return profiles
+        darks = section.get("master_darks_dir") or ""
+        bias = section.get("master_bias_path") or ""
+        if darks or bias:
+            legacy = self._blank_profile(self._DEFAULT_PROFILE_NAME)
+            legacy["master_darks_dir"] = darks
+            legacy["master_bias_path"] = bias
+            return [legacy]
+        return []
 
     def _load_master_config(self):
-        """Load the persisted master darks folder, master bias file and the last
+        """Load the master calibration profiles, the active profile and the last
         Bortle choice from the shared config file."""
-        path = self._master_config_path()
+        path = self._config_path()
         if not path or not path.is_file():
             return
         try:
@@ -2255,72 +1913,64 @@ class PreprocessingInterface(QMainWindow):
         section = data.get(self._CONFIG_SECTION)
         if not isinstance(section, dict):
             return
-        self.master_darks_dir = section.get("master_darks_dir") or None
-        self.master_bias_path = section.get("master_bias_path") or None
+        self.master_profiles = self._parse_profiles(section)
+        active = section.get("active_profile")
+        if active and any(p.get("name") == active for p in self.master_profiles):
+            self.active_profile_name = active
+        elif self.master_profiles:
+            self.active_profile_name = self.master_profiles[0].get("name")
         self._last_bortle = section.get("bortle", "") or ""
 
-    def _write_config_section(self, updates: dict) -> bool:
-        """Merge ``updates`` into this script's section of the shared config
-        file, preserving other scripts' sections and this section's other keys.
-        """
-        path = self._master_config_path()
-        if not path:
-            return False
-        data = {}
-        if path.is_file():
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    loaded = json.load(fh)
-                if isinstance(loaded, dict):
-                    data = loaded
-            except (OSError, ValueError):
-                data = {}
-        section = data.get(self._CONFIG_SECTION)
-        if not isinstance(section, dict):
-            section = {}
-        section.update(updates)
-        data[self._CONFIG_SECTION] = section
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-            return True
-        except OSError as exc:
-            self.siril.log(f"> Could not save config: {exc}", LogColor.SALMON)
-            return False
-
     def _save_master_config(self):
-        """Persist the current master darks folder and master bias file."""
+        """Persist the master calibration profiles and the active profile."""
         if self._write_config_section(
             {
-                "master_darks_dir": self.master_darks_dir or "",
-                "master_bias_path": self.master_bias_path or "",
+                "profiles": self.master_profiles,
+                "active_profile": self.active_profile_name or "",
             }
         ):
-            self.siril.log(
-                f"> Saved config to {self._master_config_path()}", LogColor.BLUE
-            )
+            self.siril.log(f"> Saved config to {self._config_path()}", LogColor.BLUE)
 
     def open_master_config(self):
-        """Popup to configure the master darks folder and the master bias file."""
+        """Popup to manage master calibration profiles (one per telescope /
+        camera combo), each with a master darks folder, a master bias file and a
+        master flat file."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Master Calibration Config")
+        dialog.setWindowTitle("Master Calibration Profiles")
         dialog.setModal(True)
-        dialog.setMinimumWidth(520)
+        dialog.setMinimumWidth(560)
         layout = QVBoxLayout(dialog)
 
         intro = QLabel(
-            "Master darks are matched to each session by exposure time and\n"
-            "temperature. The master bias is applied to every session. Click\n"
-            "'Import Masters' afterwards to apply them. These locations are\n"
-            "remembered between runs."
+            "Create a profile for each telescope / camera combo. Master darks are\n"
+            "matched to each session by exposure time and temperature; the master\n"
+            "bias and master flat are applied to every session. Click 'Import\n"
+            "Masters' afterwards to apply a profile. Profiles are remembered\n"
+            "between runs."
         )
         intro.setStyleSheet("color: #555; font-size: 11px;")
         layout.addWidget(intro)
 
+        # Work on a copy so Cancel discards all edits.
+        working = [dict(p) for p in self.master_profiles]
+        state = {"index": -1}
+
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("<b>Profile:</b>"))
+        profile_combo = QComboBox()
+        profile_combo.setMinimumWidth(220)
+        profile_row.addWidget(profile_combo, 1)
+        new_btn = QPushButton("New\u2026")
+        rename_btn = QPushButton("Rename\u2026")
+        delete_btn = QPushButton("Delete")
+        profile_row.addWidget(new_btn)
+        profile_row.addWidget(rename_btn)
+        profile_row.addWidget(delete_btn)
+        layout.addLayout(profile_row)
+
         layout.addWidget(QLabel("<b>Master darks folder</b>"))
         darks_row = QHBoxLayout()
-        darks_edit = QLineEdit(self.master_darks_dir or "")
+        darks_edit = QLineEdit()
         darks_edit.setPlaceholderText(
             "Folder containing master dark frames (FITS/XISF)"
         )
@@ -2331,12 +1981,134 @@ class PreprocessingInterface(QMainWindow):
 
         layout.addWidget(QLabel("<b>Master bias file</b>"))
         bias_row = QHBoxLayout()
-        bias_edit = QLineEdit(self.master_bias_path or "")
+        bias_edit = QLineEdit()
         bias_edit.setPlaceholderText("Single master bias frame (FITS/XISF)")
         bias_browse = QPushButton("Browse\u2026")
         bias_row.addWidget(bias_edit)
         bias_row.addWidget(bias_browse)
         layout.addLayout(bias_row)
+
+        layout.addWidget(QLabel("<b>Master flat file</b>"))
+        flats_row = QHBoxLayout()
+        flats_edit = QLineEdit()
+        flats_edit.setPlaceholderText("Single master flat frame (FITS/XISF)")
+        flats_browse = QPushButton("Browse\u2026")
+        flats_row.addWidget(flats_edit)
+        flats_row.addWidget(flats_browse)
+        layout.addLayout(flats_row)
+
+        def set_fields_enabled(enabled: bool):
+            for w in (
+                darks_edit,
+                bias_edit,
+                flats_edit,
+                darks_browse,
+                bias_browse,
+                flats_browse,
+            ):
+                w.setEnabled(enabled)
+
+        def flush():
+            """Save the field values into the currently shown profile."""
+            i = state["index"]
+            if 0 <= i < len(working):
+                working[i]["master_darks_dir"] = darks_edit.text().strip()
+                working[i]["master_bias_path"] = bias_edit.text().strip()
+                working[i]["master_flat_path"] = flats_edit.text().strip()
+
+        def load(index: int):
+            """Show the profile at `index` in the fields (or clear when none)."""
+            state["index"] = index
+            if 0 <= index < len(working):
+                profile = working[index]
+                darks_edit.setText(profile.get("master_darks_dir", ""))
+                bias_edit.setText(profile.get("master_bias_path", ""))
+                flats_edit.setText(profile.get("master_flat_path", ""))
+                set_fields_enabled(True)
+                rename_btn.setEnabled(True)
+                delete_btn.setEnabled(True)
+            else:
+                darks_edit.clear()
+                bias_edit.clear()
+                flats_edit.clear()
+                set_fields_enabled(False)
+                rename_btn.setEnabled(False)
+                delete_btn.setEnabled(False)
+
+        def refresh_combo(select_index: int):
+            profile_combo.blockSignals(True)
+            profile_combo.clear()
+            for profile in working:
+                profile_combo.addItem(profile.get("name", ""))
+            if 0 <= select_index < len(working):
+                profile_combo.setCurrentIndex(select_index)
+            profile_combo.blockSignals(False)
+
+        def on_profile_changed(index: int):
+            flush()
+            load(index)
+
+        def on_new():
+            flush()
+            name, ok = QInputDialog.getText(dialog, "New Profile", "Profile name:")
+            if not ok:
+                return
+            name = name.strip()
+            if not name:
+                return
+            if any(p.get("name") == name for p in working):
+                QMessageBox.warning(
+                    dialog,
+                    "New Profile",
+                    f"A profile named '{name}' already exists.",
+                )
+                return
+            working.append(self._blank_profile(name))
+            refresh_combo(len(working) - 1)
+            load(len(working) - 1)
+
+        def on_rename():
+            i = state["index"]
+            if not (0 <= i < len(working)):
+                return
+            current = working[i].get("name", "")
+            name, ok = QInputDialog.getText(
+                dialog, "Rename Profile", "Profile name:", text=current
+            )
+            if not ok:
+                return
+            name = name.strip()
+            if not name:
+                return
+            if any(j != i and p.get("name") == name for j, p in enumerate(working)):
+                QMessageBox.warning(
+                    dialog,
+                    "Rename Profile",
+                    f"A profile named '{name}' already exists.",
+                )
+                return
+            working[i]["name"] = name
+            refresh_combo(i)
+
+        def on_delete():
+            i = state["index"]
+            if not (0 <= i < len(working)):
+                return
+            name = working[i].get("name", "")
+            reply = QMessageBox.question(
+                dialog,
+                "Delete Profile",
+                f"Delete profile '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            working.pop(i)
+            state["index"] = -1  # avoid flushing into the removed slot
+            new_index = min(i, len(working) - 1)
+            refresh_combo(new_index)
+            load(new_index)
 
         def browse_darks():
             start = darks_edit.text().strip() or self.siril.get_siril_wd()
@@ -2357,16 +2129,37 @@ class PreprocessingInterface(QMainWindow):
             if chosen:
                 bias_edit.setText(chosen)
 
+        def browse_flats():
+            start = flats_edit.text().strip() or self.siril.get_siril_wd()
+            chosen, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "Select Master Flat File",
+                start,
+                "Calibration frames (*.fit *.fits *.fit.fz *.fits.fz *.xisf)",
+            )
+            if chosen:
+                flats_edit.setText(chosen)
+
+        profile_combo.currentIndexChanged.connect(on_profile_changed)
+        new_btn.clicked.connect(on_new)
+        rename_btn.clicked.connect(on_rename)
+        delete_btn.clicked.connect(on_delete)
         darks_browse.clicked.connect(browse_darks)
         bias_browse.clicked.connect(browse_bias)
+        flats_browse.clicked.connect(browse_flats)
+
+        initial = next(
+            (
+                i
+                for i, p in enumerate(working)
+                if p.get("name") == self.active_profile_name
+            ),
+            0 if working else -1,
+        )
+        refresh_combo(initial)
+        load(initial)
 
         btn_row = QHBoxLayout()
-        clear_btn = QPushButton("Clear")
-        clear_btn.setToolTip(
-            "Clear the saved master darks folder and master bias file."
-        )
-        clear_btn.clicked.connect(lambda: (darks_edit.clear(), bias_edit.clear()))
-        btn_row.addWidget(clear_btn)
         btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
         save_btn = QPushButton("Save")
@@ -2378,13 +2171,18 @@ class PreprocessingInterface(QMainWindow):
         save_btn.clicked.connect(dialog.accept)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.master_darks_dir = darks_edit.text().strip() or None
-            self.master_bias_path = bias_edit.text().strip() or None
+            flush()
+            self.master_profiles = [dict(p) for p in working]
+            sel = profile_combo.currentIndex()
+            if 0 <= sel < len(self.master_profiles):
+                self.active_profile_name = self.master_profiles[sel].get("name")
+            elif self.master_profiles:
+                self.active_profile_name = self.master_profiles[0].get("name")
+            else:
+                self.active_profile_name = None
             self._save_master_config()
             self.siril.log(
-                "Master config saved: darks="
-                f"{self.master_darks_dir or 'none'}, "
-                f"bias={self.master_bias_path or 'none'}",
+                f"Master config saved: {len(self.master_profiles)} profile(s).",
                 LogColor.BLUE,
             )
 
@@ -2421,22 +2219,91 @@ class PreprocessingInterface(QMainWindow):
                 best_path = path
         return best_path
 
+    def _prompt_import_profile(self) -> dict | None:
+        """Return the profile to import, asking when more than one exists.
+        Remembers the choice as the active profile; None when cancelled."""
+        if len(self.master_profiles) == 1:
+            chosen = self.master_profiles[0]
+        else:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Import Masters")
+            dialog.setModal(True)
+            dialog.setMinimumWidth(380)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(
+                QLabel("Which telescope / profile would you like to import?")
+            )
+            combo = QComboBox()
+            for profile in self.master_profiles:
+                combo.addItem(profile.get("name", ""))
+            active_idx = next(
+                (
+                    i
+                    for i, p in enumerate(self.master_profiles)
+                    if p.get("name") == self.active_profile_name
+                ),
+                0,
+            )
+            combo.setCurrentIndex(active_idx)
+            layout.addWidget(combo)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            cancel_btn = QPushButton("Cancel")
+            ok_btn = QPushButton("Import")
+            ok_btn.setDefault(True)
+            btn_row.addWidget(cancel_btn)
+            btn_row.addWidget(ok_btn)
+            layout.addLayout(btn_row)
+            cancel_btn.clicked.connect(dialog.reject)
+            ok_btn.clicked.connect(dialog.accept)
+
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            chosen = self.master_profiles[combo.currentIndex()]
+
+        self.active_profile_name = chosen.get("name")
+        self._write_config_section({"active_profile": self.active_profile_name or ""})
+        return chosen
+
     def import_masters(self):
-        """Match configured master darks to each session by exposure+temperature
-        and apply the configured master bias to every session."""
-        if not self.master_darks_dir and not self.master_bias_path:
+        """Apply a master calibration profile to the sessions: darks matched by
+        exposure + temperature; bias and flat applied to every session."""
+        if not self.master_profiles:
             QMessageBox.information(
                 self,
                 "Import Masters",
-                "No master darks folder or master bias file configured.\n\n"
-                "Click 'Master Config…' first to set them.",
+                "No master calibration profiles configured.\n\n"
+                "Click 'Master Config…' first to create one.",
             )
             return
 
+        profile = self._prompt_import_profile()
+        if profile is None:
+            return
+
+        profile_name = profile.get("name", "")
+        darks_dir = profile.get("master_darks_dir") or ""
+        bias_path = profile.get("master_bias_path") or ""
+        flat_path = profile.get("master_flat_path") or ""
+
+        if not darks_dir and not bias_path and not flat_path:
+            QMessageBox.information(
+                self,
+                "Import Masters",
+                f"Profile '{profile_name}' has no master darks folder, master "
+                "bias file, or master flat file configured.",
+            )
+            return
+
+        self.siril.log(
+            f"Importing masters from profile '{profile_name}'...", LogColor.BLUE
+        )
+
         # Build the master-dark library: (path, exptime, temp) per dark file.
         dark_library: list[tuple[Path, float, float | None]] = []
-        if self.master_darks_dir:
-            folder = Path(self.master_darks_dir)
+        if darks_dir:
+            folder = Path(darks_dir)
             if folder.is_dir():
                 for f in sorted(folder.rglob("*")):
                     if not f.is_file() or not _is_supported_input(f):
@@ -2452,23 +2319,35 @@ class PreprocessingInterface(QMainWindow):
                     dark_library.append((f, exptime, temp))
             else:
                 self.siril.log(
-                    f"> Master darks folder not found: {self.master_darks_dir}",
+                    f"> Master darks folder not found: {darks_dir}",
                     LogColor.SALMON,
                 )
 
         bias_file: Path | None = None
-        if self.master_bias_path:
-            candidate = Path(self.master_bias_path)
+        if bias_path:
+            candidate = Path(bias_path)
             if candidate.is_file():
                 bias_file = candidate
             else:
                 self.siril.log(
-                    f"> Master bias file not found: {self.master_bias_path}",
+                    f"> Master bias file not found: {bias_path}",
+                    LogColor.SALMON,
+                )
+
+        flat_file: Path | None = None
+        if flat_path:
+            candidate = Path(flat_path)
+            if candidate.is_file():
+                flat_file = candidate
+            else:
+                self.siril.log(
+                    f"> Master flat file not found: {flat_path}",
                     LogColor.SALMON,
                 )
 
         darks_applied = 0
         bias_applied = 0
+        flats_applied = 0
         for index, session in enumerate(self.sessions):
             label = self._session_label(index, session)
             if not session.lights:
@@ -2507,6 +2386,10 @@ class PreprocessingInterface(QMainWindow):
                 session.biases.append(bias_file)
                 bias_applied += 1
 
+            if flat_file is not None and flat_file not in session.flats:
+                session.flats.append(flat_file)
+                flats_applied += 1
+
         if bias_file is not None and bias_applied:
             self.siril.log(
                 f"> Applied master bias '{bias_file.name}' to {bias_applied} "
@@ -2514,9 +2397,17 @@ class PreprocessingInterface(QMainWindow):
                 LogColor.GREEN,
             )
 
+        if flat_file is not None and flats_applied:
+            self.siril.log(
+                f"> Applied master flat '{flat_file.name}' to {flats_applied} "
+                "session(s)",
+                LogColor.GREEN,
+            )
+
         self.siril.log(
-            f"Import Masters complete: {darks_applied} master dark(s) and "
-            f"{bias_applied} master bias assignment(s) added.",
+            f"Import Masters complete (profile '{profile_name}'): "
+            f"{darks_applied} master dark(s), {bias_applied} master bias "
+            f"assignment(s), and {flats_applied} master flat assignment(s) added.",
             LogColor.BLUE,
         )
         self.update_dropdown()
@@ -2651,173 +2542,6 @@ class PreprocessingInterface(QMainWindow):
                 return None, None  # nothing checked — treat as cancel
             return indices, "selected"
         return None, None
-
-    # ── AstroBin acquisition CSV export ───────────────────────────────────
-    # Columns in order. Only "number" and "duration" are mandatory; the rest are
-    # emitted (header always present) when available and left blank otherwise.
-    _CSV_COLUMNS = (
-        "date",
-        "filter",
-        "filterName",
-        "number",
-        "duration",
-        "binning",
-        "gain",
-        "sensorCooling",
-        "fNumber",
-        "darks",
-        "flats",
-        "flatDarks",
-        "bias",
-        "bortle",
-    )
-
-    @staticmethod
-    def _csv_num(value):
-        """Format a number for CSV: drop a trailing .0 from whole numbers."""
-        if value is None:
-            return ""
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
-        return str(value)
-
-    def _session_csv_row(self, session):
-        """Build one AstroBin CSV row from a session, or None when it has no lights."""
-        if not session.lights:
-            return None
-
-        meta = _read_light_metadata(session.lights[0])
-        cooling = meta.get("sensorCooling")
-        row = {
-            "date": meta.get("date", ""),
-            "filter": "",  # AstroBin filter ID — not derivable from headers
-            "filterName": meta.get("filterName", ""),
-            "number": str(len(session.lights)),
-            "duration": self._csv_num(meta.get("duration")),
-            "binning": self._csv_num(meta.get("binning")),
-            "gain": self._csv_num(meta.get("gain")),
-            "sensorCooling": (
-                self._csv_num(round(cooling)) if cooling is not None else ""
-            ),
-            "fNumber": f"{meta['fNumber']:.2f}" if "fNumber" in meta else "",
-            "darks": str(len(session.darks)) if session.darks else "",
-            "flats": str(len(session.flats)) if session.flats else "",
-            "flatDarks": "",  # flat-darks are not tracked per session
-            "bias": str(len(session.biases)) if session.biases else "",
-            "bortle": "",  # sky quality — not derivable from headers
-        }
-        return row
-
-    def _prompt_bortle(self):
-        """Ask for the Bortle scale to apply to every row. Returns the chosen
-        value as a string ("" when 'Leave blank'), or None if cancelled."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Bortle Sky Quality")
-        layout = QVBoxLayout(dialog)
-
-        layout.addWidget(QLabel("Select the Bortle scale to apply to every session:"))
-
-        combo = QComboBox()
-        combo.addItem("", "")
-        bortle_descriptions = {
-            1: "Excellent dark-sky site",
-            2: "Typical truly dark site",
-            3: "Rural sky",
-            4: "Rural/suburban transition",
-            5: "Suburban sky",
-            6: "Bright suburban sky",
-            7: "Suburban/urban transition",
-            8: "City sky",
-            9: "Inner-city sky",
-        }
-        for value, desc in bortle_descriptions.items():
-            combo.addItem(f"{value} \u2014 {desc}", str(value))
-        saved_idx = combo.findData(self._last_bortle or "")
-        if saved_idx >= 0:
-            combo.setCurrentIndex(saved_idx)
-        layout.addWidget(combo)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch()
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-        ok_btn = QPushButton("OK")
-        ok_btn.setDefault(True)
-        ok_btn.clicked.connect(dialog.accept)
-        buttons.addWidget(cancel_btn)
-        buttons.addWidget(ok_btn)
-        layout.addLayout(buttons)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return combo.currentData()
-
-    def export_sessions_csv(self):
-        """Export all sessions with lights to an AstroBin acquisition CSV."""
-        rows = []
-        for session in self.sessions:
-            row = self._session_csv_row(session)
-            if row is not None:
-                rows.append(row)
-
-        if not rows:
-            QMessageBox.information(
-                self,
-                "Export Sessions to CSV",
-                "No sessions with light frames to export.",
-            )
-            return
-
-        missing_duration = sum(1 for r in rows if not r["duration"])
-        if missing_duration:
-            self.siril.log(
-                f"> {missing_duration} session(s) have no detectable exposure "
-                "time; their 'duration' column will be blank.",
-                LogColor.SALMON,
-            )
-
-        bortle = self._prompt_bortle()
-        if bortle is None:
-            return  # user cancelled
-        self._last_bortle = bortle
-        self._write_config_section({"bortle": bortle})
-        for row in rows:
-            row["bortle"] = bortle
-
-        try:
-            start_dir = self.siril.get_siril_wd()
-        except Exception:
-            start_dir = ""
-        default_path = os.path.join(start_dir, "astrobin_acquisitions.csv")
-
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Sessions to CSV",
-            default_path,
-            "CSV Files (*.csv)",
-        )
-        if not save_path:
-            return
-        if not save_path.lower().endswith(".csv"):
-            save_path += ".csv"
-
-        try:
-            with open(save_path, "w", encoding="utf-8", newline="") as fh:
-                writer = csv.DictWriter(fh, fieldnames=list(self._CSV_COLUMNS))
-                writer.writeheader()
-                writer.writerows(rows)
-        except OSError as exc:
-            self.siril.log(f"Failed to export CSV: {exc}", LogColor.RED)
-            QMessageBox.warning(
-                self,
-                "Export Sessions to CSV",
-                f"Could not write the CSV file:\n{exc}",
-            )
-            return
-
-        self.siril.log(
-            f"Exported {len(rows)} session(s) to {save_path}", LogColor.GREEN
-        )
 
     # end session methods
 
@@ -3001,57 +2725,36 @@ class PreprocessingInterface(QMainWindow):
         ]
 
         # Sigma (k), percentage (%), or absolute threshold (no suffix) per filter.
-        # Sigma (k), percentage (%), or absolute threshold (no suffix) per filter.
         if use_filter_round:
-            mode = self.roundness_mode_combo.currentText()
-            if mode == "σ":
             mode = self.roundness_mode_combo.currentText()
             if mode == "σ":
                 cmd_args.append(f"-filter-round={filter_round}k")
             elif mode == "%":
-            elif mode == "%":
                 cmd_args.append(f"-filter-round={int(filter_round)}%")
-            else:
-                cmd_args.append(f"-filter-round={self.roundness_spinbox.value():g}")
             else:
                 cmd_args.append(f"-filter-round={self.roundness_spinbox.value():g}")
         if use_filter_wfwhm:
             mode = self.fwhm_mode_combo.currentText()
             if mode == "σ":
-            mode = self.fwhm_mode_combo.currentText()
-            if mode == "σ":
                 cmd_args.append(f"-filter-wfwhm={filter_wfwhm}k")
             elif mode == "%":
-            elif mode == "%":
                 cmd_args.append(f"-filter-wfwhm={int(filter_wfwhm)}%")
-            else:
-                cmd_args.append(f"-filter-wfwhm={self.fwhm_spinbox.value():g}")
             else:
                 cmd_args.append(f"-filter-wfwhm={self.fwhm_spinbox.value():g}")
         if use_filter_stars:
             mode = self.stars_mode_combo.currentText()
             if mode == "σ":
-            mode = self.stars_mode_combo.currentText()
-            if mode == "σ":
                 cmd_args.append(f"-filter-nbstars={filter_stars}k")
             elif mode == "%":
-            elif mode == "%":
                 cmd_args.append(f"-filter-nbstars={int(filter_stars)}%")
-            else:
-                cmd_args.append(f"-filter-nbstars={int(self.stars_spinbox.value())}")
             else:
                 cmd_args.append(f"-filter-nbstars={int(self.stars_spinbox.value())}")
         if use_filter_bkg:
             mode = self.bkg_mode_combo.currentText()
             if mode == "σ":
-            mode = self.bkg_mode_combo.currentText()
-            if mode == "σ":
                 cmd_args.append(f"-filter-bkg={filter_bkg}k")
             elif mode == "%":
-            elif mode == "%":
                 cmd_args.append(f"-filter-bkg={int(filter_bkg)}%")
-            else:
-                cmd_args.append(f"-filter-bkg={self.bkg_spinbox.value():g}")
             else:
                 cmd_args.append(f"-filter-bkg={self.bkg_spinbox.value():g}")
 
@@ -3395,7 +3098,9 @@ class PreprocessingInterface(QMainWindow):
         # Get header info from loaded image for filename
         current_fits_headers = self.siril.get_image_fits_header(return_as="dict")
 
-        object_name = current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
+        object_name = (
+            current_fits_headers.get("OBJECT", "Unknown").strip().replace(" ", "_")
+        )
         exptime = int(current_fits_headers.get("EXPTIME", 0))
         livetime = int(current_fits_headers.get("LIVETIME", 0))
         stack_count = int(current_fits_headers.get("STACKCNT", 0))
@@ -3530,11 +3235,12 @@ class PreprocessingInterface(QMainWindow):
 
             <h3>Master Calibration &amp; Export</h3>
             <ul>
-            <li><b>Master Config…</b>: set a reusable <i>master darks folder</i> and a single
-                <i>master bias file</i>. These locations are remembered between runs.</li>
-            <li><b>Import Masters</b>: applies the configured masters to every session. Master
-                darks are matched to each session by <b>exposure time and temperature</b>; the
-                master bias is applied to all sessions.</li>
+            <li><b>Master Config…</b>: create a <b>profile per telescope / camera</b>, each with a
+                <i>master darks folder</i>, a <i>master bias file</i> and a <i>master flat
+                file</i>. Profiles are remembered between runs.</li>
+            <li><b>Import Masters</b>: pick a profile and apply it to every session. Master
+                darks are matched by <b>exposure time and temperature</b>; the master bias and
+                master flat are applied to all sessions.</li>
             <li><b>Reset Calibration</b>: removes darks, flats, and biases from chosen sessions
                 (pick which sessions when more than one exists). Light frames are left untouched.</li>
             <li><b>Export Sessions to CSV</b>: writes an <b>AstroBin acquisition CSV</b> with the
@@ -3690,9 +3396,6 @@ class PreprocessingInterface(QMainWindow):
         session_row = QGridLayout()
         session_row.setHorizontalSpacing(6)
         session_row.setVerticalSpacing(6)
-        session_row = QGridLayout()
-        session_row.setHorizontalSpacing(6)
-        session_row.setVerticalSpacing(6)
         session_label = QLabel("Session:")
         self.update_dropdown()
         self.session_dropdown.setCurrentIndex(0)
@@ -3704,16 +3407,16 @@ class PreprocessingInterface(QMainWindow):
 
         self.master_config_btn = QPushButton("Master Config\u2026")
         self.master_config_btn.setToolTip(
-            "Configure a reusable master darks folder and a single master bias\n"
-            "file. Master darks are matched to each session by exposure time and\n"
-            "temperature; the master bias is applied to every session."
+            "Manage per-telescope master calibration profiles: a master darks\n"
+            "folder, a master bias file and a master flat file for each."
         )
         self.master_config_btn.clicked.connect(self.open_master_config)
 
         self.import_masters_btn = QPushButton("Import Masters")
         self.import_masters_btn.setToolTip(
-            "Apply the configured master darks and master bias to all open\n"
-            "sessions. Darks are matched by exposure time and temperature."
+            "Apply a master calibration profile to all open sessions. Darks are\n"
+            "matched by exposure time and temperature; the master bias and\n"
+            "master flat are applied to every session."
         )
         self.import_masters_btn.clicked.connect(self.import_masters)
 
@@ -3773,17 +3476,9 @@ class PreprocessingInterface(QMainWindow):
 
         # Files list
         self.file_listbox = DragDropTreeWidget(
-        self.file_listbox = DragDropTreeWidget(
             on_drop_callback=self._handle_dropped_files,
             on_delete_callback=self.remove_selected_files,
         )
-        self.file_listbox.setColumnCount(4)
-        self.file_listbox.setHeaderLabels(["#", "Filter", "Object", "File name"])
-        self.file_listbox.setRootIsDecorated(True)
-        self.file_listbox.setIndentation(14)
-        self.file_listbox.setUniformRowHeights(True)
-        self.file_listbox.setAlternatingRowColors(False)
-        self.file_listbox.setSortingEnabled(True)
         self.file_listbox.setColumnCount(4)
         self.file_listbox.setHeaderLabels(["#", "Filter", "Object", "File name"])
         self.file_listbox.setRootIsDecorated(True)
@@ -3803,21 +3498,10 @@ class PreprocessingInterface(QMainWindow):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(True)
-        self.file_listbox.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        header = self.file_listbox.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setStretchLastSection(True)
         self.file_listbox.setToolTip(
             "Drag and drop files or folders here to add them to the current session.\n"
             "Named folders (lights, darks, flats, biases) are auto-categorised.\n"
             "Drop a parent folder containing those subfolders to load an entire session,\n"
-            "or a folder with session sub-folders to auto-create multiple sessions.\n"
-            "Click a column header to sort; rows are grouped by frame type."
             "or a folder with session sub-folders to auto-create multiple sessions.\n"
             "Click a column header to sort; rows are grouped by frame type."
         )
@@ -3881,8 +3565,6 @@ class PreprocessingInterface(QMainWindow):
         preprocessing_group = QGroupBox("Optional Preprocessing Steps")
         preprocessing_layout = QVBoxLayout()
 
-        dark_flats_tooltip = "If your flat frames are not being applied correctly, enable this option to apply dark flats or bias frames to your light frames before stacking."
-        self.dark_flats_check = QCheckBox("Apply Dark Flats/Biases to Lights")
         dark_flats_tooltip = "If your flat frames are not being applied correctly, enable this option to apply dark flats or bias frames to your light frames before stacking."
         self.dark_flats_check = QCheckBox("Apply Dark Flats/Biases to Lights")
         self.dark_flats_check.setToolTip(dark_flats_tooltip)
@@ -3953,17 +3635,6 @@ class PreprocessingInterface(QMainWindow):
 
         self.drizzle_checkbox.toggled.connect(self.pixel_fraction_spinbox.setEnabled)
 
-        self.astrometry_net_check = QCheckBox(
-            "Fall back to local astrometry.net for unsolved frames (slower)"
-        )
-        self.astrometry_net_check.setToolTip(
-            "After Siril's built-in sequence solve reports a failure, retry only "
-            "frames without an existing astrometric solution using local "
-            "astrometry.net. Requires suitable astrometry.net index files."
-        )
-        if self.astrometry_net_available:
-            preprocessing_layout.addWidget(self.astrometry_net_check)
-
         preprocessing_group.setLayout(preprocessing_layout)
         processing_layout.addWidget(preprocessing_group)
 
@@ -3986,8 +3657,6 @@ class PreprocessingInterface(QMainWindow):
         self.roundness_spinbox.setEnabled(False)
         self.roundness_spinbox.setToolTip(roundness_label_tooltip)
         self.roundness_mode_combo = QComboBox()
-        self.roundness_mode_combo.addItems(["σ", "%", "abs"])
-        self.roundness_mode_combo.setFixedWidth(72)
         self.roundness_mode_combo.addItems(["σ", "%", "abs"])
         self.roundness_mode_combo.setFixedWidth(72)
         self.roundness_mode_combo.setEnabled(False)
@@ -4020,8 +3689,6 @@ class PreprocessingInterface(QMainWindow):
         self.fwhm_mode_combo = QComboBox()
         self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
         self.fwhm_mode_combo.setFixedWidth(72)
-        self.fwhm_mode_combo.addItems(["σ", "%", "abs"])
-        self.fwhm_mode_combo.setFixedWidth(72)
         self.fwhm_mode_combo.setEnabled(False)
         self.fwhm_check.toggled.connect(self.fwhm_spinbox.setEnabled)
         self.fwhm_check.toggled.connect(self.fwhm_mode_combo.setEnabled)
@@ -4052,8 +3719,6 @@ class PreprocessingInterface(QMainWindow):
         self.stars_mode_combo = QComboBox()
         self.stars_mode_combo.addItems(["σ", "%", "abs"])
         self.stars_mode_combo.setFixedWidth(72)
-        self.stars_mode_combo.addItems(["σ", "%", "abs"])
-        self.stars_mode_combo.setFixedWidth(72)
         self.stars_mode_combo.setEnabled(False)
         self.stars_check.toggled.connect(self.stars_spinbox.setEnabled)
         self.stars_check.toggled.connect(self.stars_mode_combo.setEnabled)
@@ -4082,8 +3747,6 @@ class PreprocessingInterface(QMainWindow):
         self.bkg_spinbox.setEnabled(False)
         self.bkg_spinbox.setToolTip(bkg_label_tooltip)
         self.bkg_mode_combo = QComboBox()
-        self.bkg_mode_combo.addItems(["σ", "%", "abs"])
-        self.bkg_mode_combo.setFixedWidth(72)
         self.bkg_mode_combo.addItems(["σ", "%", "abs"])
         self.bkg_mode_combo.setFixedWidth(72)
         self.bkg_mode_combo.setEnabled(False)
@@ -4425,45 +4088,17 @@ class PreprocessingInterface(QMainWindow):
         """Update spinbox properties when filter mode changes between σ, % and abs."""
         mode = combo.currentText()
         if mode == "σ":
-        """Update spinbox properties when filter mode changes between σ, % and abs."""
-        mode = combo.currentText()
-        if mode == "σ":
             spinbox.setRange(1, 4)
             spinbox.setSingleStep(0.1)
             spinbox.setDecimals(1)
             spinbox.setValue(3.0)
             spinbox.setSuffix(" σ")
         elif mode == "%":
-        elif mode == "%":
             spinbox.setRange(1, 100)
             spinbox.setSingleStep(1)
             spinbox.setDecimals(0)
             spinbox.setValue(100)
             spinbox.setSuffix(" %")
-        else:  # abs — a raw threshold passed to Siril with no suffix
-            # Per-metric ranges: absolute thresholds differ wildly (roundness and
-            # background are 0–1, FWHM is in pixels, star count is in the 100s).
-            if spinbox is self.stars_spinbox:
-                spinbox.setRange(0, 100000)
-                spinbox.setSingleStep(10)
-                spinbox.setDecimals(0)
-                spinbox.setValue(100)
-            elif spinbox is self.fwhm_spinbox:
-                spinbox.setRange(0.0, 30.0)
-                spinbox.setSingleStep(0.1)
-                spinbox.setDecimals(2)
-                spinbox.setValue(3.0)
-            elif spinbox is self.bkg_spinbox:
-                spinbox.setRange(0.0, 1.0)
-                spinbox.setSingleStep(0.001)
-                spinbox.setDecimals(4)
-                spinbox.setValue(0.1)
-            else:  # roundness
-                spinbox.setRange(0.0, 1.0)
-                spinbox.setSingleStep(0.05)
-                spinbox.setDecimals(2)
-                spinbox.setValue(0.9)
-            spinbox.setSuffix("")
         else:  # abs — a raw threshold passed to Siril with no suffix
             # Per-metric ranges: absolute thresholds differ wildly (roundness and
             # background are 0–1, FWHM is in pixels, star count is in the 100s).
@@ -4833,7 +4468,6 @@ class PreprocessingInterface(QMainWindow):
             "dark_flats": self.dark_flats_check.isChecked(),
             "bg_extract": self.bg_extract_check.isChecked(),
             "use_astrometry_net": (
-                self.astrometry_net_available and self.astrometry_net_check.isChecked()
                 self.astrometry_net_available and self.astrometry_net_check.isChecked()
             ),
             "drizzle": self.drizzle_checkbox.isChecked(),
